@@ -1,0 +1,42 @@
+{
+  "schema": "nurtuo.flow/v1",
+  "id": "ref-setproperties",
+  "name": "Reference: setProperties",
+  "description": "Set document and process properties.",
+  "revision": 1,
+  "steps": [
+    {
+      "id": "start",
+      "kind": "start",
+      "config": {
+        "type": "manual"
+      }
+    },
+    {
+      "id": "props",
+      "kind": "setProperties",
+      "config": {
+        "properties": [
+          {
+            "name": "orderId",
+            "value": "{{doc.id}}"
+          },
+          {
+            "name": "batch",
+            "scope": "process",
+            "value": "nightly"
+          }
+        ]
+      }
+    },
+    {
+      "id": "done",
+      "kind": "returnDocuments",
+      "config": {}
+    }
+  ],
+  "edges": {
+    "start:default": "props",
+    "props:default": "done"
+  }
+}

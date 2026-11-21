@@ -1,0 +1,33 @@
+{
+  "schema": "nurtuo.flow/v1",
+  "id": "ref-processcall",
+  "name": "Reference: processCall",
+  "description": "Call another flow by id.",
+  "revision": 1,
+  "steps": [
+    {
+      "id": "start",
+      "kind": "start",
+      "config": {
+        "type": "manual"
+      }
+    },
+    {
+      "id": "sub",
+      "kind": "processCall",
+      "config": {
+        "flow": "ref-message",
+        "revision": 1
+      }
+    },
+    {
+      "id": "done",
+      "kind": "returnDocuments",
+      "config": {}
+    }
+  ],
+  "edges": {
+    "start:default": "sub",
+    "sub:default": "done"
+  }
+}

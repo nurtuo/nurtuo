@@ -1,0 +1,27 @@
+{
+  "schema": "nurtuo.flow/v1",
+  "id": "ref-start",
+  "name": "Reference: start",
+  "description": "HTTP listener trigger.",
+  "revision": 1,
+  "steps": [
+    {
+      "id": "start",
+      "kind": "start",
+      "config": {
+        "type": "listener",
+        "connector": "http",
+        "path": "/orders",
+        "method": "POST"
+      }
+    },
+    {
+      "id": "done",
+      "kind": "returnDocuments",
+      "config": {}
+    }
+  ],
+  "edges": {
+    "start:default": "done"
+  }
+}

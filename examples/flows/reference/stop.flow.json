@@ -1,0 +1,27 @@
+{
+  "schema": "nurtuo.flow/v1",
+  "id": "ref-stop",
+  "name": "Reference: stop",
+  "description": "End the run with a status.",
+  "revision": 1,
+  "steps": [
+    {
+      "id": "start",
+      "kind": "start",
+      "config": {
+        "type": "manual"
+      }
+    },
+    {
+      "id": "halt",
+      "kind": "stop",
+      "config": {
+        "status": 422,
+        "message": "rejected"
+      }
+    }
+  ],
+  "edges": {
+    "start:default": "halt"
+  }
+}

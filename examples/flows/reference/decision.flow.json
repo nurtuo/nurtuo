@@ -1,0 +1,41 @@
+{
+  "schema": "nurtuo.flow/v1",
+  "id": "ref-decision",
+  "name": "Reference: decision",
+  "description": "Split on a boolean condition.",
+  "revision": 1,
+  "steps": [
+    {
+      "id": "start",
+      "kind": "start",
+      "config": {
+        "type": "manual"
+      }
+    },
+    {
+      "id": "check",
+      "kind": "decision",
+      "config": {
+        "cel": "doc.id != ''"
+      }
+    },
+    {
+      "id": "done",
+      "kind": "returnDocuments",
+      "config": {}
+    },
+    {
+      "id": "rejected",
+      "kind": "stop",
+      "config": {
+        "status": 404,
+        "message": "not found"
+      }
+    }
+  ],
+  "edges": {
+    "start:default": "check",
+    "check:true": "done",
+    "check:false": "rejected"
+  }
+}

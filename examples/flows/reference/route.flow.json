@@ -1,0 +1,53 @@
+{
+  "schema": "nurtuo.flow/v1",
+  "id": "ref-route",
+  "name": "Reference: route",
+  "description": "Send each document to the first matching route.",
+  "revision": 1,
+  "steps": [
+    {
+      "id": "start",
+      "kind": "start",
+      "config": {
+        "type": "manual"
+      }
+    },
+    {
+      "id": "pick",
+      "kind": "route",
+      "config": {
+        "routes": [
+          {
+            "id": "big",
+            "cel": "doc.props.size == 'big'"
+          },
+          {
+            "id": "small",
+            "cel": "doc.props.size == 'small'"
+          }
+        ]
+      }
+    },
+    {
+      "id": "big",
+      "kind": "returnDocuments",
+      "config": {}
+    },
+    {
+      "id": "small",
+      "kind": "returnDocuments",
+      "config": {}
+    },
+    {
+      "id": "done",
+      "kind": "returnDocuments",
+      "config": {}
+    }
+  ],
+  "edges": {
+    "start:default": "pick",
+    "pick:big": "big",
+    "pick:small": "small",
+    "pick:default": "done"
+  }
+}

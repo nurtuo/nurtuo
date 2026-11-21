@@ -5,7 +5,7 @@
   "revision": 1,
   "steps": [
     { "id": "start", "kind": "start", "config": { "type": "listener", "connector": "http", "path": "/employees/{id}" } },
-    { "id": "get_employee", "kind": "connector", "config": { "connector": "postgres", "operation": "GET", "objectType": "employee" } },
+    { "id": "get_employee", "kind": "connector", "config": { "connector": "postgres", "operation": "QUERY", "objectType": "employee" } },
     { "id": "found", "kind": "decision", "config": { "cel": "doc.id != ''" } },
     { "id": "to_response", "kind": "map", "config": { "jsonata": "{ 'id': id, 'name': first_name & ' ' & last_name }" } },
     { "id": "return", "kind": "returnDocuments", "config": {} },

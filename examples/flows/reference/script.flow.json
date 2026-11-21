@@ -1,0 +1,37 @@
+{
+  "schema": "nurtuo.flow/v1",
+  "id": "ref-script",
+  "name": "Reference: script",
+  "description": "Run a sandboxed WebAssembly module over every document.",
+  "revision": 1,
+  "steps": [
+    {
+      "id": "start",
+      "kind": "start",
+      "config": {
+        "type": "manual"
+      }
+    },
+    {
+      "id": "tidy",
+      "kind": "script",
+      "config": {
+        "script": "normalize-names",
+        "timeoutMs": 2000,
+        "memoryMiB": 16,
+        "capabilities": [
+          "clock"
+        ]
+      }
+    },
+    {
+      "id": "done",
+      "kind": "returnDocuments",
+      "config": {}
+    }
+  ],
+  "edges": {
+    "start:default": "tidy",
+    "tidy:default": "done"
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "schema": "nurtuo.flow/v1",
+  "id": "ref-trycatch",
+  "name": "Reference: tryCatch",
+  "description": "Retry a failing path, then handle the failure.",
+  "revision": 1,
+  "steps": [
+    {
+      "id": "start",
+      "kind": "start",
+      "config": {
+        "type": "manual"
+      }
+    },
+    {
+      "id": "guard",
+      "kind": "tryCatch",
+      "config": {
+        "retries": 2
+      }
+    },
+    {
+      "id": "risky",
+      "kind": "connector",
+      "config": {
+        "connector": "http",
+        "operation": "POST"
+      }
+    },
+    {
+      "id": "recover",
+      "kind": "setProperties",
+      "config": {
+        "properties": [
+          {
+            "name": "failed",
+            "value": "true"
+          }
+        ]
+      }
+    },
+    {
+      "id": "done",
+      "kind": "returnDocuments",
+      "config": {}
+    },
+    {
+      "id": "done2",
+      "kind": "returnDocuments",
+      "config": {}
+    }
+  ],
+  "edges": {
+    "start:default": "guard",
+    "guard:try": "risky",
+    "guard:catch": "recover",
+    "risky:default": "done",
+    "recover:default": "done2"
+  }
+}
