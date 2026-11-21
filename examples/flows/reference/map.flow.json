@@ -1,0 +1,32 @@
+{
+  "schema": "nurtuo.flow/v1",
+  "id": "ref-map",
+  "name": "Reference: map",
+  "description": "Transform the JSON payload with JSONata.",
+  "revision": 1,
+  "steps": [
+    {
+      "id": "start",
+      "kind": "start",
+      "config": {
+        "type": "manual"
+      }
+    },
+    {
+      "id": "reshape",
+      "kind": "map",
+      "config": {
+        "jsonata": "{ 'id': id, 'name': first_name & ' ' & last_name }"
+      }
+    },
+    {
+      "id": "done",
+      "kind": "returnDocuments",
+      "config": {}
+    }
+  ],
+  "edges": {
+    "start:default": "reshape",
+    "reshape:default": "done"
+  }
+}

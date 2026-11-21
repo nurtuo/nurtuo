@@ -1,0 +1,40 @@
+{
+  "description": "script step with limits and capabilities",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [
+      {
+        "id": "start",
+        "kind": "start",
+        "config": {
+          "type": "manual"
+        }
+      },
+      {
+        "id": "s",
+        "kind": "script",
+        "config": {
+          "script": "uppercase",
+          "timeoutMs": 2000,
+          "memoryMiB": 16,
+          "capabilities": [
+            "clock"
+          ]
+        }
+      },
+      {
+        "id": "return",
+        "kind": "returnDocuments",
+        "config": {}
+      }
+    ],
+    "edges": {
+      "start:default": "s",
+      "s:default": "return"
+    }
+  },
+  "expect": []
+}

@@ -1,0 +1,66 @@
+{
+  "description": "connector, queue, map and notify shells; queue and schedule starts",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [
+      {
+        "id": "start",
+        "kind": "start",
+        "config": {
+          "type": "queue",
+          "queue": "orders.inbound"
+        }
+      },
+      {
+        "id": "c",
+        "kind": "connector",
+        "config": {
+          "connector": "http",
+          "operation": "GET",
+          "objectType": "order",
+          "connection": "main"
+        }
+      },
+      {
+        "id": "m",
+        "kind": "map",
+        "config": {
+          "jsonata": "$"
+        }
+      },
+      {
+        "id": "q",
+        "kind": "queue",
+        "config": {
+          "queue": "orders.out",
+          "operation": "publish"
+        }
+      },
+      {
+        "id": "n",
+        "kind": "notify",
+        "config": {
+          "channel": "ops",
+          "template": "done"
+        }
+      },
+      {
+        "id": "return",
+        "kind": "returnDocuments",
+        "config": {}
+      }
+    ],
+    "edges": {
+      "start:default": "c",
+      "c:default": "m",
+      "m:default": "q",
+      "q:default": "n",
+      "n:default": "return"
+    },
+    "description": "shells"
+  },
+  "expect": []
+}

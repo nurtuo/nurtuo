@@ -1,0 +1,42 @@
+{
+  "description": "two start steps",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [
+      {
+        "id": "a",
+        "kind": "start",
+        "config": {
+          "type": "manual"
+        }
+      },
+      {
+        "id": "b",
+        "kind": "start",
+        "config": {
+          "type": "manual"
+        }
+      },
+      {
+        "id": "end",
+        "kind": "stop",
+        "config": {}
+      }
+    ],
+    "edges": {
+      "a:default": "end",
+      "b:default": "end"
+    }
+  },
+  "expect": [
+    {
+      "severity": "error",
+      "code": "flow.start_count",
+      "path": "/steps/1",
+      "stepId": "b"
+    }
+  ]
+}

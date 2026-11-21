@@ -1,0 +1,42 @@
+{
+  "description": "branch with 26 paths",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [
+      {
+        "id": "start",
+        "kind": "start",
+        "config": {
+          "type": "manual"
+        }
+      },
+      {
+        "id": "b",
+        "kind": "branch",
+        "config": {
+          "paths": 26
+        }
+      },
+      {
+        "id": "return",
+        "kind": "returnDocuments",
+        "config": {}
+      }
+    ],
+    "edges": {
+      "start:default": "b",
+      "b:1": "return"
+    }
+  },
+  "expect": [
+    {
+      "severity": "error",
+      "code": "schema.maximum",
+      "path": "/steps/1/config/paths",
+      "stepId": "b"
+    }
+  ]
+}

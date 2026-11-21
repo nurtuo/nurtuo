@@ -1,0 +1,32 @@
+{
+  "schema": "nurtuo.flow/v1",
+  "id": "ref-message",
+  "name": "Reference: message",
+  "description": "Replace the payload from a template.",
+  "revision": 1,
+  "steps": [
+    {
+      "id": "start",
+      "kind": "start",
+      "config": {
+        "type": "manual"
+      }
+    },
+    {
+      "id": "body",
+      "kind": "message",
+      "config": {
+        "template": "{\"orderId\": \"{{doc.props.orderId}}\"}"
+      }
+    },
+    {
+      "id": "done",
+      "kind": "returnDocuments",
+      "config": {}
+    }
+  ],
+  "edges": {
+    "start:default": "body",
+    "body:default": "done"
+  }
+}

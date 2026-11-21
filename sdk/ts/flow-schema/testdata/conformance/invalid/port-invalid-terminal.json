@@ -1,0 +1,40 @@
+{
+  "description": "stop with an outgoing edge",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [
+      {
+        "id": "start",
+        "kind": "start",
+        "config": {
+          "type": "manual"
+        }
+      },
+      {
+        "id": "s",
+        "kind": "stop",
+        "config": {}
+      },
+      {
+        "id": "return",
+        "kind": "returnDocuments",
+        "config": {}
+      }
+    ],
+    "edges": {
+      "start:default": "s",
+      "s:default": "return"
+    }
+  },
+  "expect": [
+    {
+      "severity": "error",
+      "code": "edge.port_invalid",
+      "path": "/edges/s:default",
+      "stepId": "s"
+    }
+  ]
+}

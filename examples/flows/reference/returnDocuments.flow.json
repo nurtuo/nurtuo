@@ -1,0 +1,24 @@
+{
+  "schema": "nurtuo.flow/v1",
+  "id": "ref-returndocuments",
+  "name": "Reference: returnDocuments",
+  "description": "Return the current documents to the caller.",
+  "revision": 1,
+  "steps": [
+    {
+      "id": "start",
+      "kind": "start",
+      "config": {
+        "type": "manual"
+      }
+    },
+    {
+      "id": "done",
+      "kind": "returnDocuments",
+      "config": {}
+    }
+  ],
+  "edges": {
+    "start:default": "done"
+  }
+}

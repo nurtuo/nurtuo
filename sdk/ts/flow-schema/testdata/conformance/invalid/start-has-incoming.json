@@ -1,0 +1,60 @@
+{
+  "description": "edge into start",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [
+      {
+        "id": "start",
+        "kind": "start",
+        "config": {
+          "type": "manual"
+        }
+      },
+      {
+        "id": "m",
+        "kind": "message",
+        "config": {
+          "template": "x"
+        }
+      },
+      {
+        "id": "end",
+        "kind": "stop",
+        "config": {}
+      }
+    ],
+    "edges": {
+      "start:default": "m",
+      "m:default": "start"
+    }
+  },
+  "expect": [
+    {
+      "severity": "error",
+      "code": "start.has_incoming",
+      "path": "/edges/m:default",
+      "stepId": "start"
+    },
+    {
+      "severity": "error",
+      "code": "flow.cycle",
+      "path": "/steps/0",
+      "stepId": "start"
+    },
+    {
+      "severity": "error",
+      "code": "flow.cycle",
+      "path": "/steps/1",
+      "stepId": "m"
+    },
+    {
+      "severity": "warning",
+      "code": "step.unreachable",
+      "path": "/steps/2",
+      "stepId": "end"
+    }
+  ]
+}

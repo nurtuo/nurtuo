@@ -1,0 +1,50 @@
+{
+  "description": "try/catch around a process call",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [
+      {
+        "id": "start",
+        "kind": "start",
+        "config": {
+          "type": "manual"
+        }
+      },
+      {
+        "id": "tc",
+        "kind": "tryCatch",
+        "config": {
+          "retries": 2
+        }
+      },
+      {
+        "id": "pc",
+        "kind": "processCall",
+        "config": {
+          "flow": "other-flow",
+          "revision": 3
+        }
+      },
+      {
+        "id": "return",
+        "kind": "returnDocuments",
+        "config": {}
+      },
+      {
+        "id": "failed",
+        "kind": "stop",
+        "config": {}
+      }
+    ],
+    "edges": {
+      "start:default": "tc",
+      "tc:try": "pc",
+      "tc:catch": "failed",
+      "pc:default": "return"
+    }
+  },
+  "expect": []
+}

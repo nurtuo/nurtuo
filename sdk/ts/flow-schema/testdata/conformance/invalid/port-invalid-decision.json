@@ -1,0 +1,54 @@
+{
+  "description": "decision with default port; true/false unconnected",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [
+      {
+        "id": "start",
+        "kind": "start",
+        "config": {
+          "type": "manual"
+        }
+      },
+      {
+        "id": "d",
+        "kind": "decision",
+        "config": {
+          "cel": "true"
+        }
+      },
+      {
+        "id": "return",
+        "kind": "returnDocuments",
+        "config": {}
+      }
+    ],
+    "edges": {
+      "start:default": "d",
+      "d:default": "return"
+    }
+  },
+  "expect": [
+    {
+      "severity": "error",
+      "code": "edge.port_invalid",
+      "path": "/edges/d:default",
+      "stepId": "d"
+    },
+    {
+      "severity": "error",
+      "code": "step.port_unconnected",
+      "path": "/edges/d:false",
+      "stepId": "d"
+    },
+    {
+      "severity": "error",
+      "code": "step.port_unconnected",
+      "path": "/edges/d:true",
+      "stepId": "d"
+    }
+  ]
+}

@@ -1,0 +1,59 @@
+{
+  "description": "several independent semantic errors at once",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [
+      {
+        "id": "start",
+        "kind": "start",
+        "config": {
+          "type": "manual"
+        }
+      },
+      {
+        "id": "d",
+        "kind": "decision",
+        "config": {
+          "cel": "true"
+        }
+      },
+      {
+        "id": "end",
+        "kind": "stop",
+        "config": {}
+      },
+      {
+        "id": "end",
+        "kind": "stop",
+        "config": {}
+      }
+    ],
+    "edges": {
+      "start:default": "d",
+      "d:true": "end",
+      "ghost:x": "end"
+    }
+  },
+  "expect": [
+    {
+      "severity": "error",
+      "code": "step.port_unconnected",
+      "path": "/edges/d:false",
+      "stepId": "d"
+    },
+    {
+      "severity": "error",
+      "code": "edge.source_unknown",
+      "path": "/edges/ghost:x"
+    },
+    {
+      "severity": "error",
+      "code": "step.duplicate_id",
+      "path": "/steps/3",
+      "stepId": "end"
+    }
+  ]
+}

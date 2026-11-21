@@ -1,0 +1,54 @@
+{
+  "schema": "nurtuo.flow/v1",
+  "id": "ref-branch",
+  "name": "Reference: branch",
+  "description": "Run two paths sequentially over copies of the set.",
+  "revision": 1,
+  "steps": [
+    {
+      "id": "start",
+      "kind": "start",
+      "config": {
+        "type": "manual"
+      }
+    },
+    {
+      "id": "fan",
+      "kind": "branch",
+      "config": {
+        "paths": 2
+      }
+    },
+    {
+      "id": "first",
+      "kind": "message",
+      "config": {
+        "template": "path one"
+      }
+    },
+    {
+      "id": "second",
+      "kind": "message",
+      "config": {
+        "template": "path two"
+      }
+    },
+    {
+      "id": "done",
+      "kind": "returnDocuments",
+      "config": {}
+    },
+    {
+      "id": "done2",
+      "kind": "returnDocuments",
+      "config": {}
+    }
+  ],
+  "edges": {
+    "start:default": "fan",
+    "fan:1": "first",
+    "fan:2": "second",
+    "first:default": "done",
+    "second:default": "done2"
+  }
+}

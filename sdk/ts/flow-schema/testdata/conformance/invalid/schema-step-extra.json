@@ -1,0 +1,35 @@
+{
+  "description": "unknown step property",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [
+      {
+        "id": "start",
+        "kind": "start",
+        "config": {
+          "type": "manual"
+        }
+      },
+      {
+        "id": "end",
+        "kind": "stop",
+        "config": {},
+        "color": "red"
+      }
+    ],
+    "edges": {
+      "start:default": "end"
+    }
+  },
+  "expect": [
+    {
+      "severity": "error",
+      "code": "schema.additionalProperties",
+      "path": "/steps/1/color",
+      "stepId": "end"
+    }
+  ]
+}

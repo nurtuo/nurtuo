@@ -1,0 +1,33 @@
+{
+  "description": "wrong schema marker",
+  "flow": {
+    "schema": "nurtuo.flow/v2",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [
+      {
+        "id": "start",
+        "kind": "start",
+        "config": {
+          "type": "manual"
+        }
+      },
+      {
+        "id": "end",
+        "kind": "stop",
+        "config": {}
+      }
+    ],
+    "edges": {
+      "start:default": "end"
+    }
+  },
+  "expect": [
+    {
+      "severity": "error",
+      "code": "schema.const",
+      "path": "/schema"
+    }
+  ]
+}

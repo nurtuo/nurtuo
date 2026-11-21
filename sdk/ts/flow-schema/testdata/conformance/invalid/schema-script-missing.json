@@ -1,0 +1,40 @@
+{
+  "description": "script step requires script",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [
+      {
+        "id": "start",
+        "kind": "start",
+        "config": {
+          "type": "manual"
+        }
+      },
+      {
+        "id": "s",
+        "kind": "script",
+        "config": {}
+      },
+      {
+        "id": "return",
+        "kind": "returnDocuments",
+        "config": {}
+      }
+    ],
+    "edges": {
+      "start:default": "s",
+      "s:default": "return"
+    }
+  },
+  "expect": [
+    {
+      "severity": "error",
+      "code": "schema.required",
+      "path": "/steps/1/config/script",
+      "stepId": "s"
+    }
+  ]
+}
