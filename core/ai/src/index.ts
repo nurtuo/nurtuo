@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // AI layer: model-agnostic gateway (cloud + local models), budgets, caching, flow generation,
 // AI-assisted mapping with confidence scores, eval suites run in CI.
-export {};
+//
+// Today: the deterministic eval layer (./evals). It drives the MCP server through an in-process
+// client with scripted agents; an LLM-backed `ChatModel` plugs into `ToolLoopAgent` (see docs/mcp.md).
+export * as evals from "./evals/index.js";

@@ -1,18 +1,33 @@
 {
   "name": "@nurtuo/mcp",
   "version": "0.0.0",
-  "description": "MCP server: search, get_flow, apply_ops, validate, dry_run, deploy (with approval)",
+  "description": "MCP server: flow tools, catalog and assist tools, resources, prompts, stdio/HTTP transports, optional deploy",
   "license": "AGPL-3.0-only",
   "type": "module",
   "private": true,
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist"],
+  "bin": {
+    "nurtuo-mcp": "dist/stdio.js"
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "sync": "node scripts/gen-connectors.mjs",
+    "sync:check": "node scripts/gen-connectors.mjs --check",
+    "build": "node scripts/gen-connectors.mjs && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "echo 'lint: TODO (eslint)'",
     "test": "node --test \"dist/**/*.test.js\""
   },
-  "dependencies": {"@nurtuo/flow-schema": "workspace:*", "@nurtuo/flow-validate": "workspace:*"}
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@nurtuo/flow-schema": "workspace:*",
+    "@nurtuo/flow-validate": "workspace:*",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "yaml": "^2.9.1"
+  }
 }
