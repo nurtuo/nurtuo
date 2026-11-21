@@ -1,0 +1,26 @@
+html, body, #root { height: 100%; margin: 0; font-family: system-ui, sans-serif; font-size: 13px; }
+.app { display: grid; grid-template-columns: 200px 1fr 280px; grid-template-rows: 40px 1fr; height: 100%; }
+.toolbar { grid-column: 1 / -1; display: flex; gap: 8px; align-items: center; padding: 0 12px; border-bottom: 1px solid #ddd; }
+.palette, .panel { padding: 12px; overflow: auto; background: #fafafa; }
+.palette { border-right: 1px solid #ddd; }
+.panel { border-left: 1px solid #ddd; }
+.palette-item { padding: 8px; margin-bottom: 8px; border: 1px solid #ccc; border-radius: 4px; background: #fff; cursor: grab; }
+.canvas { position: relative; }
+.step-node { padding: 8px 12px; border: 1px solid #555; border-radius: 6px; background: #fff; min-width: 100px; }
+.react-flow__node.selected .step-node { border-color: #2563eb; box-shadow: 0 0 0 2px #bfdbfe; }
+.toolbar .sep { width: 1px; height: 20px; background: #ddd; }
+.err { color: crimson; }
+.step-node { position: relative; text-align: center; padding-bottom: 14px; }
+.step-node.error { border-color: #dc2626; background: #fee2e2; }
+.step-node.warning { border-color: #d97706; background: #fef3c7; }
+.step-kind { font-size: 10px; text-transform: uppercase; color: #666; }
+.step-id { font-size: 10px; color: #888; }
+.port-label { position: absolute; top: 8px; left: -6px; font-size: 9px; color: #444; pointer-events: none; }
+.diagnostics { list-style: none; padding: 0; margin: 4px 0; }
+.diagnostics li { padding: 4px; margin-bottom: 4px; border-left: 3px solid #999; cursor: pointer; background: #fff; }
+.diagnostics li.error { border-color: #dc2626; }
+.diagnostics li.warning { border-color: #d97706; }
+.overlay { position: fixed; inset: 0; background: rgba(0,0,0,.35); display: flex; align-items: center; justify-content: center; z-index: 10; }
+.dialog { background: #fff; padding: 16px; border-radius: 8px; width: 420px; max-height: 80vh; overflow: auto; }
+.field { display: flex; flex-direction: column; gap: 2px; margin-bottom: 8px; }
+.field textarea { font-family: monospace; }
