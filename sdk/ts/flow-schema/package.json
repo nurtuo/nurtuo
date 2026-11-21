@@ -7,12 +7,15 @@
   
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist", "schema"],
+  "files": ["dist", "schema", "testdata"],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node scripts/sync-schema.mjs && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "sync": "node scripts/sync-schema.mjs",
+    "sync:check": "node scripts/sync-schema.mjs --check",
     "lint": "echo 'lint: TODO (eslint)'",
     "test": "node --test \"dist/**/*.test.js\""
   },
-  "dependencies": {}
+  "dependencies": {},
+  "devDependencies": { "ajv": "^8.17.1" }
 }
