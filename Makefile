@@ -42,5 +42,11 @@ docs:                 ## docs/flow-reference.md is current, its examples are val
 dev:                  ## canvas (turbo dev) + standalone runtime with embedded Postgres and control plane
 	pnpm turbo run dev & go run ./core/runtime/cmd/nurtuo standalone; wait
 
+# Release dry-run (docs/ARCHITECTURE.md §7.1).
+# Builds the nurtuo runtime for linux/windows/darwin × amd64/arm64
+# (CGO_ENABLED=0, -trimpath), checksums, and Syft SPDX SBOMs into dist/.
+# TODO(§7.1): --skip=sign stubs cosign keyless signing (needs GitHub OIDC).
+# TODO(§7.1): MSI (WiX), macOS notarization, and `bun build --compile` of
+# nurtuo-control-plane are not part of this snapshot.
 snapshot:             ## local release build (no publish)
-	goreleaser release --snapshot --clean
+	goreleaser release --snapshot --clean --skip=sign

@@ -1,7 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Release of the `nurtuo` runtime binary. Control plane (bun --compile) and bridges have their own jobs.
+#
+# `make snapshot` is the dry-run (`goreleaser release --snapshot --clean`).
+# It builds the six runtime targets below, checksums, and Syft SPDX SBOMs.
+# TODO(§7.1): snapshot mode skips cosign keyless signing (`--skip=sign` in the
+# Makefile). Real tags sign checksums with cosign via GitHub OIDC.
+# TODO(§7.1): MSI (WiX, separate job) and macOS pkg notarization are not
+# produced here; they ship from the tagged release workflow.
+# TODO(§7.1): `nurtuo-control-plane` is `bun build --compile` in its own job,
+# versioned with this runtime. It is not part of this goreleaser config.
 version: 2
 project_name: nurtuo
+snapshot:
+  # SemVer-shaped so nfpm accepts the dry-run version. Nothing is published.
+  version_template: "{{ .Version }}-SNAPSHOT-{{ .ShortCommit }}"
 builds:
   - id: nurtuo
     dir: core/runtime
@@ -25,14 +37,18 @@ archives:
 checksum:
   name_template: checksums.txt
 sboms:
-  - artifacts: archive        # Syft, SPDX JSON
+  - id: archives
+    artifacts: archive # Syft, SPDX JSON (docs/ARCHITECTURE.md §7.1)
+    documents:
+      - "{{ .ArtifactName }}.spdx.json"
 signs:
-  - cmd: cosign               # Sigstore keyless (GitHub OIDC)
+  - cmd: cosign # Sigstore keyless (GitHub OIDC). Skipped in snapshot mode.
     signature: "${artifact}.sigstore.json"
     args: ["sign-blob", "--bundle=${signature}", "${artifact}", "--yes"]
     artifacts: checksum
 nfpms:
   - package_name: nurtuo
+    description: Nurtuo runtime
     formats: [deb, rpm]
     license: AGPL-3.0-only
     maintainer: Nurtuo <contact@nurtuo.com>

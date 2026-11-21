@@ -1,0 +1,98 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Snapshot dry-run of the nurtuo runtime release (docs/ARCHITECTURE.md §7.1).
+# Built: 6 targets (linux/windows/darwin × amd64/arm64), CGO_ENABLED=0,
+# -trimpath, checksums, Syft SPDX SBOMs, deb/rpm.
+# TODO(§7.1): cosign keyless signing is skipped (`make snapshot` passes
+# --skip=sign). MSI (WiX), macOS notarization, and `bun build --compile` of
+# nurtuo-control-plane belong to the tagged release, not this dry-run.
+name: release-snapshot
+on:
+  pull_request:
+    paths:
+      - ".goreleaser*"
+      - ".goreleaser*/**"
+      - "Makefile"
+      - "core/runtime/**"
+      - ".github/workflows/release-snapshot.yml"
+  schedule:
+    - cron: "0 4 * * *" # nightly 04:00 UTC
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: write
+concurrency:
+  group: release-snapshot-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  snapshot:
+    name: snapshot
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: core/runtime/go.mod
+
+      - name: Install GoReleaser
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          version: v2.20.3
+          install-only: true
+
+      - name: Install Syft
+        run: |
+          set -euo pipefail
+          version=1.57.2
+          case "$(uname -m)" in
+            x86_64) arch=amd64 ;;
+            aarch64) arch=arm64 ;;
+            *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+          archive="syft_${version}_linux_${arch}.tar.gz"
+          mkdir -p "$HOME/.local/bin"
+          curl -sSfL "https://github.com/anchore/syft/releases/download/v${version}/${archive}" -o "/tmp/${archive}"
+          tar -xzf "/tmp/${archive}" -C "$HOME/.local/bin" syft
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/syft" version
+
+      - name: Snapshot release
+        run: make snapshot
+
+      - name: Check snapshot artifacts
+        run: |
+          set -euo pipefail
+          test -f dist/checksums.txt
+          archives=$(find dist \( -name 'nurtuo_*.tar.gz' -o -name 'nurtuo_*.zip' \) ! -name '*.spdx.json' | wc -l)
+          sboms=$(find dist -name 'nurtuo_*.spdx.json' | wc -l)
+          debs=$(find dist -name 'nurtuo_*.deb' | wc -l)
+          rpms=$(find dist -name 'nurtuo_*.rpm' | wc -l)
+          echo "archives=${archives} sboms=${sboms} debs=${debs} rpms=${rpms}"
+          find dist -maxdepth 1 -type f -printf '%f\n' | sort
+          test "${archives}" -eq 6
+          test "${sboms}" -eq 6
+          test "${debs}" -eq 2
+          test "${rpms}" -eq 2
+          for os in linux darwin; do
+            for arch in amd64 arm64; do
+              test -n "$(find dist -name "nurtuo_*_${os}_${arch}.tar.gz" ! -name '*.spdx.json')"
+            done
+          done
+          for arch in amd64 arm64; do
+            test -n "$(find dist -name "nurtuo_*_windows_${arch}.zip" ! -name '*.spdx.json')"
+          done
+          sbom=$(find dist -name 'nurtuo_*.spdx.json' -print -quit)
+          grep -q '"spdxVersion"' "$sbom"
+          grep -q 'SPDX-' "$sbom"
+
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: nurtuo-snapshot-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
