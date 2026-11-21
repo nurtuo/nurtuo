@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Release of the `nurtuo` runtime binary. Control plane (bun --compile) and bridges have their own jobs.
 #
-# `make snapshot` is the dry-run (`goreleaser release --snapshot --clean`).
+# `make snapshot` is the dry-run (`goreleaser release --snapshot --clean --skip=sign`).
 # It builds the six runtime targets below, checksums, and Syft SPDX SBOMs.
 # TODO(§7.1): snapshot mode skips cosign keyless signing (`--skip=sign` in the
 # Makefile). Real tags sign checksums with cosign via GitHub OIDC.
