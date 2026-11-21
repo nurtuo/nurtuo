@@ -2,6 +2,10 @@
 // Control plane entry point. Services: component repo (Postgres), packaging, deploy and desired
 // state, runtime gateway (Connect/gRPC, runtimes dial out), telemetry ingest, public API, MCP host.
 // Shipped as one executable via `bun build --compile` (Node.js as fallback runtime).
-import { MCP_TOOLS_V1 } from "@nurtuo/mcp";
-
-console.log(`nurtuo-control-plane: not implemented yet (MCP tools planned: ${MCP_TOOLS_V1.join(", ")})`);
+export * from "./domain.js";
+export type { Repository } from "./repository.js";
+export { MemoryRepository } from "./memory-repository.js";
+export { PgRepository, migrate, type Db } from "./pg-repository.js";
+export { createHandler, createHttpServer, digestOf, canonicalJson, type HandlerOptions } from "./api.js";
+export { Gateway, createGatewayServer, runtimeIdFromCert, type GatewayOptions } from "./gateway.js";
+export * as auth from "./auth/index.js";
