@@ -39,4 +39,19 @@ make bootstrap   # pinned toolchain via mise, pnpm install, go work sync
 make dev         # local stack: Postgres, control plane, canvas, runtime
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Without `make` (PowerShell steps, required `protoc-gen-go` and `protoc-gen-go-grpc` versions, C
+compiler for `-race`) see [docs/getting-started.md](docs/getting-started.md). Note that `nurtuo run`
+is not implemented yet, so `make dev` does not work end to end.
+
+## Documentation
+
+Start at the [documentation index](docs/README.md):
+
+- [Getting started](docs/getting-started.md), [concepts](docs/concepts.md),
+  [flow reference](docs/flow-reference.md), [flow validation rules](docs/flow-validation.md)
+- Connectors: [http](docs/connectors/http.md), [sftp](docs/connectors/sftp.md),
+  [postgres](docs/connectors/postgres.md), [nats](docs/connectors/nats.md);
+  [writing a connector](docs/connector-authoring.md)
+- [Operations](docs/operations.md), [security](docs/security.md), [performance](docs/perf.md)
+- [Architecture](docs/ARCHITECTURE.md) and [decision records](docs/adr/0001-monorepo-license-split.md)
+- [CONTRIBUTING.md](CONTRIBUTING.md)
