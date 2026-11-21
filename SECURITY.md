@@ -17,4 +17,4 @@ release and the previous one are supported.
 ## Release integrity
 
 Release binaries and bridge artifacts are signed with Sigstore cosign (keyless) and ship with
-an SPDX SBOM. Verify before installing; the runtime verifies bridge signatures before starting them.
+an SPDX SBOM. Verify them yourself before installing (`cosign verify-blob`). The runtime does **not** verify bridge signatures: it starts whatever bridge command the runtime configuration names, with the privileges of the runtime process, so only configure bridge executables whose provenance you have checked. Automatic download and signature verification of bridges is planned, not implemented. (Signed deployment bundles are different: the runtime verifies those against `trusted_keys`, see docs/security.md.)

@@ -13,8 +13,8 @@ jobs:
   go:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: core/runtime/go.mod
           # No root go.sum: the workspace has one sum per module (go.work).
@@ -29,23 +29,82 @@ jobs:
           for t in linux/amd64 linux/arm64 windows/amd64 windows/arm64 darwin/amd64 darwin/arm64; do
             CGO_ENABLED=0 GOOS=${t%/*} GOARCH=${t#*/} go build -o /dev/null ./core/runtime/cmd/nurtuo
           done
-      - uses: golangci/golangci-lint-action@v8
+      - uses: golangci/golangci-lint-action@v9
         with: { args: "./core/runtime/... ./sdk/go/... ./connectors/..." }
+
+  # Latency budget: alone on the runner (-p 1, no -race), median p99 of 3 measurements; see docs/perf.md.
+  perf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: core/runtime/go.mod
+          # No root go.sum: the workspace has one sum per module (go.work).
+          cache-dependency-path: |
+            core/runtime/go.sum
+            sdk/go/go.sum
+            connectors/go.sum
+      - name: TestPerfBudget
+        working-directory: core/runtime
+        env: { NURTUO_PERF: "1" }
+        run: go test -p 1 -count=1 -v -run TestPerfBudget ./internal/bench
 
   ts:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with: { node-version: 24, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm turbo run lint typecheck build test
+      - name: docs (generated flow reference, example flows, links)
+        run: |
+          node scripts/gen-flow-reference.mjs --validate --check
+          node scripts/check-docs-links.mjs
+          node scripts/check-example-operations.mjs
+
+  bridge-python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with: { python-version: "3.12" }
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: core/runtime/go.mod
+          # No root go.sum: the workspace has one sum per module (go.work).
+          cache-dependency-path: |
+            core/runtime/go.sum
+            sdk/go/go.sum
+            connectors/go.sum
+      - run: pip install -e "bridges/python[dev]"
+      - run: python bridges/python/scripts/gen_proto.py --check
+      - run: ruff check bridges/python
+      # mypy reads its config (overrides for the partially typed grpc/protobuf) from bridges/python/pyproject.toml.
+      - run: mypy src
+        working-directory: bridges/python
+      - run: pytest bridges/python
+      # launcher against the real Python example through contracttest.Run (skipped without NURTUO_TEST_PYTHON)
+      - run: go test -race -run 'Python' -v github.com/nurtuo/nurtuo/connectors/bridge
+        env: { NURTUO_TEST_PYTHON: python }
+
+  bridge-dotnet:
+    runs-on: ubuntu-latest
+    # Non-blocking until the proto message `Descriptor` is renamed: protoc's C# output gives every
+    # message class a static `Descriptor` property, so a message named Descriptor does not compile (CS0542).
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with: { dotnet-version: "8.0.x" }
+      - run: dotnet test bridges/dotnet/Nurtuo.Bridge.Tests
 
   proto:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { fetch-depth: 0 }
       - uses: bufbuild/buf-action@v1
         with:
@@ -61,8 +120,8 @@ jobs:
   licenses:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: core/runtime/go.mod
           # No root go.sum: the workspace has one sum per module (go.work).
@@ -70,8 +129,8 @@ jobs:
             core/runtime/go.sum
             sdk/go/go.sum
             connectors/go.sum
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with: { node-version: 24, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - name: dependency direction + SPDX headers
