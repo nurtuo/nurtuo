@@ -1,0 +1,54 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# Launcher for the Nurtuo JVM bridge (Linux/macOS).
+#
+#   nurtuo-bridge [--connector ID] [--listen unix:/path.sock|tcp:127.0.0.1:0] [--plugin-dir DIR] ...
+#
+# Environment:
+#   NURTUO_BRIDGE_JAVA        java executable to use (default: bundled jre/, JAVA_HOME, then PATH)
+#   NURTUO_BRIDGE_JAVA_OPTS   extra JVM options (default: -Xmx512m); e.g. -Djava.library.path=/opt/sap
+#   NURTUO_BRIDGE_PLUGIN_DIR  extra plugin dirs (path-separated); $APP_HOME/plugins is always used
+#   NURTUO_BRIDGE_TOKEN       shared secret clients must present (set by the runtime for tcp:)
+#
+# stdout carries only the NURTUO-BRIDGE handshake line; everything else goes to stderr.
+set -eu
+
+# Resolve APP_HOME (the directory containing bin/), following symlinks.
+self="$0"
+while [ -h "$self" ]; do
+  link=$(readlink "$self")
+  case "$link" in
+    /*) self="$link" ;;
+    *) self="$(dirname "$self")/$link" ;;
+  esac
+done
+APP_HOME=$(cd "$(dirname "$self")/.." && pwd -P)
+
+if [ -n "${NURTUO_BRIDGE_JAVA:-}" ]; then
+  JAVA="$NURTUO_BRIDGE_JAVA"
+elif [ -x "$APP_HOME/jre/bin/java" ]; then
+  JAVA="$APP_HOME/jre/bin/java"
+elif [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ]; then
+  JAVA="$JAVA_HOME/bin/java"
+elif command -v java >/dev/null 2>&1; then
+  JAVA=java
+else
+  echo "nurtuo-bridge: no Java runtime found (need Java 17+); set NURTUO_BRIDGE_JAVA or JAVA_HOME" >&2
+  exit 1
+fi
+
+JAR="$APP_HOME/lib/nurtuo-bridge.jar"
+if [ ! -f "$JAR" ]; then
+  echo "nurtuo-bridge: $JAR not found" >&2
+  exit 1
+fi
+
+if [ -d "$APP_HOME/plugins" ]; then
+  set -- --plugin-dir "$APP_HOME/plugins" "$@"
+fi
+
+# exec: the JVM replaces this shell, so SIGTERM from the supervisor reaches it directly and
+# triggers the graceful shutdown (health NOT_SERVING, drain in-flight calls, close connector).
+# shellcheck disable=SC2086
+exec "$JAVA" ${NURTUO_BRIDGE_JAVA_OPTS:--Xmx512m} -XX:+ExitOnOutOfMemoryError \
+  -jar "$JAR" "$@"
