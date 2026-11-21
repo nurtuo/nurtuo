@@ -147,6 +147,9 @@ func normalizeValue(v any) any {
 	}
 }
 
+// sqlStateReadOnlyTx is read_only_sql_transaction, raised when a write runs in a READ ONLY transaction.
+const sqlStateReadOnlyTx = "25006"
+
 // MapError maps a database or driver error to a document status. Business-level rejections
 // (syntax, data, constraint, permission classes) are APPLICATION_ERROR; connection, resource,
 // shutdown and context errors are FAILURE. Messages never contain the password.
@@ -157,6 +160,11 @@ func MapError(err error, secrets ...string) (connectorv1.DocumentStatus, string)
 	var pe *pgconn.PgError
 	if errors.As(err, &pe) {
 		msg := fmt.Sprintf("%s (SQLSTATE %s)", pe.Message, pe.Code)
+		if pe.Code == sqlStateReadOnlyTx {
+			// a write in a QUERY step; fixed message, no server-provided detail
+			return connectorv1.DocumentStatus_DOCUMENT_STATUS_APPLICATION_ERROR,
+				"write rejected: QUERY runs in a read-only transaction (SQLSTATE " + sqlStateReadOnlyTx + ")"
+		}
 		if len(pe.Code) >= 2 {
 			switch pe.Code[:2] {
 			case "22", "23", "42", "21", "28", "2B", "2D", "3D", "3F", "44", "P0":

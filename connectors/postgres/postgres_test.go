@@ -243,4 +243,22 @@ func TestLiveRoundTrip(t *testing.T) {
 	if r := res["0"]; r.Status != connectorv1.DocumentStatus_DOCUMENT_STATUS_SUCCESS || len(r.OutputDocumentIds) != 1 {
 		t.Fatalf("query: %v", res)
 	}
+
+	// QUERY is READ ONLY (enforced by the database): a write is rejected with APPLICATION_ERROR,
+	// with and without the transaction option, and nothing is written.
+	for _, tx := range []bool{false, true} {
+		res = run(connectorv1.OperationType_OPERATION_TYPE_QUERY, tx, `{"sql":"insert into nurtuo_conn_test values (2, 'x')"}`)
+		r := res["0"]
+		if r.Status != connectorv1.DocumentStatus_DOCUMENT_STATUS_APPLICATION_ERROR || !strings.Contains(r.Message, "25006") {
+			t.Fatalf("INSERT in QUERY (tx=%v) must be rejected, got %v", tx, res)
+		}
+	}
+	if err := p.QueryRow(ctx, "select count(*) from nurtuo_conn_test").Scan(&n); err != nil || n != 1 {
+		t.Fatalf("QUERY wrote data: n=%d err=%v", n, err)
+	}
+	// the other operations keep working
+	res = run(connectorv1.OperationType_OPERATION_TYPE_UPDATE, false, `{"sql":"update nurtuo_conn_test set name='b' where id=1"}`)
+	if res["0"].Status != connectorv1.DocumentStatus_DOCUMENT_STATUS_SUCCESS {
+		t.Fatalf("UPDATE must still work: %v", res)
+	}
 }

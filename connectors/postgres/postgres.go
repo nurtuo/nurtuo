@@ -10,11 +10,15 @@
 //
 // SECURITY: by design the input document carries arbitrary SQL that is executed as-is with the
 // privileges of the configured database user. Values are bound as parameters, but the statement
-// text itself is not restricted (no read-only mode, no allow-list). Anyone who can author or
-// feed documents to a step using this connector can run any statement that user may run,
-// including DDL, DELETE and COPY ... PROGRAM-class features if granted. Mitigate by connecting
-// with a least-privilege (ideally read-only) database role and by controlling who may build
-// flows that use the connection.
+// text itself is not restricted (no allow-list). QUERY runs inside a READ ONLY transaction
+// enforced by the database, so a write attempted in a QUERY step is rejected (SQLSTATE 25006,
+// APPLICATION_ERROR for that document). This is a guard against accidental writes, not a
+// complete boundary: it does not limit what data the user may read, it does not apply to
+// CREATE/UPDATE/DELETE/EXECUTE (those run any statement the user may run, including DDL and
+// COPY ... PROGRAM-class features if granted), and a statement that deliberately switches the
+// transaction back to read-write may defeat it. Connect with a dedicated least-privilege
+// database account (a read-only role for QUERY steps) and control who may build flows that use
+// the connection.
 package postgres
 
 import (
@@ -339,7 +343,12 @@ recv:
 	if !tx {
 		for _, d := range docs {
 			sctx, cancel := context.WithTimeout(ctx, timeout)
-			o := runStatement(sctx, pool, d, isQuery, maxRows, cfg.Password)
+			var o docOutcome
+			if isQuery {
+				o = runReadOnly(sctx, pool, d, maxRows, cfg.Password)
+			} else {
+				o = runStatement(sctx, pool, d, false, maxRows, cfg.Password)
+			}
 			cancel()
 			if err := send(d, o); err != nil {
 				return err
@@ -355,7 +364,7 @@ recv:
 			outcomes[i] = docOutcome{status: connectorv1.DocumentStatus_DOCUMENT_STATUS_FAILURE, message: msg}
 		}
 	}
-	t, err := pool.Begin(ctx)
+	t, err := pool.BeginTx(ctx, txOptions(isQuery))
 	if err != nil {
 		_, msg := MapError(err, cfg.Password)
 		fail(-1, "transaction not started: "+msg)
@@ -389,6 +398,36 @@ recv:
 		}
 	}
 	return nil
+}
+
+// readOnlyTx is the transaction mode used for every QUERY: the database itself rejects writes.
+var readOnlyTx = pgx.TxOptions{AccessMode: pgx.ReadOnly}
+
+// txOptions returns the transaction options for an operation: READ ONLY for QUERY, the server
+// default otherwise.
+func txOptions(isQuery bool) pgx.TxOptions {
+	if isQuery {
+		return readOnlyTx
+	}
+	return pgx.TxOptions{}
+}
+
+// beginner is satisfied by *pgxpool.Pool (the seam used by unit tests).
+type beginner interface {
+	BeginTx(ctx context.Context, opts pgx.TxOptions) (pgx.Tx, error)
+}
+
+// runReadOnly runs one document in its own READ ONLY transaction and always rolls it back (a
+// QUERY must not change anything, so there is nothing to commit).
+func runReadOnly(ctx context.Context, b beginner, d *inDoc, maxRows int, secret string) docOutcome {
+	t, err := b.BeginTx(ctx, txOptions(true))
+	if err != nil {
+		st, msg := MapError(err, secret)
+		return docOutcome{status: st, message: "transaction not started: " + msg}
+	}
+	o := runStatement(ctx, t, d, true, maxRows, secret)
+	_ = t.Rollback(context.WithoutCancel(ctx))
+	return o
 }
 
 // querier is satisfied by *pgxpool.Pool and pgx.Tx.

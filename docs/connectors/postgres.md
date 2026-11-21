@@ -7,26 +7,46 @@ Version `0.1.0`, host `go-native`, `transactional: true`, `maxBatchSize: 1000`, 
 
 Status: tested against a PostgreSQL server in the connector tests and registered in the `nurtuo` binary, so a deployed flow can use it through a bundle connection (secrets resolved from the runtime secret store, see [operations.md](../operations.md)). Not run against a production deployment.
 
-## Security warning: arbitrary SQL
+## Security: arbitrary SQL, read-only QUERY
 
 **The SQL text of every statement comes from the input document and is executed as is with the
-privileges of the configured database user.** There is no read-only mode and no allow-list. Values
-are bound as parameters, but the statement text is not restricted. Anyone who can author a flow
-that uses a connection, or can feed documents into such a step, can run any statement that
-database user may run: `DELETE`, `DROP`, DDL, and, if the role is allowed, server-side features
-such as `COPY ... PROGRAM`. The operation type (`QUERY`, `CREATE`, ...) is not checked against the
-SQL: all operations run the text you send.
+privileges of the configured database user.** There is no allow-list. Values are bound as
+parameters, but the statement text is not restricted. The operation type (`QUERY`, `CREATE`, ...)
+is not checked against the SQL.
 
-Mitigation: connect with a least-privilege role (read-only where possible, no superuser, no
-`pg_execute_server_program`), use a dedicated database or schema, and control who may build flows
-and who may call HTTP listeners that feed this step. Never build the SQL text from untrusted
-input; put untrusted values in `params`.
+**`QUERY` is read-only, enforced by the database.** Every `QUERY` document runs inside a
+`READ ONLY` transaction (pgx `TxOptions{AccessMode: ReadOnly}`, rolled back at the end; with the
+`transaction` option all documents share one read-only transaction). A write attempted in a
+`QUERY` step (`INSERT`, `UPDATE`, `DELETE`, DDL, ...) is rejected by PostgreSQL with SQLSTATE
+`25006` (`read_only_sql_transaction`) and that document is reported as `APPLICATION_ERROR` with
+the message `write rejected: QUERY runs in a read-only transaction (SQLSTATE 25006)`, without
+connection details. `CREATE`, `UPDATE`, `DELETE`, `EXECUTE` and the `transaction` option behave as
+before.
+
+**What this does not protect against:**
+
+- Reads. A `QUERY` can read everything the database user may read.
+- `CREATE`, `UPDATE`, `DELETE` and `EXECUTE` steps still run any statement the user may run,
+  including `DELETE`, `DROP`, DDL and, if the role is allowed, server-side features such as
+  `COPY ... PROGRAM`.
+- A hostile flow author. The read-only mode is a transaction setting of the session, not a
+  privilege; a statement that switches the transaction back to read-write may defeat it. It
+  protects against accidental or injected writes in a `QUERY` step, not against someone who may
+  author arbitrary SQL. The live-database test that asserts an `INSERT` in a `QUERY` is rejected
+  only runs when `NURTUO_TEST_POSTGRES_URL` is set; it has not been run against a real server yet.
+
+Recommended: use a **dedicated least-privilege database account per purpose**. Give `QUERY`-only
+flows a role that has only `SELECT` on the tables it needs (a real read-only role is the actual
+boundary; the read-only transaction is defence in depth), no superuser, no
+`pg_execute_server_program`; use a separate account with write grants for steps that write; use a
+dedicated database or schema; control who may build flows and who may call HTTP listeners that feed
+this step. Never build the SQL text from untrusted input; put untrusted values in `params`.
 
 ## Operations
 
 | Operation | Behaviour |
 |---|---|
-| `QUERY` | runs the statement; one output document `<id>/<n>` per row, a JSON object `{column: value}` |
+| `QUERY` | runs the statement in a read-only transaction (writes are rejected, `APPLICATION_ERROR`); one output document `<id>/<n>` per row, a JSON object `{column: value}` |
 | `CREATE`, `UPDATE`, `DELETE` | runs the statement; rows are counted, not emitted (including `RETURNING` rows) |
 | `EXECUTE` with custom type `STATEMENT` | same as above for arbitrary statements |
 
