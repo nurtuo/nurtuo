@@ -24,3 +24,6 @@ Unicode-3.0
 CC0-1.0
 BlueOak-1.0.0
 Python-2.0
+# go-licenses v2 names the license of github.com/xi2/xz (via embedded-postgres) "XZ":
+# the files are in the public domain ("You can do whatever you want with these files").
+XZ
