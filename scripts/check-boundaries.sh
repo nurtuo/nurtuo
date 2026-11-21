@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
-# Fails if Apache-2.0 code depends on AGPL code (core/), or if SPDX headers do not match the directory.
+# Fails if Apache-2.0 code depends on AGPL code (core/), if SPDX headers do not match
+# the directory, or if a Go module LICENSE copy has drifted from its source.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 fail=0
@@ -36,5 +37,25 @@ while IFS= read -r f; do
     echo "ERROR: $f missing 'SPDX-License-Identifier: $want'"; fail=1
   fi
 done < <(git ls-files '*.go' '*.ts' '*.tsx' '*.proto' 2>/dev/null || find . -name '*.go' -o -name '*.ts' -o -name '*.proto' | sed 's#^\./##' | grep -v -e node_modules -e /dist/)
+# 5. Go module roots keep a regular-file copy of the boundary LICENSE.
+#    Symlinks are not enough: module zips omit them, and a Windows checkout
+#    without core.symlinks stores the link text instead of the license.
+check_license_copy() {
+  local src=$1 dst=$2
+  if [ ! -f "$src" ]; then
+    echo "ERROR: missing license source $src"; fail=1; return
+  fi
+  if [ ! -e "$dst" ]; then
+    echo "ERROR: $dst must be a copy of $src"; fail=1; return
+  fi
+  if [ -L "$dst" ]; then
+    echo "ERROR: $dst must be a regular file copy of $src, not a symlink"; fail=1; return
+  fi
+  if ! cmp -s "$src" "$dst"; then
+    echo "ERROR: $dst differs from $src"; fail=1
+  fi
+}
+check_license_copy core/LICENSE core/runtime/LICENSE
+check_license_copy sdk/LICENSE sdk/go/LICENSE
 [ $fail -eq 0 ] && echo "license boundaries OK"
 exit $fail
