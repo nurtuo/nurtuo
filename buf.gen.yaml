@@ -16,7 +16,8 @@ plugins:
     out: sdk/go/gen
     opt: paths=source_relative
   # TypeScript (Connect-ES v2 / protobuf-es, Apache-2.0); run after `pnpm install`.
-  - local: sdk/ts/proto/node_modules/.bin/protoc-gen-es
+  # Invoked through pnpm so it also works on Windows (.cmd shims cannot be started by path).
+  - local: [pnpm, --silent, --filter, "@nurtuo/proto", exec, protoc-gen-es]
     out: sdk/ts/proto/src/gen
     opt: target=ts
     include_imports: true

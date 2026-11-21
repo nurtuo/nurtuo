@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// Nurtuo connector contract v1 (draft).
+// Nurtuo connector contract v1.
 // One contract for native Go connectors, bridged connectors (JVM, Python, .NET) and WASM connectors.
 // Transport for bridges: gRPC over a Unix domain socket (Linux/macOS) or a named pipe (Windows),
 // started and supervised by the runtime. See docs/ARCHITECTURE.md and reference §5.6.
+//
+// Compatibility: additive changes only within v1 (new fields, enum values, RPCs); anything else
+// needs a nurtuo.connector.v2 package. Enforced by `buf breaking`.
 syntax = "proto3";
 
 package nurtuo.connector.v1;
@@ -17,10 +20,24 @@ service ConnectorService {
   rpc Browse(BrowseRequest) returns (BrowseResponse);
   // Execute one operation over a batch of documents. Payloads are streamed in chunks;
   // a result is returned per document (SUCCESS | APPLICATION_ERROR | FAILURE).
+  //
+  // Stream protocol:
+  //   1. The client sends exactly one ExecuteStart as the first message.
+  //   2. The client sends zero or more documents as DocumentChunk messages. Chunks of one
+  //      document share a document_id and the last one has last=true; documents are not
+  //      interleaved.
+  //   3. The client sends ExecuteEnd and half-closes the stream.
+  //   4. For every input document the server sends exactly one DocumentResult (a per-document
+  //      error is a result, not a gRPC error), plus any output DocumentChunks, then closes the
+  //      stream with an OK status. A non-OK gRPC status means the whole batch failed for a
+  //      technical reason; documents without a result are treated as FAILURE.
   rpc Execute(stream ExecuteRequest) returns (stream ExecuteResponse);
   // "Test connection" with a redacted diagnostic.
   rpc Test(TestRequest) returns (TestResponse);
   // Listener operations: the connector pushes inbound documents; the runtime acks per document.
+  // The client sends ListenStart first, then one Ack per received document; the server streams
+  // inbound documents until the client cancels. Optional: connectors without listeners return
+  // UNIMPLEMENTED.
   rpc Listen(stream ListenRequest) returns (stream ListenResponse);
 }
 
