@@ -109,7 +109,8 @@ test("api tokens: bearer auth, hashed at rest, expiry, revocation, last-used", a
   const raw = j(c).token as string;
   assert.match(raw, /^nrt_[0-9a-f]{12}_[A-Za-z0-9_-]{43}$/);
   const rec = (await authRepo.getToken(j(c).id))!;
-  assert.ok(!JSON.stringify(rec).includes(raw.split("_")[2]!), "secret is not stored");
+  // The secret is base64url and may itself contain "_", so take everything after "nrt_<prefix>_".
+  assert.ok(!JSON.stringify(rec).includes(raw.slice("nrt_".length + 12 + 1)), "secret is not stored");
   assert.match(rec.hash, /^[0-9a-f]{64}$/);
   assert.equal(j(c).hash, undefined);
   assert.equal(rec.lastUsedAt, null);
