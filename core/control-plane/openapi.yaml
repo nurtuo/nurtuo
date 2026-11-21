@@ -1,0 +1,298 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+openapi: 3.0.3
+info:
+  title: Nurtuo control plane API
+  version: 0.1.0
+  description: |
+    Every operation requires authentication unless it declares `security: []`. Credentials are either an
+    API token (`Authorization: Bearer nrt_...`) or a browser session cookie (mutating requests must also
+    send `X-Nurtuo-Csrf`). Workspace-scoped operations outside `/v1/workspaces/{ws}/...` select the
+    workspace with `X-Nurtuo-Workspace` (API tokens are bound to one workspace). 401 means missing or
+    invalid credentials, 403 means authenticated but not permitted. See docs/auth.md.
+  license: { name: AGPL-3.0-only, url: "https://www.gnu.org/licenses/agpl-3.0.html" }
+servers:
+  - url: http://localhost:8080
+security:
+  - bearerAuth: []
+  - cookieAuth: []
+paths:
+  /v1/components:
+    get:
+      operationId: listComponents
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/ComponentList" } } } }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+    post:
+      operationId: createComponent
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ComponentCreate" } } } }
+      responses:
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/Component" } } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /v1/components/{id}:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      operationId: getComponent
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Component" } } } }, "404": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+    patch:
+      operationId: updateComponent
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { description: { type: string } } } } } }
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Component" } } } }, "404": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+    delete:
+      operationId: deleteComponent
+      description: Refused with 409 when the component has revisions.
+      responses: { "204": { description: Deleted }, "404": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+  /v1/components/{id}/revisions:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      operationId: listRevisions
+      responses: { "200": { description: OK, content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: "#/components/schemas/Revision" } } } } } } }, "404": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+    post:
+      operationId: createRevision
+      description: Stores an immutable revision; the number is assigned by the server and the digest is sha256 of the canonical JSON.
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [content], properties: { content: { type: object, description: Opaque component document }, digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$", description: "Optional externally computed digest (e.g. of a signed bundle); defaults to sha256 of the canonical JSON" } } } } } }
+      responses: { "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/Revision" } } } }, "400": { $ref: "#/components/responses/Error" }, "404": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+  /v1/components/{id}/revisions/{number}:
+    parameters:
+      - { $ref: "#/components/parameters/Id" }
+      - { name: number, in: path, required: true, schema: { type: integer, minimum: 1 } }
+    get:
+      operationId: getRevision
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Revision" } } } }, "404": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+  /v1/runtimes:
+    get:
+      operationId: listRuntimes
+      parameters: [ { name: environment, in: query, schema: { type: string } } ]
+      responses: { "200": { description: OK, content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: "#/components/schemas/Runtime" } } } } } } }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+    post:
+      operationId: registerRuntime
+      description: Registers or refreshes a runtime (normally called by the gateway on hello).
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [id, name, environment], properties: { id: { type: string }, name: { type: string }, environment: { type: string }, version: { type: string }, labels: { type: object, additionalProperties: { type: string } } } } } } }
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Runtime" } } } }, "400": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+  /v1/runtimes/{id}:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      operationId: getRuntime
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Runtime" } } } }, "404": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+  /v1/runtimes/{id}/desired-state:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      operationId: getDesiredState
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/DesiredState" } } } }, "404": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+  /v1/runtimes/{id}/deployments/{componentId}:
+    parameters:
+      - { $ref: "#/components/parameters/Id" }
+      - { name: componentId, in: path, required: true, schema: { type: string } }
+    delete:
+      operationId: undeployComponent
+      description: Removes the component from the runtime desired state (bumps the generation) and returns the pending deployment record.
+      responses: { "202": { description: Accepted, content: { application/json: { schema: { $ref: "#/components/schemas/Deployment" } } } }, "404": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+  /v1/deployments:
+    get:
+      operationId: listDeployments
+      parameters: [ { name: runtimeId, in: query, schema: { type: string } }, { name: componentId, in: query, schema: { type: string } } ]
+      responses: { "200": { description: OK, content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: "#/components/schemas/Deployment" } } } } } } }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+    post:
+      operationId: deploy
+      description: Atomically bumps the runtime's desired-state generation, records a pending deployment and an outbox row.
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [componentId, runtimeId], properties: { componentId: { type: string }, runtimeId: { type: string }, revisionId: { type: string }, revision: { type: integer, description: Revision number; alternative to revisionId } } } } } }
+      responses:
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "202": { description: Accepted, content: { application/json: { schema: { type: object, properties: { deployment: { $ref: "#/components/schemas/Deployment" }, desiredState: { $ref: "#/components/schemas/DesiredState" } } } } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/deployments/{id}:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      operationId: getDeployment
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Deployment" } } } }, "404": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+  /v1/deployments/{id}/status:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    put:
+      operationId: reportDeploymentStatus
+      description: Status report from the runtime (via gateway).
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [status], properties: { status: { $ref: "#/components/schemas/DeploymentStatus" }, message: { type: string } } } } } }
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Deployment" } } } }, "400": { $ref: "#/components/responses/Error" }, "404": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+  /v1/auth/login:
+    post:
+      operationId: login
+      description: Password login. Sets the session cookie. Failed attempts are rate limited per IP (429) and lock the account after repeated failures (429 with Retry-After).
+      security: []
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [email, password], properties: { email: { type: string }, password: { type: string } } } } } }
+      responses:
+        "200": { description: Logged in, content: { application/json: { schema: { $ref: "#/components/schemas/LoginResult" } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "429": { $ref: "#/components/responses/Error" }
+  /v1/auth/logout:
+    post:
+      operationId: logout
+      responses: { "204": { description: Session revoked }, "400": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+  /v1/auth/me:
+    get:
+      operationId: me
+      responses: { "200": { description: OK }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+  /v1/auth/oidc/login:
+    get:
+      operationId: oidcLogin
+      description: Starts the OIDC authorization-code flow with PKCE (S256). Redirects to the IdP.
+      security: []
+      responses: { "302": { description: Redirect to the identity provider }, "404": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+  /v1/auth/oidc/callback:
+    get:
+      operationId: oidcCallback
+      security: []
+      parameters: [ { name: code, in: query, schema: { type: string } }, { name: state, in: query, schema: { type: string } } ]
+      responses: { "200": { description: Logged in, content: { application/json: { schema: { $ref: "#/components/schemas/LoginResult" } } } }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+  /v1/auth/saml/login:
+    get: { operationId: samlLogin, description: Not implemented (501). See docs/auth.md., security: [], responses: { "501": { $ref: "#/components/responses/NotImplemented" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } } }
+  /v1/auth/saml/acs:
+    post: { operationId: samlAcs, description: Not implemented (501). See docs/auth.md., security: [], responses: { "501": { $ref: "#/components/responses/NotImplemented" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } } }
+  /v1/auth/saml/metadata:
+    get: { operationId: samlMetadata, description: Not implemented (501). See docs/auth.md., security: [], responses: { "501": { $ref: "#/components/responses/NotImplemented" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } } }
+  /v1/scim/v2/Users:
+    get: { operationId: scimListUsers, description: Not implemented (501). See docs/auth.md., security: [], responses: { "501": { $ref: "#/components/responses/NotImplemented" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } } }
+    post: { operationId: scimCreateUser, description: Not implemented (501). See docs/auth.md., security: [], responses: { "501": { $ref: "#/components/responses/NotImplemented" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } } }
+  /v1/scim/v2/Users/{id}:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get: { operationId: scimGetUser, description: Not implemented (501). See docs/auth.md., security: [], responses: { "501": { $ref: "#/components/responses/NotImplemented" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } } }
+    put: { operationId: scimReplaceUser, description: Not implemented (501). See docs/auth.md., security: [], responses: { "501": { $ref: "#/components/responses/NotImplemented" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } } }
+    patch: { operationId: scimPatchUser, description: Not implemented (501). See docs/auth.md., security: [], responses: { "501": { $ref: "#/components/responses/NotImplemented" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } } }
+    delete: { operationId: scimDeleteUser, description: Not implemented (501). See docs/auth.md., security: [], responses: { "501": { $ref: "#/components/responses/NotImplemented" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } } }
+  /v1/scim/v2/Groups:
+    get: { operationId: scimListGroups, description: Not implemented (501). See docs/auth.md., security: [], responses: { "501": { $ref: "#/components/responses/NotImplemented" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } } }
+    post: { operationId: scimCreateGroup, description: Not implemented (501). See docs/auth.md., security: [], responses: { "501": { $ref: "#/components/responses/NotImplemented" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } } }
+  /v1/roles:
+    get:
+      operationId: listRoles
+      description: Built-in roles and the permissions matrix (resource:action).
+      responses: { "200": { description: OK }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+  /v1/workspaces:
+    get:
+      operationId: listWorkspaces
+      description: Workspaces the session user belongs to. Session users only.
+      responses: { "200": { description: OK }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+    post:
+      operationId: createWorkspace
+      description: Creates a workspace; the caller becomes its owner. Session users only.
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [slug, name], properties: { slug: { type: string, pattern: "^[a-z0-9][a-z0-9-]{1,62}$" }, name: { type: string } } } } } }
+      responses: { "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/Workspace" } } } }, "400": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+  /v1/workspaces/{ws}:
+    parameters: [ { $ref: "#/components/parameters/Ws" } ]
+    get:
+      operationId: getWorkspace
+      description: Non-members get 404, not 403, so workspace existence is not disclosed.
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Workspace" } } } }, "404": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+    patch:
+      operationId: updateWorkspace
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { name: { type: string } } } } } }
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Workspace" } } } }, "404": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+    delete:
+      operationId: deleteWorkspace
+      description: Owner only.
+      responses: { "204": { description: Deleted }, "404": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+  /v1/workspaces/{ws}/members:
+    parameters: [ { $ref: "#/components/parameters/Ws" } ]
+    get:
+      operationId: listMembers
+      responses: { "200": { description: OK }, "404": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+    post:
+      operationId: addMember
+      description: Adds a member (creating the account when the email is new and a password is supplied). A caller can only grant roles whose permissions it holds itself (403 role_escalation otherwise).
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [email, role], properties: { email: { type: string }, role: { $ref: "#/components/schemas/Role" }, password: { type: string, minLength: 12 }, displayName: { type: string } } } } } }
+      responses: { "201": { description: Added }, "200": { description: Role changed }, "400": { $ref: "#/components/responses/Error" }, "404": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+  /v1/workspaces/{ws}/members/{userId}:
+    parameters: [ { $ref: "#/components/parameters/Ws" }, { name: userId, in: path, required: true, schema: { type: string } } ]
+    patch:
+      operationId: updateMemberRole
+      description: Both the member's current role and the new role must be within the caller's own permissions. The last owner cannot be demoted (409).
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [role], properties: { role: { $ref: "#/components/schemas/Role" } } } } } }
+      responses: { "200": { description: OK }, "404": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+    delete:
+      operationId: removeMember
+      description: Revokes the member's API tokens in this workspace. The last owner cannot be removed (409).
+      responses: { "204": { description: Removed }, "404": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+  /v1/workspaces/{ws}/tokens:
+    parameters: [ { $ref: "#/components/parameters/Ws" } ]
+    get:
+      operationId: listTokens
+      description: Own tokens; all tokens of the workspace with token:revoke_any. The secret is never returned.
+      responses: { "200": { description: OK }, "404": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+    post:
+      operationId: createToken
+      description: Scopes must be a subset of the caller's own permissions (403 scope_exceeds_permissions). The plaintext token is returned once. Tokens created by tokens never outlive their parent.
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [name, scopes], properties: { name: { type: string }, scopes: { type: array, items: { type: string, example: "component:read" } }, expiresInSeconds: { type: integer, minimum: 60, maximum: 31536000 } } } } } }
+      responses: { "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/TokenCreated" } } } }, "400": { $ref: "#/components/responses/Error" }, "404": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+  /v1/workspaces/{ws}/tokens/{tokenId}:
+    parameters: [ { $ref: "#/components/parameters/Ws" }, { name: tokenId, in: path, required: true, schema: { type: string } } ]
+    delete:
+      operationId: revokeToken
+      description: Revoking another user's token needs token:revoke_any.
+      responses: { "204": { description: Revoked }, "404": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+  /v1/workspaces/{ws}/audit:
+    parameters: [ { $ref: "#/components/parameters/Ws" } ]
+    get:
+      operationId: queryAudit
+      description: Append-only audit log, newest first. Cursor pagination via nextCursor.
+      parameters:
+        - { name: actor, in: query, schema: { type: string } }
+        - { name: action, in: query, schema: { type: string, example: component.create } }
+        - { name: resource, in: query, schema: { type: string } }
+        - { name: resourceId, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: integer } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+        - { name: cursor, in: query, schema: { type: string } }
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/AuditPage" } } } }, "400": { $ref: "#/components/responses/Error" }, "404": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, description: "API token (nrt_...) or session JWT" }
+    cookieAuth: { type: apiKey, in: cookie, name: __Host-nurtuo_session, description: "Browser session. Mutating requests also need the X-Nurtuo-Csrf header." }
+  parameters:
+    Id: { name: id, in: path, required: true, schema: { type: string } }
+    Ws: { name: ws, in: path, required: true, description: Workspace id or slug, schema: { type: string } }
+  responses:
+    Unauthenticated:
+      description: Missing, invalid, expired or revoked credentials
+      headers: { WWW-Authenticate: { schema: { type: string } } }
+      content: { application/json: { schema: { $ref: "#/components/schemas/ErrorBody" } } }
+    Forbidden:
+      description: Authenticated but not permitted (missing permission, role escalation, wrong workspace, CSRF)
+      content: { application/json: { schema: { $ref: "#/components/schemas/ErrorBody" } } }
+    NotImplemented:
+      description: Planned feature, not implemented yet
+      content: { application/json: { schema: { $ref: "#/components/schemas/ErrorBody" } } }
+    Error:
+      description: Error
+      content: { application/json: { schema: { type: object, properties: { error: { type: object, properties: { code: { type: string }, message: { type: string } } } } } } }
+  schemas:
+    ErrorBody: { type: object, properties: { error: { type: object, properties: { code: { type: string }, message: { type: string } } } } }
+    Role: { type: string, enum: [owner, admin, editor, viewer, deployer, runtime] }
+    Workspace: { type: object, properties: { id: { type: string }, slug: { type: string }, name: { type: string }, createdAt: { type: string, format: date-time } } }
+    LoginResult: { type: object, properties: { user: { type: object }, csrfToken: { type: string }, expiresAt: { type: string, format: date-time } } }
+    TokenCreated: { type: object, properties: { id: { type: string }, name: { type: string }, prefix: { type: string }, scopes: { type: array, items: { type: string } }, expiresAt: { type: string, format: date-time }, token: { type: string, description: Shown once } } }
+    AuditEntry: { type: object, properties: { id: { type: string }, seq: { type: integer }, ts: { type: string, format: date-time }, workspaceId: { type: string, nullable: true }, actorType: { type: string, enum: [user, token, anonymous] }, actorId: { type: string, nullable: true }, action: { type: string }, resource: { type: string }, resourceId: { type: string, nullable: true }, beforeHash: { type: string, nullable: true }, afterHash: { type: string, nullable: true }, ip: { type: string, nullable: true }, requestId: { type: string }, status: { type: integer }, metadata: { type: object } } }
+    AuditPage: { type: object, properties: { items: { type: array, items: { $ref: "#/components/schemas/AuditEntry" } }, nextCursor: { type: string, nullable: true } } }
+    ComponentKind: { type: string, enum: [flow, map, connector, script] }
+    DeploymentStatus: { type: string, enum: [pending, running, failed, stopped] }
+    ComponentCreate:
+      type: object
+      required: [name]
+      properties: { name: { type: string, pattern: "^[a-z0-9][a-z0-9._-]*$" }, kind: { $ref: "#/components/schemas/ComponentKind" }, description: { type: string } }
+    Component:
+      type: object
+      properties: { id: { type: string }, name: { type: string }, kind: { $ref: "#/components/schemas/ComponentKind" }, description: { type: string }, createdAt: { type: string, format: date-time } }
+    ComponentList: { type: object, properties: { items: { type: array, items: { $ref: "#/components/schemas/Component" } } } }
+    Revision:
+      type: object
+      properties: { id: { type: string }, componentId: { type: string }, number: { type: integer }, digest: { type: string, example: "sha256:..." }, content: {}, createdAt: { type: string, format: date-time } }
+    Runtime:
+      type: object
+      properties: { id: { type: string }, name: { type: string }, environment: { type: string }, status: { type: string, enum: [online, offline] }, version: { type: string }, labels: { type: object, additionalProperties: { type: string } }, lastSeenAt: { type: string, format: date-time, nullable: true } }
+    DesiredState:
+      type: object
+      properties: { runtimeId: { type: string }, environment: { type: string }, generation: { type: integer }, items: { type: object, additionalProperties: { type: string }, description: componentId to revisionId }, updatedAt: { type: string, format: date-time } }
+    Deployment:
+      type: object
+      properties: { id: { type: string }, componentId: { type: string }, revisionId: { type: string }, runtimeId: { type: string }, environment: { type: string }, generation: { type: integer }, status: { $ref: "#/components/schemas/DeploymentStatus" }, message: { type: string }, createdAt: { type: string, format: date-time }, updatedAt: { type: string, format: date-time } }

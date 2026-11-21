@@ -7,12 +7,30 @@
   "private": true,
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist"],
+  "files": [
+    "dist",
+    "migrations",
+    "openapi.yaml"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "echo 'lint: TODO (eslint)'",
     "test": "node --test \"dist/**/*.test.js\""
   },
-  "dependencies": {"@nurtuo/flow-schema": "workspace:*", "@nurtuo/flow-validate": "workspace:*", "@nurtuo/proto": "workspace:*", "@nurtuo/mcp": "workspace:*", "@nurtuo/ai": "workspace:*"}
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.17.0",
+    "@connectrpc/connect": "^2.3.0",
+    "@connectrpc/connect-node": "^2.3.0",
+    "@nurtuo/ai": "workspace:*",
+    "@nurtuo/flow-schema": "workspace:*",
+    "@nurtuo/flow-validate": "workspace:*",
+    "@nurtuo/mcp": "workspace:*",
+    "@nurtuo/proto": "workspace:*",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@types/pg": "^8.23.1"
+  }
 }
