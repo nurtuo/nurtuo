@@ -57,5 +57,6 @@ check_license_copy() {
 }
 check_license_copy core/LICENSE core/runtime/LICENSE
 check_license_copy sdk/LICENSE sdk/go/LICENSE
+check_license_copy examples/LICENSE examples/connector-minimal/LICENSE
 [ $fail -eq 0 ] && echo "license boundaries OK"
 exit $fail
