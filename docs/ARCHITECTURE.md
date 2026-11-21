@@ -343,6 +343,18 @@ sequenceDiagram
 
 The runtime verifies cosign signatures of bundles and bridges before use.
 
+#### Snapshot dry-run
+
+`make snapshot` runs `goreleaser release --snapshot --clean --skip=sign` and
+writes artifacts to `dist/`. It builds the six `nurtuo` targets (`CGO_ENABLED=0`,
+`-trimpath`), checksums, a Syft SPDX SBOM per archive, and deb/rpm packages.
+Nothing is published. Needs GoReleaser v2 and Syft on `PATH` (see the README).
+
+TODO (§7.1), left for the tagged release: cosign keyless signing (GitHub OIDC),
+MSI via WiX, macOS pkg notarization, and `bun build --compile` of
+`nurtuo-control-plane`. CI runs this dry-run from
+`.github/workflows/release-snapshot.yml`.
+
 ### 7.2 CI (GitHub Actions, `.github/workflows/ci.yml`)
 
 | Job | Steps |

@@ -55,3 +55,38 @@ Start at the [documentation index](docs/README.md):
 - [Operations](docs/operations.md), [security](docs/security.md), [performance](docs/perf.md)
 - [Architecture](docs/ARCHITECTURE.md) and [decision records](docs/adr/0001-monorepo-license-split.md)
 - [CONTRIBUTING.md](CONTRIBUTING.md)
+
+## Release snapshot
+
+`make snapshot` builds the `nurtuo` runtime the way a release would and writes
+the result to `dist/`. It runs GoReleaser in snapshot mode
+(`goreleaser release --snapshot --clean --skip=sign`) for six targets — linux,
+windows, and darwin, each on amd64 and arm64 — with `CGO_ENABLED=0`,
+`-trimpath`, checksums, a Syft SPDX SBOM per archive, and deb/rpm packages.
+Nothing is published.
+
+Install [GoReleaser](https://goreleaser.com) v2 and [Syft](https://github.com/anchore/syft)
+on your `PATH`, then:
+
+```sh
+make snapshot
+```
+
+`make bootstrap` installs GoReleaser through mise. Install Syft yourself, for
+example:
+
+```sh
+curl -sSfL https://raw.githubusercontent.com/anchore/syft/v1.57.2/install.sh | sh -s -- -b "$HOME/.local/bin" v1.57.2
+```
+
+Snapshot mode leaves these for the tagged release (see
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §7.1):
+
+- cosign keyless signing (`make snapshot` passes `--skip=sign`)
+- MSI (WiX) and macOS notarization
+- `bun build --compile` of `nurtuo-control-plane`
+
+GitHub Actions runs the same target in
+[`.github/workflows/release-snapshot.yml`](.github/workflows/release-snapshot.yml)
+on pull requests that touch the release config, every night, and on manual
+dispatch. The workflow uploads `dist/`.
