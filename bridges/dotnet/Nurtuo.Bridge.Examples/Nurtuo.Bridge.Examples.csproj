@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- SPDX-License-Identifier: Apache-2.0 -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>nurtuo-bridge-dotnet-example</AssemblyName>
+    <RootNamespace>Nurtuo.Bridge.Examples</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Nurtuo.Bridge\Nurtuo.Bridge.csproj" />
+  </ItemGroup>
+</Project>

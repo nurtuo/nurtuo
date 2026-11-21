@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- SPDX-License-Identifier: Apache-2.0 -->
+  <PropertyGroup>
+    <AssemblyName>Nurtuo.Bridge</AssemblyName>
+    <RootNamespace>Nurtuo.Bridge</RootNamespace>
+    <Description>Nurtuo .NET connector bridge: host connectors written in C# over the gRPC connector contract.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="Grpc.AspNetCore" Version="2.71.0" />
+    <PackageReference Include="Grpc.AspNetCore.HealthChecks" Version="2.71.0" />
+    <PackageReference Include="Grpc.Tools" Version="2.71.0" PrivateAssets="All" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Stubs are generated from the one contract at build time (no generated code is committed).
+         "Both" also generates the client, which the tests use. -->
+    <Protobuf Include="..\..\..\proto\nurtuo\connector\v1\connector.proto"
+              ProtoRoot="..\..\..\proto"
+              GrpcServices="Both"
+              Link="Protos\nurtuo\connector\v1\connector.proto" />
+  </ItemGroup>
+</Project>
