@@ -1,6 +1,569 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // Package natsjs implements queue.QueueBackend on an embedded NATS JetStream server.
+//
+// Each queue is a stream "Q_<name>" (subject "nq.<name>") and a dead letter stream
+// "Q_<name>_DLQ" (subject "nqdlq.<name>"). Delivery is push-based (push consumers with a
+// deliver subject); there is no polling. Messages that exhaust MaxDeliveries (on Nak) or are
+// Term'd are copied to the DLQ stream and then terminated on the source stream.
+// Server-side exhaustion (ack-wait timeouts, handler crash) is caught through the
+// $JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES advisory and copied to the DLQ too (advisory.go).
 package natsjs
 
-// TODO(M1): embed nats-server, JetStream streams per queue, push consumers, DLQ via max deliveries.
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/nats-io/nats-server/v2/server"
+	"github.com/nats-io/nats.go"
+
+	"github.com/nurtuo/nurtuo/core/runtime/internal/queue"
+)
+
+const (
+	hdrKey         = "Nurtuo-Key"
+	hdrPropPref    = "Nurtuo-P-"
+	hdrReason      = "Nurtuo-Dlq-Reason"
+	hdrAttempts    = "Nurtuo-Dlq-Attempts"
+	hdrOrigID      = "Nurtuo-Orig-Id"
+	defaultAckWait = 30 * time.Second
+)
+
+// Options configures the embedded server.
+type Options struct {
+	// StoreDir is the JetStream storage directory. Empty uses a temp dir removed on Close.
+	StoreDir string
+	// AckWait is the server-side redelivery timeout; zero means 30s.
+	AckWait time.Duration
+}
+
+// Backend is the embedded JetStream queue backend.
+type Backend struct {
+	srv     *server.Server
+	nc      *nats.Conn
+	js      nats.JetStreamContext
+	tmpDir  string
+	mu      sync.Mutex
+	defs    map[string]queue.QueueDef
+	subs    map[*subscription]struct{}
+	redeliv map[string]uint64
+	ackWait time.Duration
+	advSub  *nats.Subscription
+}
+
+var _ queue.QueueBackend = (*Backend)(nil)
+
+// New starts an embedded nats-server (no network listener) with JetStream enabled.
+func New(o Options) (*Backend, error) {
+	b := &Backend{defs: map[string]queue.QueueDef{}, subs: map[*subscription]struct{}{}, redeliv: map[string]uint64{}}
+	b.ackWait = o.AckWait
+	if b.ackWait <= 0 {
+		b.ackWait = defaultAckWait
+	}
+	dir := o.StoreDir
+	if dir == "" {
+		d, err := os.MkdirTemp("", "nurtuo-js-*")
+		if err != nil {
+			return nil, err
+		}
+		dir, b.tmpDir = d, d
+	}
+	srv, err := server.NewServer(&server.Options{
+		ServerName: "nurtuo-embedded",
+		DontListen: true,
+		JetStream:  true,
+		StoreDir:   dir,
+		NoLog:      true,
+		NoSigs:     true,
+	})
+	if err != nil {
+		b.cleanup()
+		return nil, fmt.Errorf("natsjs: new server: %w", err)
+	}
+	go srv.Start()
+	if !srv.ReadyForConnections(15 * time.Second) {
+		srv.Shutdown()
+		b.cleanup()
+		return nil, errors.New("natsjs: server not ready")
+	}
+	nc, err := nats.Connect("", nats.InProcessServer(srv))
+	if err != nil {
+		srv.Shutdown()
+		b.cleanup()
+		return nil, fmt.Errorf("natsjs: connect: %w", err)
+	}
+	js, err := nc.JetStream()
+	if err != nil {
+		nc.Close()
+		srv.Shutdown()
+		b.cleanup()
+		return nil, fmt.Errorf("natsjs: jetstream: %w", err)
+	}
+	b.srv, b.nc, b.js = srv, nc, js
+	adv, err := nc.Subscribe(maxDeliveriesAdvisory, b.onMaxDeliveries)
+	if err != nil {
+		nc.Close()
+		srv.Shutdown()
+		b.cleanup()
+		return nil, fmt.Errorf("natsjs: advisory subscribe: %w", err)
+	}
+	b.advSub = adv
+	return b, nil
+}
+
+func (b *Backend) cleanup() {
+	if b.tmpDir != "" {
+		_ = os.RemoveAll(b.tmpDir)
+	}
+}
+
+func token(name string) string {
+	return strings.NewReplacer(".", "_", "*", "_", ">", "_", " ", "_").Replace(name)
+}
+func streamName(name string) string { return "Q_" + token(name) }
+func dlqStream(name string) string  { return "Q_" + token(name) + "_DLQ" }
+func subject(name string) string    { return "nq." + token(name) }
+func dlqSubject(name string) string { return "nqdlq." + token(name) }
+
+func (b *Backend) def(name string) (queue.QueueDef, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	d, ok := b.defs[name]
+	if !ok {
+		return d, fmt.Errorf("%w: queue %q", queue.ErrNotFound, name)
+	}
+	return d, nil
+}
+
+func maxDeliveries(d queue.QueueDef) int {
+	if d.MaxDeliveries > 0 {
+		return d.MaxDeliveries
+	}
+	return queue.DefaultMaxDeliveries
+}
+
+// Ensure creates or updates the queue's streams.
+func (b *Backend) Ensure(_ context.Context, def queue.QueueDef) error {
+	cfg := &nats.StreamConfig{
+		Name:     streamName(def.Name),
+		Subjects: []string{subject(def.Name)},
+		Storage:  nats.FileStorage,
+		MaxAge:   def.MaxAge,
+		MaxBytes: -1,
+		Discard:  nats.DiscardOld,
+	}
+	if def.MaxBytes > 0 {
+		cfg.MaxBytes = def.MaxBytes
+	}
+	switch def.Retention {
+	case queue.RetentionLimits:
+		cfg.Retention = nats.LimitsPolicy
+	case queue.RetentionInterest:
+		cfg.Retention = nats.InterestPolicy
+	case queue.RetentionWorkQueue, "":
+		cfg.Retention = nats.WorkQueuePolicy
+	default:
+		return fmt.Errorf("natsjs: unknown retention %q", def.Retention)
+	}
+	if def.Retention == queue.RetentionWorkQueue || def.Retention == "" {
+		cfg.Duplicates = 2 * time.Minute
+	}
+	dcfg := &nats.StreamConfig{
+		Name:     dlqStream(def.Name),
+		Subjects: []string{dlqSubject(def.Name)},
+		Storage:  nats.FileStorage,
+		MaxAge:   def.MaxAge,
+		MaxBytes: -1,
+	}
+	for _, c := range []*nats.StreamConfig{cfg, dcfg} {
+		if _, err := b.js.StreamInfo(c.Name); err == nil {
+			// Retention is immutable in JetStream; the other fields can be updated.
+			if _, err := b.js.UpdateStream(c); err != nil && !strings.Contains(err.Error(), "retention") {
+				return fmt.Errorf("natsjs: update stream: %w", err)
+			}
+		} else if errors.Is(err, nats.ErrStreamNotFound) {
+			if _, err := b.js.AddStream(c); err != nil {
+				return fmt.Errorf("natsjs: add stream: %w", err)
+			}
+		} else {
+			return err
+		}
+	}
+	b.mu.Lock()
+	b.defs[def.Name] = def
+	b.mu.Unlock()
+	return nil
+}
+
+// Remove deletes the queue and its dead letter stream.
+func (b *Backend) Remove(_ context.Context, name string) error {
+	b.mu.Lock()
+	for s := range b.subs {
+		if s.name == name {
+			s.stop()
+			delete(b.subs, s)
+		}
+	}
+	delete(b.defs, name)
+	b.mu.Unlock()
+	for _, s := range []string{streamName(name), dlqStream(name)} {
+		if err := b.js.DeleteStream(s); err != nil && !errors.Is(err, nats.ErrStreamNotFound) {
+			return err
+		}
+	}
+	return nil
+}
+
+func toNATS(subj string, m queue.Message) *nats.Msg {
+	nm := nats.NewMsg(subj)
+	nm.Data = m.Data
+	if m.ID != "" {
+		nm.Header.Set(nats.MsgIdHdr, m.ID)
+		nm.Header.Set(hdrOrigID, m.ID)
+	}
+	if m.Key != "" {
+		nm.Header.Set(hdrKey, m.Key)
+	}
+	for k, v := range m.Properties {
+		nm.Header.Set(hdrPropPref+k, v)
+	}
+	return nm
+}
+
+func fromHeader(h nats.Header, data []byte) queue.Message {
+	m := queue.Message{Data: data, Key: h.Get(hdrKey), ID: h.Get(hdrOrigID)}
+	for k, v := range h {
+		if strings.HasPrefix(k, hdrPropPref) && len(v) > 0 {
+			if m.Properties == nil {
+				m.Properties = map[string]string{}
+			}
+			m.Properties[strings.TrimPrefix(k, hdrPropPref)] = v[0]
+		}
+	}
+	return m
+}
+
+// Publish stores a message; a non-empty ID de-duplicates within the stream's window.
+func (b *Backend) Publish(ctx context.Context, name string, msg queue.Message) error {
+	if _, err := b.def(name); err != nil {
+		return err
+	}
+	_, err := b.js.PublishMsg(toNATS(subject(name), msg), nats.Context(ctx))
+	return err
+}
+
+// Subscribe creates (or re-attaches to) a durable push consumer.
+func (b *Backend) Subscribe(_ context.Context, name string, opts queue.SubOpts, h queue.Handler) (queue.Subscription, error) {
+	def, err := b.def(name)
+	if err != nil {
+		return nil, err
+	}
+	conc := opts.Concurrency
+	if conc <= 0 {
+		conc = def.Concurrency
+	}
+	if conc <= 0 {
+		conc = 1
+	}
+	if def.Ordering == queue.OrderingStrict {
+		conc = 1
+	}
+	durable := opts.Durable
+	if durable == "" {
+		durable = "default"
+	}
+	s := &subscription{b: b, name: name, def: def, durable: durable, conc: conc, h: h, keys: map[string]*keyLane{}}
+	if err := s.attach(); err != nil {
+		return nil, err
+	}
+	b.mu.Lock()
+	b.subs[s] = struct{}{}
+	b.mu.Unlock()
+	return s, nil
+}
+
+type keyLane struct{ pending []func() }
+
+type subscription struct {
+	b       *Backend
+	name    string
+	def     queue.QueueDef
+	durable string
+	conc    int
+	h       queue.Handler
+
+	mu     sync.Mutex
+	sub    *nats.Subscription
+	closed bool
+	keys   map[string]*keyLane
+}
+
+func (s *subscription) attach() error {
+	cb := func(m *nats.Msg) { s.dispatch(m) }
+	opts := []nats.SubOpt{
+		nats.ManualAck(),
+		nats.AckExplicit(),
+		nats.AckWait(s.b.ackWait),
+		nats.MaxDeliver(maxDeliveries(s.def)),
+		nats.MaxAckPending(s.conc),
+		nats.DeliverAll(),
+	}
+	if _, err := s.b.js.ConsumerInfo(streamName(s.name), s.durable); err == nil {
+		opts = []nats.SubOpt{nats.Bind(streamName(s.name), s.durable), nats.ManualAck()}
+	} else {
+		opts = append(opts, nats.Durable(s.durable), nats.BindStream(streamName(s.name)))
+	}
+	sub, err := s.b.js.Subscribe(subject(s.name), cb, opts...)
+	if err != nil {
+		return fmt.Errorf("natsjs: subscribe: %w", err)
+	}
+	s.mu.Lock()
+	s.sub = sub
+	s.mu.Unlock()
+	return nil
+}
+
+// dispatch runs on the nats callback goroutine (in stream order). It enforces per-key
+// ordering; MaxAckPending bounds overall concurrency on the server side.
+func (s *subscription) dispatch(m *nats.Msg) {
+	d := &delivery{s: s, m: m, msg: fromHeader(m.Header, m.Data)}
+	if md, err := m.Metadata(); err == nil {
+		d.attempt = int(md.NumDelivered)
+		if d.attempt > 1 {
+			s.b.mu.Lock()
+			s.b.redeliv[s.name]++
+			s.b.mu.Unlock()
+		}
+	}
+	run := func() { s.h(context.Background(), d) }
+	key := d.msg.Key
+	if s.def.Ordering != queue.OrderingPerKey || key == "" {
+		go run()
+		return
+	}
+	s.mu.Lock()
+	lane, busy := s.keys[key]
+	if busy {
+		lane.pending = append(lane.pending, run)
+		s.mu.Unlock()
+		return
+	}
+	lane = &keyLane{}
+	s.keys[key] = lane
+	s.mu.Unlock()
+	go func() {
+		run()
+		for {
+			s.mu.Lock()
+			if len(lane.pending) == 0 {
+				delete(s.keys, key)
+				s.mu.Unlock()
+				return
+			}
+			next := lane.pending[0]
+			lane.pending = lane.pending[1:]
+			s.mu.Unlock()
+			next()
+		}
+	}()
+}
+
+func (s *subscription) stop() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
+	if s.sub != nil {
+		_ = s.sub.Unsubscribe() // durable consumer is kept on the server
+		s.sub = nil
+	}
+}
+
+// Pause detaches from the durable consumer; messages stay queued server-side.
+func (s *subscription) Pause() error {
+	s.mu.Lock()
+	sub := s.sub
+	s.sub = nil
+	s.mu.Unlock()
+	if sub != nil {
+		return sub.Unsubscribe()
+	}
+	return nil
+}
+
+// Resume re-attaches to the durable consumer.
+func (s *subscription) Resume() error {
+	s.mu.Lock()
+	if s.closed || s.sub != nil {
+		s.mu.Unlock()
+		return nil
+	}
+	s.mu.Unlock()
+	return s.attach()
+}
+
+// Close detaches permanently (the durable consumer remains).
+func (s *subscription) Close() error {
+	s.stop()
+	s.b.mu.Lock()
+	delete(s.b.subs, s)
+	s.b.mu.Unlock()
+	return nil
+}
+
+type delivery struct {
+	s       *subscription
+	m       *nats.Msg
+	msg     queue.Message
+	attempt int
+}
+
+func (d *delivery) Message() queue.Message { return d.msg }
+func (d *delivery) Attempt() int           { return d.attempt }
+func (d *delivery) Ack(context.Context) error {
+	return d.m.AckSync()
+}
+
+func (d *delivery) Nak(_ context.Context, delay time.Duration) error {
+	if d.attempt >= maxDeliveries(d.s.def) {
+		return d.deadLetter("max deliveries exceeded")
+	}
+	if delay == 0 {
+		if bo := d.s.def.Backoff; len(bo) > 0 {
+			i := d.attempt - 1
+			if i >= len(bo) {
+				i = len(bo) - 1
+			}
+			delay = bo[i]
+		}
+	}
+	if delay > 0 {
+		return d.m.NakWithDelay(delay)
+	}
+	return d.m.Nak()
+}
+
+func (d *delivery) Term(context.Context) error { return d.deadLetter("terminated") }
+
+func (d *delivery) deadLetter(reason string) error {
+	nm := toNATS(dlqSubject(d.s.name), d.msg)
+	nm.Header.Del(nats.MsgIdHdr)
+	nm.Header.Set(hdrReason, reason)
+	nm.Header.Set(hdrAttempts, strconv.Itoa(d.attempt))
+	if _, err := d.s.b.js.PublishMsg(nm); err != nil {
+		return fmt.Errorf("natsjs: publish dlq: %w", err)
+	}
+	return d.m.Term()
+}
+
+// Stats reports depth (undelivered + in flight), redeliveries, oldest age and DLQ depth.
+func (b *Backend) Stats(_ context.Context, name string) (queue.QueueStats, error) {
+	def, err := b.def(name)
+	if err != nil {
+		return queue.QueueStats{}, err
+	}
+	si, err := b.js.StreamInfo(streamName(name))
+	if err != nil {
+		return queue.QueueStats{}, err
+	}
+	st := queue.QueueStats{Depth: si.State.Msgs}
+	if def.Retention == queue.RetentionLimits {
+		// Limits streams keep acked messages; depth is what the consumers still owe.
+		var depth uint64
+		seen := false
+		for ci := range b.js.Consumers(streamName(name)) {
+			seen = true
+			if p := uint64(ci.NumPending) + uint64(ci.NumAckPending); p > depth {
+				depth = p
+			}
+		}
+		if seen {
+			st.Depth = depth
+		}
+	}
+	if st.Depth > 0 && si.State.Msgs > 0 {
+		st.OldestMessageAge = time.Since(si.State.FirstTime)
+	}
+	b.mu.Lock()
+	st.Redeliveries = b.redeliv[name]
+	b.mu.Unlock()
+	if di, err := b.js.StreamInfo(dlqStream(name)); err == nil {
+		st.DeadLetterDepth = di.State.Msgs
+	}
+	return st, nil
+}
+
+// ListDeadLetters returns up to limit parked messages, oldest first.
+func (b *Backend) ListDeadLetters(_ context.Context, name string, limit int) ([]queue.DeadLetter, error) {
+	if _, err := b.def(name); err != nil {
+		return nil, err
+	}
+	di, err := b.js.StreamInfo(dlqStream(name))
+	if err != nil {
+		return nil, err
+	}
+	var out []queue.DeadLetter
+	if di.State.Msgs == 0 {
+		return out, nil
+	}
+	for seq := di.State.FirstSeq; seq <= di.State.LastSeq; seq++ {
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+		raw, err := b.js.GetMsg(dlqStream(name), seq)
+		if err != nil {
+			continue // deleted (replayed) gap
+		}
+		att, _ := strconv.Atoi(raw.Header.Get(hdrAttempts))
+		out = append(out, queue.DeadLetter{
+			ID:       strconv.FormatUint(seq, 10),
+			Message:  fromHeader(raw.Header, raw.Data),
+			Reason:   raw.Header.Get(hdrReason),
+			Attempts: att,
+			At:       raw.Time,
+		})
+	}
+	return out, nil
+}
+
+// ReplayDeadLetter republishes a dead letter to the queue and removes it from the DLQ.
+func (b *Backend) ReplayDeadLetter(ctx context.Context, name, id string) error {
+	if _, err := b.def(name); err != nil {
+		return err
+	}
+	seq, err := strconv.ParseUint(id, 10, 64)
+	if err != nil {
+		return fmt.Errorf("%w: dead letter %q", queue.ErrNotFound, id)
+	}
+	raw, err := b.js.GetMsg(dlqStream(name), seq)
+	if err != nil {
+		return fmt.Errorf("%w: dead letter %q", queue.ErrNotFound, id)
+	}
+	m := fromHeader(raw.Header, raw.Data)
+	nm := toNATS(subject(name), m)
+	nm.Header.Del(nats.MsgIdHdr) // a replay must not be de-duplicated against the original
+	if _, err := b.js.PublishMsg(nm, nats.Context(ctx)); err != nil {
+		return err
+	}
+	return b.js.DeleteMsg(dlqStream(name), seq)
+}
+
+// Close stops subscriptions, the connection and the embedded server.
+func (b *Backend) Close() error {
+	b.mu.Lock()
+	for s := range b.subs {
+		s.stop()
+	}
+	b.subs = map[*subscription]struct{}{}
+	b.mu.Unlock()
+	b.nc.Close()
+	b.srv.Shutdown()
+	b.srv.WaitForShutdown()
+	b.cleanup()
+	return nil
+}
