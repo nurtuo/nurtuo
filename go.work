@@ -1,7 +1,9 @@
 go 1.27
 
 use (
-	./core/runtime
-	./sdk/go
 	./connectors
+	./core/deploy/bundle
+	./core/runtime
+	./examples/connector-minimal
+	./sdk/go
 )
