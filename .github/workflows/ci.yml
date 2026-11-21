@@ -54,6 +54,8 @@ jobs:
           breaking: ${{ github.event_name == 'pull_request' }}
           breaking_against: "${{ github.event.repository.clone_url }}#branch=main"
           push: false
+          # Default posts a PR comment, which contents:read cannot do, and that fails the job.
+          pr_comment: false
       # TODO: regenerate and `git diff --exit-code` to catch stale generated code.
 
   licenses:
