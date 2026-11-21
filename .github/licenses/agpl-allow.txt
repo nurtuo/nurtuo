@@ -13,6 +13,10 @@ LGPL-3.0-or-later
 GPL-3.0-or-later
 AGPL-3.0-only
 AGPL-3.0-or-later
+# go-licenses v2 (licenseclassifier) names the AGPL-3.0 license text "AGPL-3.0",
+# the deprecated SPDX id that was renamed to AGPL-3.0-only. Both AGPL-3.0 grants
+# above are already allowed, so this is that tool's name for them, not a new license.
+AGPL-3.0
 # EPL-2.0 only with the GPL secondary-license designation (e.g. elkjs, unmodified)
 EPL-2.0
 Unicode-DFS-2016
