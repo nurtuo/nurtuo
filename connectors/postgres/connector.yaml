@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: Apache-2.0
+id: postgres
+version: 0.1.0
+host: go-native
+displayName: PostgreSQL
+description: Query and modify PostgreSQL tables; one output document per row.
+connection:
+  # See the connection schema in postgres.go (Describe); fields listed here for the catalog.
+  schema: inline
+  fields: [host, port, database, user, password, sslMode, sslRootCert, poolMaxConns, connectTimeoutSeconds]
+operations:
+  - { type: QUERY, description: "Run a query; one output document per row" }
+  - { type: CREATE, description: "Insert a row from the current document" }
+  - { type: UPDATE, description: "Update rows" }
+  - { type: DELETE, description: "Delete rows" }
+  - { type: EXECUTE, customType: STATEMENT, description: "Execute an arbitrary SQL statement" }
+options: [transaction, maxRows, timeoutSeconds]
+trackedProperties: [rows_affected, row_count]
