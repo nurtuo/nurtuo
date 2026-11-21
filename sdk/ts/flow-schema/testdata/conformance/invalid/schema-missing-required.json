@@ -1,0 +1,21 @@
+{
+  "description": "steps and edges missing",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1
+  },
+  "expect": [
+    {
+      "severity": "error",
+      "code": "schema.required",
+      "path": "/edges"
+    },
+    {
+      "severity": "error",
+      "code": "schema.required",
+      "path": "/steps"
+    }
+  ]
+}

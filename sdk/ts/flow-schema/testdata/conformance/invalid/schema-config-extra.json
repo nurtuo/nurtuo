@@ -1,0 +1,49 @@
+{
+  "description": "decision config with unknown key",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [
+      {
+        "id": "start",
+        "kind": "start",
+        "config": {
+          "type": "manual"
+        }
+      },
+      {
+        "id": "d",
+        "kind": "decision",
+        "config": {
+          "cel": "true",
+          "foo": 1
+        }
+      },
+      {
+        "id": "return",
+        "kind": "returnDocuments",
+        "config": {}
+      },
+      {
+        "id": "s",
+        "kind": "stop",
+        "config": {}
+      }
+    ],
+    "edges": {
+      "start:default": "d",
+      "d:true": "return",
+      "d:false": "s"
+    }
+  },
+  "expect": [
+    {
+      "severity": "error",
+      "code": "schema.additionalProperties",
+      "path": "/steps/1/config/foo",
+      "stepId": "d"
+    }
+  ]
+}

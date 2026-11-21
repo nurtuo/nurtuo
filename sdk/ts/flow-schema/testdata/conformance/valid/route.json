@@ -1,0 +1,56 @@
+{
+  "description": "route with two named routes and default",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [
+      {
+        "id": "start",
+        "kind": "start",
+        "config": {
+          "type": "manual"
+        }
+      },
+      {
+        "id": "rt",
+        "kind": "route",
+        "config": {
+          "routes": [
+            {
+              "id": "big",
+              "cel": "doc.n > 10"
+            },
+            {
+              "id": "small",
+              "cel": "doc.n <= 10"
+            }
+          ]
+        }
+      },
+      {
+        "id": "a",
+        "kind": "stop",
+        "config": {}
+      },
+      {
+        "id": "b",
+        "kind": "stop",
+        "config": {}
+      },
+      {
+        "id": "c",
+        "kind": "stop",
+        "config": {}
+      }
+    ],
+    "edges": {
+      "start:default": "rt",
+      "rt:big": "a",
+      "rt:small": "b",
+      "rt:default": "c"
+    }
+  },
+  "expect": []
+}

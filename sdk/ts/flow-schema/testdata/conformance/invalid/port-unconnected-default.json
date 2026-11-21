@@ -1,0 +1,60 @@
+{
+  "description": "connector without outgoing edge and trycatch without catch",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [
+      {
+        "id": "start",
+        "kind": "start",
+        "config": {
+          "type": "manual"
+        }
+      },
+      {
+        "id": "c",
+        "kind": "connector",
+        "config": {
+          "connector": "http",
+          "operation": "GET"
+        }
+      },
+      {
+        "id": "tc",
+        "kind": "tryCatch",
+        "config": {}
+      },
+      {
+        "id": "return",
+        "kind": "returnDocuments",
+        "config": {}
+      }
+    ],
+    "edges": {
+      "start:default": "tc",
+      "tc:try": "c"
+    }
+  },
+  "expect": [
+    {
+      "severity": "error",
+      "code": "step.port_unconnected",
+      "path": "/edges/c:default",
+      "stepId": "c"
+    },
+    {
+      "severity": "error",
+      "code": "step.port_unconnected",
+      "path": "/edges/tc:catch",
+      "stepId": "tc"
+    },
+    {
+      "severity": "warning",
+      "code": "step.unreachable",
+      "path": "/steps/3",
+      "stepId": "return"
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "description": "no steps",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [],
+    "edges": {}
+  },
+  "expect": [
+    {
+      "severity": "error",
+      "code": "schema.minItems",
+      "path": "/steps"
+    }
+  ]
+}

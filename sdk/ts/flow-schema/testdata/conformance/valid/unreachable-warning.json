@@ -1,0 +1,39 @@
+{
+  "description": "orphan step is a warning, not an error",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [
+      {
+        "id": "start",
+        "kind": "start",
+        "config": {
+          "type": "manual"
+        }
+      },
+      {
+        "id": "end",
+        "kind": "stop",
+        "config": {}
+      },
+      {
+        "id": "orphan",
+        "kind": "stop",
+        "config": {}
+      }
+    ],
+    "edges": {
+      "start:default": "end"
+    }
+  },
+  "expect": [
+    {
+      "severity": "warning",
+      "code": "step.unreachable",
+      "path": "/steps/2",
+      "stepId": "orphan"
+    }
+  ]
+}

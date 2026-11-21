@@ -1,0 +1,56 @@
+{
+  "description": "decision whose two ports merge; branch with 3 paths ending in different terminals",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [
+      {
+        "id": "start",
+        "kind": "start",
+        "config": {
+          "type": "manual"
+        }
+      },
+      {
+        "id": "br",
+        "kind": "branch",
+        "config": {
+          "paths": 3
+        }
+      },
+      {
+        "id": "dec",
+        "kind": "decision",
+        "config": {
+          "cel": "doc.ok"
+        }
+      },
+      {
+        "id": "return",
+        "kind": "returnDocuments",
+        "config": {}
+      },
+      {
+        "id": "halt",
+        "kind": "stop",
+        "config": {}
+      },
+      {
+        "id": "halt2",
+        "kind": "stop",
+        "config": {}
+      }
+    ],
+    "edges": {
+      "start:default": "br",
+      "br:1": "dec",
+      "br:2": "return",
+      "br:3": "halt",
+      "dec:true": "return",
+      "dec:false": "halt2"
+    }
+  },
+  "expect": []
+}

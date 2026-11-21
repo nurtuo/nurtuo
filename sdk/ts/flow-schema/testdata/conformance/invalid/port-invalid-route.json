@@ -1,0 +1,49 @@
+{
+  "description": "route edge for unknown route id",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [
+      {
+        "id": "start",
+        "kind": "start",
+        "config": {
+          "type": "manual"
+        }
+      },
+      {
+        "id": "r",
+        "kind": "route",
+        "config": {
+          "routes": [
+            {
+              "id": "a",
+              "cel": "true"
+            }
+          ]
+        }
+      },
+      {
+        "id": "x",
+        "kind": "stop",
+        "config": {}
+      }
+    ],
+    "edges": {
+      "start:default": "r",
+      "r:a": "x",
+      "r:default": "x",
+      "r:zzz": "x"
+    }
+  },
+  "expect": [
+    {
+      "severity": "error",
+      "code": "edge.port_invalid",
+      "path": "/edges/r:zzz",
+      "stepId": "r"
+    }
+  ]
+}

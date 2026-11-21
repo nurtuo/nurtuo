@@ -1,0 +1,34 @@
+{
+  "description": "unknown root property",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [
+      {
+        "id": "start",
+        "kind": "start",
+        "config": {
+          "type": "manual"
+        }
+      },
+      {
+        "id": "end",
+        "kind": "stop",
+        "config": {}
+      }
+    ],
+    "edges": {
+      "start:default": "end"
+    },
+    "color": "red"
+  },
+  "expect": [
+    {
+      "severity": "error",
+      "code": "schema.additionalProperties",
+      "path": "/color"
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "description": "edge to nonexistent step",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [
+      {
+        "id": "start",
+        "kind": "start",
+        "config": {
+          "type": "manual"
+        }
+      },
+      {
+        "id": "end",
+        "kind": "stop",
+        "config": {}
+      }
+    ],
+    "edges": {
+      "start:default": "end",
+      "end:default": "nowhere"
+    }
+  },
+  "expect": [
+    {
+      "severity": "error",
+      "code": "edge.port_invalid",
+      "path": "/edges/end:default",
+      "stepId": "end"
+    },
+    {
+      "severity": "error",
+      "code": "edge.target_unknown",
+      "path": "/edges/end:default",
+      "stepId": "end"
+    }
+  ]
+}

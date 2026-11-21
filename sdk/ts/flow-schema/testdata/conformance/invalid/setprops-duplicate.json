@@ -1,0 +1,57 @@
+{
+  "description": "same name and scope twice",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [
+      {
+        "id": "start",
+        "kind": "start",
+        "config": {
+          "type": "manual"
+        }
+      },
+      {
+        "id": "p",
+        "kind": "setProperties",
+        "config": {
+          "properties": [
+            {
+              "name": "a",
+              "value": "1"
+            },
+            {
+              "name": "a",
+              "scope": "document",
+              "value": "2"
+            },
+            {
+              "name": "a",
+              "scope": "process",
+              "value": "3"
+            }
+          ]
+        }
+      },
+      {
+        "id": "return",
+        "kind": "returnDocuments",
+        "config": {}
+      }
+    ],
+    "edges": {
+      "start:default": "p",
+      "p:default": "return"
+    }
+  },
+  "expect": [
+    {
+      "severity": "error",
+      "code": "setProperties.duplicate_name",
+      "path": "/steps/1/config/properties/1/name",
+      "stepId": "p"
+    }
+  ]
+}

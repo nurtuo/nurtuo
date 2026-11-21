@@ -1,0 +1,33 @@
+{
+  "description": "listener start with method and path",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [
+      {
+        "id": "start",
+        "kind": "start",
+        "config": {
+          "type": "listener",
+          "connector": "http",
+          "path": "/x",
+          "method": "POST"
+        }
+      },
+      {
+        "id": "end",
+        "kind": "stop",
+        "config": {
+          "status": 202,
+          "message": "accepted"
+        }
+      }
+    ],
+    "edges": {
+      "start:default": "end"
+    }
+  },
+  "expect": []
+}

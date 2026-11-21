@@ -1,0 +1,36 @@
+{
+  "description": "returnDocuments accepts no config",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [
+      {
+        "id": "start",
+        "kind": "start",
+        "config": {
+          "type": "manual"
+        }
+      },
+      {
+        "id": "r",
+        "kind": "returnDocuments",
+        "config": {
+          "x": 1
+        }
+      }
+    ],
+    "edges": {
+      "start:default": "r"
+    }
+  },
+  "expect": [
+    {
+      "severity": "error",
+      "code": "schema.additionalProperties",
+      "path": "/steps/1/config/x",
+      "stepId": "r"
+    }
+  ]
+}

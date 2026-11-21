@@ -1,0 +1,11 @@
+{
+  "description": "root is an array",
+  "flow": [],
+  "expect": [
+    {
+      "severity": "error",
+      "code": "schema.type",
+      "path": ""
+    }
+  ]
+}

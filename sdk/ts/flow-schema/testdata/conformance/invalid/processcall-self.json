@@ -1,0 +1,42 @@
+{
+  "description": "process call to itself",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [
+      {
+        "id": "start",
+        "kind": "start",
+        "config": {
+          "type": "manual"
+        }
+      },
+      {
+        "id": "pc",
+        "kind": "processCall",
+        "config": {
+          "flow": "t"
+        }
+      },
+      {
+        "id": "return",
+        "kind": "returnDocuments",
+        "config": {}
+      }
+    ],
+    "edges": {
+      "start:default": "pc",
+      "pc:default": "return"
+    }
+  },
+  "expect": [
+    {
+      "severity": "error",
+      "code": "processCall.self_reference",
+      "path": "/steps/1/config/flow",
+      "stepId": "pc"
+    }
+  ]
+}

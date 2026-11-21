@@ -1,0 +1,53 @@
+{
+  "description": "message and setProperties with both scopes",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [
+      {
+        "id": "start",
+        "kind": "start",
+        "config": {
+          "type": "manual"
+        }
+      },
+      {
+        "id": "msg",
+        "kind": "message",
+        "config": {
+          "template": "hello"
+        }
+      },
+      {
+        "id": "props",
+        "kind": "setProperties",
+        "config": {
+          "properties": [
+            {
+              "name": "a",
+              "value": "doc.id"
+            },
+            {
+              "name": "a",
+              "scope": "process",
+              "value": "'x'"
+            }
+          ]
+        }
+      },
+      {
+        "id": "return",
+        "kind": "returnDocuments",
+        "config": {}
+      }
+    ],
+    "edges": {
+      "start:default": "msg",
+      "msg:default": "props",
+      "props:default": "return"
+    }
+  },
+  "expect": []
+}

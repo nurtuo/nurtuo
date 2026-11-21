@@ -1,0 +1,37 @@
+{
+  "description": "step points at itself",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [
+      {
+        "id": "start",
+        "kind": "start",
+        "config": {
+          "type": "manual"
+        }
+      },
+      {
+        "id": "a",
+        "kind": "message",
+        "config": {
+          "template": "a"
+        }
+      }
+    ],
+    "edges": {
+      "start:default": "a",
+      "a:default": "a"
+    }
+  },
+  "expect": [
+    {
+      "severity": "error",
+      "code": "flow.cycle",
+      "path": "/steps/1",
+      "stepId": "a"
+    }
+  ]
+}

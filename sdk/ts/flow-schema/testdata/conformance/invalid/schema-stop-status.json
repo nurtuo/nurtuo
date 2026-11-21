@@ -1,0 +1,36 @@
+{
+  "description": "stop status below range",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [
+      {
+        "id": "start",
+        "kind": "start",
+        "config": {
+          "type": "manual"
+        }
+      },
+      {
+        "id": "s",
+        "kind": "stop",
+        "config": {
+          "status": 99
+        }
+      }
+    ],
+    "edges": {
+      "start:default": "s"
+    }
+  },
+  "expect": [
+    {
+      "severity": "error",
+      "code": "schema.minimum",
+      "path": "/steps/1/config/status",
+      "stepId": "s"
+    }
+  ]
+}

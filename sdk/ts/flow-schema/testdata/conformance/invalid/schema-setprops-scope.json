@@ -1,0 +1,53 @@
+{
+  "description": "bad scope and missing value",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [
+      {
+        "id": "start",
+        "kind": "start",
+        "config": {
+          "type": "manual"
+        }
+      },
+      {
+        "id": "p",
+        "kind": "setProperties",
+        "config": {
+          "properties": [
+            {
+              "name": "a",
+              "scope": "global"
+            }
+          ]
+        }
+      },
+      {
+        "id": "return",
+        "kind": "returnDocuments",
+        "config": {}
+      }
+    ],
+    "edges": {
+      "start:default": "p",
+      "p:default": "return"
+    }
+  },
+  "expect": [
+    {
+      "severity": "error",
+      "code": "schema.enum",
+      "path": "/steps/1/config/properties/0/scope",
+      "stepId": "p"
+    },
+    {
+      "severity": "error",
+      "code": "schema.required",
+      "path": "/steps/1/config/properties/0/value",
+      "stepId": "p"
+    }
+  ]
+}

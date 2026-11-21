@@ -1,0 +1,24 @@
+{
+  "description": "no start step",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [
+      {
+        "id": "end",
+        "kind": "stop",
+        "config": {}
+      }
+    ],
+    "edges": {}
+  },
+  "expect": [
+    {
+      "severity": "error",
+      "code": "flow.start_count",
+      "path": "/steps"
+    }
+  ]
+}

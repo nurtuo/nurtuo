@@ -1,0 +1,62 @@
+{
+  "description": "duplicate route id and reserved id",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [
+      {
+        "id": "start",
+        "kind": "start",
+        "config": {
+          "type": "manual"
+        }
+      },
+      {
+        "id": "r",
+        "kind": "route",
+        "config": {
+          "routes": [
+            {
+              "id": "a",
+              "cel": "true"
+            },
+            {
+              "id": "a",
+              "cel": "false"
+            },
+            {
+              "id": "default",
+              "cel": "true"
+            }
+          ]
+        }
+      },
+      {
+        "id": "x",
+        "kind": "stop",
+        "config": {}
+      }
+    ],
+    "edges": {
+      "start:default": "r",
+      "r:a": "x",
+      "r:default": "x"
+    }
+  },
+  "expect": [
+    {
+      "severity": "error",
+      "code": "route.duplicate_id",
+      "path": "/steps/1/config/routes/1/id",
+      "stepId": "r"
+    },
+    {
+      "severity": "error",
+      "code": "route.reserved_id",
+      "path": "/steps/1/config/routes/2/id",
+      "stepId": "r"
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "description": "connector without operation",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [
+      {
+        "id": "start",
+        "kind": "start",
+        "config": {
+          "type": "manual"
+        }
+      },
+      {
+        "id": "c",
+        "kind": "connector",
+        "config": {
+          "connector": "http"
+        }
+      },
+      {
+        "id": "return",
+        "kind": "returnDocuments",
+        "config": {}
+      }
+    ],
+    "edges": {
+      "start:default": "c",
+      "c:default": "return"
+    }
+  },
+  "expect": [
+    {
+      "severity": "error",
+      "code": "schema.required",
+      "path": "/steps/1/config/operation",
+      "stepId": "c"
+    }
+  ]
+}
