@@ -35,7 +35,7 @@ nfpms:
   - package_name: nurtuo
     formats: [deb, rpm]
     license: AGPL-3.0-only
-    maintainer: Nurtuo <hello@nurtuo.com>
+    maintainer: Nurtuo <contact@nurtuo.com>
     contents:
       - src: core/deploy/systemd/nurtuo.service
         dst: /lib/systemd/system/nurtuo.service
