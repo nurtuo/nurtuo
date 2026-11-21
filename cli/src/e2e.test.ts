@@ -253,11 +253,20 @@ test("flow push / pull / deploy / status / runtime list end to end", async () =>
 
   // deploy --wait
   const waitedDeploy = nurtuoctl(["deploy", "get-employee", "--runtime", "rt-prod", "--wait", "--interval", "20", "--json"], { env });
-  setTimeout(async () => {
-    const deps = (await (await fetch(`${cp.url}/v1/deployments?runtimeId=rt-prod`, { headers: { authorization: "Bearer tok" } })).json()) as { items: { id: string }[] };
-    await fetch(`${cp.url}/v1/deployments/${deps.items[0]!.id}/status`, { method: "PUT", headers: { authorization: "Bearer tok", "content-type": "application/json" }, body: JSON.stringify({ status: "running" }) });
-  }, 200);
+  // Poll until the CLI has created the deployment (a fixed delay races with process start-up on slow runners).
+  const reported = (async () => {
+    for (let i = 0; i < 500; i++) {
+      const deps = (await (await fetch(`${cp.url}/v1/deployments?runtimeId=rt-prod`, { headers: { authorization: "Bearer tok" } })).json()) as { items: { id: string }[] };
+      if (deps.items[0]) {
+        await fetch(`${cp.url}/v1/deployments/${deps.items[0].id}/status`, { method: "PUT", headers: { authorization: "Bearer tok", "content-type": "application/json" }, body: JSON.stringify({ status: "running" }) });
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    throw new Error("deployment for rt-prod never appeared");
+  })();
   const wd = await waitedDeploy;
+  await reported;
   assert.equal(wd.code, 0, wd.stderr);
   assert.equal(json(wd).deployment.status, "running");
 
