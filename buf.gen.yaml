@@ -1,0 +1,23 @@
+# `buf generate` (or `make gen`) -> Go and TypeScript. Generated code is committed.
+version: v2
+managed:
+  enabled: true
+  override:
+    - file_option: go_package_prefix
+      value: github.com/nurtuo/nurtuo/sdk/go/gen
+  disable:
+    - file_option: go_package
+      module: buf.build/protocolbuffers/wellknowntypes
+plugins:
+  - local: protoc-gen-go
+    out: sdk/go/gen
+    opt: paths=source_relative
+  - local: protoc-gen-go-grpc
+    out: sdk/go/gen
+    opt: paths=source_relative
+  # TypeScript (Connect-ES v2 / protobuf-es, Apache-2.0); run after `pnpm install`.
+  - local: sdk/ts/proto/node_modules/.bin/protoc-gen-es
+    out: sdk/ts/proto/src/gen
+    opt: target=ts
+    include_imports: true
+# Java and Python stubs for the bridges are generated inside bridges/jvm and bridges/python builds.

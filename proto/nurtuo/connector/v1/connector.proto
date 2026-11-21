@@ -1,0 +1,203 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// Nurtuo connector contract v1 (draft).
+// One contract for native Go connectors, bridged connectors (JVM, Python, .NET) and WASM connectors.
+// Transport for bridges: gRPC over a Unix domain socket (Linux/macOS) or a named pipe (Windows),
+// started and supervised by the runtime. See docs/ARCHITECTURE.md and reference §5.6.
+syntax = "proto3";
+
+package nurtuo.connector.v1;
+
+import "google/protobuf/struct.proto";
+
+service ConnectorService {
+  // Descriptor: operations, connection schema, capabilities (mirrors connector.yaml).
+  rpc Describe(DescribeRequest) returns (DescribeResponse);
+  // Browse object types on the target system and return profiles (JSON Schema / XSD).
+  rpc Browse(BrowseRequest) returns (BrowseResponse);
+  // Execute one operation over a batch of documents. Payloads are streamed in chunks;
+  // a result is returned per document (SUCCESS | APPLICATION_ERROR | FAILURE).
+  rpc Execute(stream ExecuteRequest) returns (stream ExecuteResponse);
+  // "Test connection" with a redacted diagnostic.
+  rpc Test(TestRequest) returns (TestResponse);
+  // Listener operations: the connector pushes inbound documents; the runtime acks per document.
+  rpc Listen(stream ListenRequest) returns (stream ListenResponse);
+}
+
+enum Host {
+  HOST_UNSPECIFIED = 0;
+  HOST_GO_NATIVE = 1;
+  HOST_BRIDGE_JVM = 2;
+  HOST_BRIDGE_PYTHON = 3;
+  HOST_BRIDGE_DOTNET = 4;
+  HOST_WASM = 5;
+}
+
+enum OperationType {
+  OPERATION_TYPE_UNSPECIFIED = 0;
+  OPERATION_TYPE_GET = 1;
+  OPERATION_TYPE_QUERY = 2;
+  OPERATION_TYPE_CREATE = 3;
+  OPERATION_TYPE_UPDATE = 4;
+  OPERATION_TYPE_UPSERT = 5;
+  OPERATION_TYPE_DELETE = 6;
+  OPERATION_TYPE_EXECUTE = 7;
+  OPERATION_TYPE_LISTEN = 8;
+}
+
+enum DocumentStatus {
+  DOCUMENT_STATUS_UNSPECIFIED = 0;
+  DOCUMENT_STATUS_SUCCESS = 1;
+  // The target system rejected the document (business error); the flow may handle it.
+  DOCUMENT_STATUS_APPLICATION_ERROR = 2;
+  // Technical failure (connection, timeout, crash).
+  DOCUMENT_STATUS_FAILURE = 3;
+}
+
+// ---- Describe ----
+
+message DescribeRequest {}
+
+message DescribeResponse {
+  Descriptor descriptor = 1;
+}
+
+message Descriptor {
+  string id = 1; // e.g. "sap-idoc"
+  string version = 2; // SemVer, e.g. "1.4.0"
+  Host host = 3;
+  string display_name = 4;
+  // JSON Schema for the connection settings (secrets are references, never values).
+  google.protobuf.Struct connection_schema = 5;
+  repeated OperationDescriptor operations = 6;
+  repeated string tracked_properties = 7;
+  Capabilities capabilities = 8;
+}
+
+message OperationDescriptor {
+  OperationType type = 1;
+  string custom_type = 2; // e.g. "SEND_IDOC" for EXECUTE
+  bool supports_browse = 3;
+  google.protobuf.Struct options_schema = 4;
+}
+
+message Capabilities {
+  bool streaming = 1;
+  uint32 max_batch_size = 2;
+  bool transactional = 3;
+}
+
+// ---- Browse ----
+
+message BrowseRequest {
+  ConnectionConfig connection = 1;
+  OperationType operation_type = 2;
+  string custom_type = 3;
+  string object_type_id = 4; // empty: list object types
+}
+
+message BrowseResponse {
+  repeated ObjectType object_types = 1;
+  Profile request_profile = 2;
+  Profile response_profile = 3;
+}
+
+message ObjectType {
+  string id = 1;
+  string label = 2;
+}
+
+message Profile {
+  enum Format {
+    FORMAT_UNSPECIFIED = 0;
+    FORMAT_JSON_SCHEMA = 1;
+    FORMAT_XSD = 2;
+  }
+  Format format = 1;
+  bytes definition = 2;
+}
+
+// ---- Execute ----
+
+message ConnectionConfig {
+  // Resolved by the runtime; secrets are injected in memory only.
+  google.protobuf.Struct settings = 1;
+}
+
+message ExecuteRequest {
+  oneof msg {
+    ExecuteStart start = 1; // first message on the stream
+    DocumentChunk chunk = 2;
+    ExecuteEnd end = 3; // client finished sending documents
+  }
+}
+
+message ExecuteStart {
+  string execution_id = 1;
+  string step_id = 2;
+  ConnectionConfig connection = 3;
+  OperationType operation_type = 4;
+  string custom_type = 5;
+  string object_type_id = 6;
+  google.protobuf.Struct options = 7;
+}
+
+message DocumentChunk {
+  string document_id = 1;
+  map<string, string> properties = 2; // sent with the first chunk of a document
+  bytes data = 3;
+  bool last = 4; // last chunk of this document
+}
+
+message ExecuteEnd {}
+
+message ExecuteResponse {
+  oneof msg {
+    DocumentResult result = 1;
+    DocumentChunk output = 2; // output documents, streamed in chunks
+  }
+}
+
+message DocumentResult {
+  string document_id = 1;
+  DocumentStatus status = 2;
+  string message = 3;
+  map<string, string> tracked = 4; // tracked property values for Process Reporting
+  repeated string output_document_ids = 5;
+}
+
+// ---- Test ----
+
+message TestRequest {
+  ConnectionConfig connection = 1;
+}
+
+message TestResponse {
+  bool ok = 1;
+  string diagnostic = 2; // redacted: no secrets
+}
+
+// ---- Listen ----
+
+message ListenRequest {
+  oneof msg {
+    ListenStart start = 1;
+    Ack ack = 2;
+  }
+}
+
+message ListenStart {
+  string listener_id = 1;
+  ConnectionConfig connection = 2;
+  google.protobuf.Struct options = 3;
+  uint32 max_in_flight = 4;
+}
+
+message Ack {
+  string document_id = 1;
+  DocumentStatus status = 2; // FAILURE -> redeliver per connector semantics
+}
+
+message ListenResponse {
+  DocumentChunk chunk = 1;
+}

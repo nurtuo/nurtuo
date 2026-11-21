@@ -1,0 +1,11 @@
+# buf v2 workspace. Contracts live in proto/ (Apache-2.0).
+version: v2
+modules:
+  - path: proto
+    name: buf.build/nurtuo/nurtuo
+lint:
+  use:
+    - STANDARD
+breaking:
+  use:
+    - FILE

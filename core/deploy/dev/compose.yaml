@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Optional dev services. Without Docker, `nurtuo standalone` (embedded Postgres) replaces this.
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment: { POSTGRES_USER: nurtuo, POSTGRES_PASSWORD: nurtuo, POSTGRES_DB: nurtuo }
+    ports: ["5432:5432"]
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8
+    profiles: [reporting]
+    ports: ["8123:8123", "9000:9000"]
+  seaweedfs:
+    image: chrislusf/seaweedfs
+    command: server -s3
+    profiles: [storage]
+    ports: ["8333:8333"]

@@ -1,0 +1,90 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+name: ci
+on:
+  push: { branches: [main] }
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: core/runtime/go.mod }
+      - run: go vet github.com/nurtuo/nurtuo/...
+      - run: go test -race github.com/nurtuo/nurtuo/...
+      - name: cross-compile runtime (static)
+        run: |
+          for t in linux/amd64 linux/arm64 windows/amd64 windows/arm64 darwin/amd64 darwin/arm64; do
+            CGO_ENABLED=0 GOOS=${t%/*} GOARCH=${t#*/} go build -o /dev/null ./core/runtime/cmd/nurtuo
+          done
+      - uses: golangci/golangci-lint-action@v8
+        with: { args: "./core/runtime/... ./sdk/go/... ./connectors/..." }
+
+  ts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm turbo run lint typecheck build test
+
+  proto:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: bufbuild/buf-action@v1
+        with:
+          lint: true
+          format: true
+          breaking: ${{ github.event_name == 'pull_request' }}
+          breaking_against: "${{ github.event.repository.clone_url }}#branch=main"
+          push: false
+      # TODO: regenerate and `git diff --exit-code` to catch stale generated code.
+
+  licenses:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: core/runtime/go.mod }
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - name: dependency direction + SPDX headers
+        run: ./scripts/check-boundaries.sh
+      - name: go-licenses (AGPL artifacts)
+        run: |
+          go install github.com/google/go-licenses/v2@latest
+          cd core/runtime && go-licenses check ./... --allowed_licenses="$(grep -v '^#' ../../.github/licenses/agpl-allow.txt | paste -sd, -)"
+      - name: go-licenses (Apache artifacts)
+        run: |
+          for m in sdk/go connectors; do
+            (cd $m && go-licenses check ./... --allowed_licenses="$(grep -v '^#' $GITHUB_WORKSPACE/.github/licenses/apache-allow.txt | paste -sd, -)")
+          done
+      - name: npm licenses (Apache packages, production deps)
+        run: |
+          for p in sdk/ts/* cli; do
+            (cd $p && npx --yes license-checker-rseidelsohn --production --excludePrivatePackages \
+              --onlyAllow "$(grep -v '^#' $GITHUB_WORKSPACE/.github/licenses/apache-allow.txt | paste -sd';' -)")
+          done
+      - name: npm licenses (AGPL packages, production deps)
+        run: |
+          for p in core/control-plane core/web core/mcp core/ai; do
+            (cd $p && npx --yes license-checker-rseidelsohn --production --excludePrivatePackages \
+              --onlyAllow "$(grep -v '^#' $GITHUB_WORKSPACE/.github/licenses/agpl-allow.txt | paste -sd';' -)")
+          done
+      - name: SBOM (Syft)
+        uses: anchore/sbom-action@v0
+        with: { format: spdx-json, artifact-name: sbom.spdx.json }
+
+  # CLA: enforced by the CLA Assistant GitHub App (cla-assistant.io) as a required status check.

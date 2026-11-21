@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nurtuo.com/schema/flow.v1.json",
+  "title": "Nurtuo flow v1 (draft)",
+  "type": "object",
+  "required": ["schema", "id", "name", "revision", "steps", "edges"],
+  "properties": {
+    "schema": { "const": "nurtuo.flow/v1" },
+    "id": { "type": "string" },
+    "name": { "type": "string" },
+    "revision": { "type": "integer", "minimum": 0 },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "config"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" },
+          "kind": { "enum": ["start", "connector", "map", "message", "setProperties", "decision", "branch", "route", "tryCatch", "processCall", "notify", "stop", "returnDocuments"] },
+          "label": { "type": "string" },
+          "config": { "type": "object" }
+        }
+      }
+    },
+    "edges": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[a-z][a-z0-9_-]*:[A-Za-z0-9_-]+$" },
+      "additionalProperties": { "type": "string" }
+    }
+  }
+}

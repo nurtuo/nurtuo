@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Release of the `nurtuo` runtime binary. Control plane (bun --compile) and bridges have their own jobs.
+version: 2
+project_name: nurtuo
+builds:
+  - id: nurtuo
+    dir: core/runtime
+    main: ./cmd/nurtuo
+    binary: nurtuo
+    env: [CGO_ENABLED=0]
+    goos: [linux, windows, darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w
+      - -X github.com/nurtuo/nurtuo/core/runtime/internal/version.Version={{.Version}}
+      - -X github.com/nurtuo/nurtuo/core/runtime/internal/version.Commit={{.Commit}}
+      - -X github.com/nurtuo/nurtuo/core/runtime/internal/version.Date={{.Date}}
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files: [LICENSE, LICENSING.md, README.md]
+checksum:
+  name_template: checksums.txt
+sboms:
+  - artifacts: archive        # Syft, SPDX JSON
+signs:
+  - cmd: cosign               # Sigstore keyless (GitHub OIDC)
+    signature: "${artifact}.sigstore.json"
+    args: ["sign-blob", "--bundle=${signature}", "${artifact}", "--yes"]
+    artifacts: checksum
+nfpms:
+  - package_name: nurtuo
+    formats: [deb, rpm]
+    license: AGPL-3.0-only
+    maintainer: Nurtuo <hello@nurtuo.com>
+    contents:
+      - src: core/deploy/systemd/nurtuo.service
+        dst: /lib/systemd/system/nurtuo.service
+release:
+  github: { owner: nurtuo, name: nurtuo }
+  draft: true

@@ -1,0 +1,18 @@
+# Third-party licenses allowed in Apache-2.0 artifacts (proto/, sdk/, connectors/, bridges/, cli/).
+# Stricter: no GPL/AGPL. MPL/EPL/LGPL only as unmodified dependencies.
+MIT
+BSD-2-Clause
+BSD-3-Clause
+Apache-2.0
+ISC
+Zlib
+0BSD
+PostgreSQL
+MPL-2.0
+EPL-2.0
+LGPL-2.1-or-later
+Unicode-DFS-2016
+Unicode-3.0
+CC0-1.0
+BlueOak-1.0.0
+Python-2.0

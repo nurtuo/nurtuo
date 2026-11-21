@@ -1,0 +1,22 @@
+# Third-party licenses allowed in AGPL-3.0 artifacts (core/). SPDX ids, one per line.
+MIT
+BSD-2-Clause
+BSD-3-Clause
+Apache-2.0
+ISC
+Zlib
+0BSD
+PostgreSQL
+MPL-2.0
+LGPL-2.1-or-later
+LGPL-3.0-or-later
+GPL-3.0-or-later
+AGPL-3.0-only
+AGPL-3.0-or-later
+# EPL-2.0 only with the GPL secondary-license designation (e.g. elkjs, unmodified)
+EPL-2.0
+Unicode-DFS-2016
+Unicode-3.0
+CC0-1.0
+BlueOak-1.0.0
+Python-2.0

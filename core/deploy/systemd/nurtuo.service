@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Template written by `nurtuo service install`; shown here for packaging (deb/rpm).
+[Unit]
+Description=Nurtuo runtime
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=nurtuo
+ExecStart=/usr/bin/nurtuo run --data-dir /var/lib/nurtuo
+Restart=on-failure
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

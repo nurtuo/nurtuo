@@ -1,0 +1,21 @@
+{
+  "schema": "nurtuo.flow/v1",
+  "id": "get-employee",
+  "name": "GetEmployee",
+  "revision": 1,
+  "steps": [
+    { "id": "start", "kind": "start", "config": { "type": "listener", "connector": "http", "path": "/employees/{id}" } },
+    { "id": "get_employee", "kind": "connector", "config": { "connector": "postgres", "operation": "GET", "objectType": "employee" } },
+    { "id": "found", "kind": "decision", "config": { "cel": "doc.id != ''" } },
+    { "id": "to_response", "kind": "map", "config": { "jsonata": "{ 'id': id, 'name': first_name & ' ' & last_name }" } },
+    { "id": "return", "kind": "returnDocuments", "config": {} },
+    { "id": "not_found", "kind": "stop", "config": { "status": 404 } }
+  ],
+  "edges": {
+    "start:default": "get_employee",
+    "get_employee:default": "found",
+    "found:true": "to_response",
+    "found:false": "not_found",
+    "to_response:default": "return"
+  }
+}

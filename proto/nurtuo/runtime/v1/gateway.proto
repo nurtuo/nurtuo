@@ -1,0 +1,84 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// Runtime <-> control plane gateway v1 (draft).
+// The runtime always dials out (outbound-only, mTLS); the control plane never connects to a runtime.
+syntax = "proto3";
+
+package nurtuo.runtime.v1;
+
+import "google/protobuf/timestamp.proto";
+
+service RuntimeGatewayService {
+  // One long-lived bidirectional stream per runtime: heartbeats and status up,
+  // desired-state changes and commands down.
+  rpc Connect(stream ConnectRequest) returns (stream ConnectResponse);
+  // Download a signed, immutable deployment bundle or artifact by digest.
+  rpc FetchArtifact(FetchArtifactRequest) returns (stream FetchArtifactResponse);
+}
+
+message ConnectRequest {
+  oneof msg {
+    Hello hello = 1;
+    Heartbeat heartbeat = 2;
+    DeploymentStatus deployment_status = 3;
+    CommandResult command_result = 4;
+  }
+}
+
+message ConnectResponse {
+  oneof msg {
+    DesiredState desired_state = 1;
+    Command command = 2;
+  }
+}
+
+message Hello {
+  string runtime_id = 1;
+  string version = 2;
+  string os = 3;
+  string arch = 4;
+  uint64 desired_state_revision = 5; // last applied revision, for reconcile
+}
+
+message Heartbeat {
+  google.protobuf.Timestamp at = 1;
+}
+
+message DesiredState {
+  uint64 revision = 1;
+  repeated Deployment deployments = 2;
+}
+
+message Deployment {
+  string deployment_id = 1;
+  string bundle_digest = 2; // sha256 of the signed bundle
+  repeated string queue_ids = 3;
+  repeated string listener_ids = 4;
+}
+
+message DeploymentStatus {
+  uint64 revision = 1;
+  string deployment_id = 2;
+  string state = 3; // applying | running | paused | error
+  string message = 4;
+}
+
+message Command {
+  string command_id = 1;
+  string name = 2; // pause_listener | resume_listener | replay_dlq | run_now | test_execute
+  map<string, string> args = 3;
+}
+
+message CommandResult {
+  string command_id = 1;
+  bool ok = 2;
+  string message = 3;
+}
+
+message FetchArtifactRequest {
+  string digest = 1;
+}
+
+message FetchArtifactResponse {
+  bytes data = 1;
+}

@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+id: http
+version: 0.1.0
+host: go-native
+displayName: HTTP / REST
+connection:
+  schema: { $ref: schemas/connection.json }   # baseUrl, auth (secret refs), timeouts, TLS
+operations:
+  - type: EXECUTE
+    customType: REQUEST          # any method; OpenAPI import fills request/response profiles
+    supportsBrowse: true
+  - type: LISTEN                 # served by the runtime's web server (webhooks)
+trackedProperties: [status_code, url]

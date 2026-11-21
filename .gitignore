@@ -1,0 +1,38 @@
+# Build output
+/dist/
+bin/
+*.exe
+*.test
+*.out
+coverage.*
+# Go
+/vendor/
+go.work.sum.bak
+# Node / TS
+node_modules/
+.turbo/
+.pnpm-store/
+*.tsbuildinfo
+packages/*/dist/
+**/dist/
+.next/
+# Java / Gradle (bridges/jvm)
+.gradle/
+build/
+*.class
+# Python (bridges/python)
+__pycache__/
+*.pyc
+.venv/
+# Local runtime data
+/.nurtuo/
+/data/
+*.log
+.env
+.env.*
+!.env.example
+# IDE / OS
+.idea/
+.vscode/*
+!.vscode/extensions.json
+.DS_Store

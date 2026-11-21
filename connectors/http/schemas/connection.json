@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "HTTP connection",
+  "type": "object",
+  "required": ["baseUrl"],
+  "properties": {
+    "baseUrl": { "type": "string", "format": "uri" },
+    "auth": {
+      "type": "object",
+      "properties": {
+        "type": { "enum": ["none", "basic", "bearer", "oauth2_client_credentials"] },
+        "secretRef": { "type": "string", "description": "Reference to a secret, never the value" }
+      }
+    },
+    "timeoutMs": { "type": "integer", "minimum": 1, "default": 30000 }
+  }
+}

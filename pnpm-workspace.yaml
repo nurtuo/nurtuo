@@ -1,0 +1,7 @@
+packages:
+  - "core/control-plane"
+  - "core/web"
+  - "core/mcp"
+  - "core/ai"
+  - "sdk/ts/*"
+  - "cli"

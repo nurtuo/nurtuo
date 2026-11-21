@@ -1,0 +1,7 @@
+[project]
+name = "nurtuo-bridge-python"
+version = "0.0.0"
+description = "Nurtuo Python connector bridge"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+dependencies = []
