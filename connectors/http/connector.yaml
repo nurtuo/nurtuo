@@ -3,11 +3,15 @@ id: http
 version: 0.1.0
 host: go-native
 displayName: HTTP / REST
+description: Call REST/HTTP APIs, or act as the HTTP listener of a flow (start step of type listener).
 connection:
-  schema: { $ref: schemas/connection.json }   # baseUrl, auth (secret refs), timeouts, TLS
+  schema: { $ref: schemas/connection.json }   # baseUrl, auth (none/basic/bearer/apikey), timeouts, retries, TLS
 operations:
-  - type: EXECUTE
-    customType: REQUEST          # any method; OpenAPI import fills request/response profiles
-    supportsBrowse: true
-  - type: LISTEN                 # served by the runtime's web server (webhooks)
+  # EXECUTE with the HTTP method as custom type. Per-document properties: http.method, http.path,
+  # http.query.<name>, http.header.<name>; {{property}} placeholders in path, headers and bodyTemplate.
+  - { type: EXECUTE, customType: GET, supportsBrowse: true, description: "HTTP GET; response body becomes the document" }
+  - { type: EXECUTE, customType: POST, supportsBrowse: true, description: "HTTP POST with the current document as body" }
+  - { type: EXECUTE, customType: PUT, supportsBrowse: true, description: "HTTP PUT with the current document as body" }
+  - { type: EXECUTE, customType: PATCH, supportsBrowse: true, description: "HTTP PATCH with the current document as body" }
+  - { type: EXECUTE, customType: DELETE, supportsBrowse: true, description: "HTTP DELETE" }
 trackedProperties: [status_code, url]
