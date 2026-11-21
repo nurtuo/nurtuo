@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: Apache-2.0
+id: nats
+version: 0.1.0
+host: go-native
+displayName: NATS
+description: Publish to NATS subjects, request/reply, and publish to JetStream.
+connection:
+  # See the connection schema in connector.go (Describe); fields listed here for the catalog.
+  schema: inline
+  fields: [url, token, username, password, creds, nkey_seed, name, connect_timeout_ms, tls]
+operations:
+  - { type: CREATE, description: "Publish the current document to a subject (core NATS)" }
+  - { type: EXECUTE, customType: REQUEST, description: "Request/reply; the reply becomes a document" }
+  - { type: EXECUTE, customType: JETSTREAM_PUBLISH, description: "Publish to JetStream and wait for the ack" }
+options: [subject, timeout_ms]
+trackedProperties: [subject, stream, sequence]
