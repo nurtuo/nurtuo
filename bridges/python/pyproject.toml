@@ -1,7 +1,60 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "nurtuo-bridge-python"
-version = "0.0.0"
-description = "Nurtuo Python connector bridge"
+version = "0.1.0"
+description = "Nurtuo Python connector bridge: host connectors written in Python over the gRPC connector contract"
+readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+  # The committed stubs in nurtuo_bridge/_gen are generated with these versions (see scripts/gen_proto.py).
+  "grpcio>=1.85.3",
+  "grpcio-health-checking>=1.85.3",
+  "protobuf>=7.35.1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "grpcio-tools>=1.85.3",
+  "pytest>=8",
+  "mypy>=1.10",
+  "ruff>=0.5",
+]
+
+[project.scripts]
+nurtuo-bridge = "nurtuo_bridge.server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+nurtuo_bridge = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 130
+src = ["src", "tests"]
+extend-exclude = ["src/nurtuo_bridge/_gen"]
+
+[tool.mypy]
+python_version = "3.12"
+disallow_untyped_defs = true
+check_untyped_defs = true
+warn_unused_ignores = true
+ignore_missing_imports = true
+# protobuf stubs type enum fields as the enum class while our API passes plain ints.
+disable_error_code = ["arg-type"]
+exclude = ["src/nurtuo_bridge/_gen"]
+
+# grpc and the generated protobuf modules are only partially typed (enums are plain ints).
+[[tool.mypy.overrides]]
+module = ["nurtuo_bridge._gen.*", "grpc.*", "grpc_health.*", "google.protobuf.*"]
+ignore_errors = true
+follow_imports = "silent"
