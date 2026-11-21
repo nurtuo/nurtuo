@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SFTP connection",
+  "type": "object",
+  "required": ["host", "user"],
+  "properties": {
+    "host": { "type": "string" },
+    "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 22 },
+    "user": { "type": "string" },
+    "password": { "type": "string", "writeOnly": true, "description": "Injected by the runtime from a secret; never stored in the flow" },
+    "privateKey": { "type": "string", "writeOnly": true, "description": "PEM private key, injected from a secret" },
+    "passphrase": { "type": "string", "writeOnly": true },
+    "hostKeyPolicy": {
+      "enum": ["known_hosts", "fingerprint", "insecure"],
+      "default": "known_hosts",
+      "description": "known_hosts: verify against knownHosts content; fingerprint: pin hostKeyFingerprint (SHA256:...); insecure: accept any key (not for production)"
+    },
+    "knownHosts": { "type": "string", "description": "Content of a known_hosts file" },
+    "hostKeyFingerprint": { "type": "string", "description": "e.g. SHA256:abc..." },
+    "rootPath": { "type": "string", "default": "/", "description": "All remote paths are confined below this directory" },
+    "maxListEntries": { "type": "integer", "minimum": 1, "default": 10000, "description": "QUERY returns at most this many entries; the result is flagged tracked.truncated=true when cut" },
+    "timeoutMs": { "type": "integer", "minimum": 1, "default": 30000 }
+  },
+  "oneOf": [{ "required": ["password"] }, { "required": ["privateKey"] }]
+}

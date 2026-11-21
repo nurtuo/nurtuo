@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: Apache-2.0
+id: sftp
+version: 0.1.0
+host: go-native
+displayName: SFTP
+description: List, download, upload and delete files on an SFTP server.
+connection:
+  schema: { $ref: schemas/connection.json }   # host, port, user, password | privateKey, host-key policy
+operations:
+  - { type: QUERY, description: "List a directory; output document is a JSON array of entries" }
+  - { type: GET, description: "Download a file, streamed in chunks" }
+  - { type: CREATE, description: "Upload a file (streamed, written to a .part file then renamed)" }
+  - { type: UPSERT, description: "Same as CREATE (overwrites)" }
+  - { type: DELETE, description: "Delete a remote file" }
+  - { type: EXECUTE, customType: RENAME, description: "Rename a remote file; properties: path, newPath" }
+trackedProperties: [path, size, truncated]
+capabilities: { streaming: true }
