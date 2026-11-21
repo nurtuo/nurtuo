@@ -15,7 +15,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: { go-version-file: core/runtime/go.mod }
+        with:
+          go-version-file: core/runtime/go.mod
+          # No root go.sum: the workspace has one sum per module (go.work).
+          cache-dependency-path: |
+            core/runtime/go.sum
+            sdk/go/go.sum
+            connectors/go.sum
       - run: go vet github.com/nurtuo/nurtuo/...
       - run: go test -race github.com/nurtuo/nurtuo/...
       - name: cross-compile runtime (static)
@@ -55,7 +61,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: { go-version-file: core/runtime/go.mod }
+        with:
+          go-version-file: core/runtime/go.mod
+          # No root go.sum: the workspace has one sum per module (go.work).
+          cache-dependency-path: |
+            core/runtime/go.sum
+            sdk/go/go.sum
+            connectors/go.sum
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with: { node-version: 24, cache: pnpm }
@@ -64,7 +76,8 @@ jobs:
         run: ./scripts/check-boundaries.sh
       - name: go-licenses (AGPL artifacts)
         run: |
-          go install github.com/google/go-licenses/v2@latest
+          # v2.0.1 reports the AGPL v3 text as "AGPL-3.0" (see agpl-allow.txt).
+          go install github.com/google/go-licenses/v2@v2.0.1
           cd core/runtime && go-licenses check ./... --allowed_licenses="$(grep -v '^#' ../../.github/licenses/agpl-allow.txt | paste -sd, -)"
       - name: go-licenses (Apache artifacts)
         run: |
