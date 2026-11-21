@@ -60,10 +60,10 @@ Start at the [documentation index](docs/README.md):
 
 `make snapshot` builds the `nurtuo` runtime the way a release would and writes
 the result to `dist/`. It runs GoReleaser in snapshot mode
-(`goreleaser release --snapshot --clean`) for six targets — linux, windows,
-and darwin, each on amd64 and arm64 — with `CGO_ENABLED=0`, `-trimpath`,
-checksums, a Syft SPDX SBOM per archive, and deb/rpm packages. Nothing is
-published.
+(`goreleaser release --snapshot --clean --skip=sign`) for six targets — linux,
+windows, and darwin, each on amd64 and arm64 — with `CGO_ENABLED=0`,
+`-trimpath`, checksums, a Syft SPDX SBOM per archive, and deb/rpm packages.
+Nothing is published.
 
 Install [GoReleaser](https://goreleaser.com) v2 and [Syft](https://github.com/anchore/syft)
 on your `PATH`, then:
@@ -76,7 +76,7 @@ make snapshot
 example:
 
 ```sh
-curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b "$HOME/.local/bin" v1.57.2
+curl -sSfL https://raw.githubusercontent.com/anchore/syft/v1.57.2/install.sh | sh -s -- -b "$HOME/.local/bin" v1.57.2
 ```
 
 Snapshot mode leaves these for the tagged release (see

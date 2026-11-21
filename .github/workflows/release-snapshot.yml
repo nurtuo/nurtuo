@@ -19,7 +19,6 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
-  actions: write
 concurrency:
   group: release-snapshot-${{ github.ref }}
   cancel-in-progress: true
@@ -30,16 +29,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: core/runtime/go.mod
 
       - name: Install GoReleaser
-        uses: goreleaser/goreleaser-action@v7
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
           version: v2.20.3
           install-only: true
@@ -48,14 +48,22 @@ jobs:
         run: |
           set -euo pipefail
           version=1.57.2
+          # sha256 from https://github.com/anchore/syft/releases/download/v1.57.2/syft_1.57.2_checksums.txt
           case "$(uname -m)" in
-            x86_64) arch=amd64 ;;
-            aarch64) arch=arm64 ;;
+            x86_64)
+              arch=amd64
+              sha=ad92bd3ec1b94a3df01d4d0aec199afa9c42b72e86da436ff5f837914d32706b
+              ;;
+            aarch64)
+              arch=arm64
+              sha=8efe605309c98798e1ee0cffdcf8c05ca26819b4cd44c0b03650f1e963e9bdb6
+              ;;
             *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
           esac
           archive="syft_${version}_linux_${arch}.tar.gz"
           mkdir -p "$HOME/.local/bin"
           curl -sSfL "https://github.com/anchore/syft/releases/download/v${version}/${archive}" -o "/tmp/${archive}"
+          echo "${sha}  /tmp/${archive}" | sha256sum -c -
           tar -xzf "/tmp/${archive}" -C "$HOME/.local/bin" syft
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/syft" version
@@ -89,8 +97,19 @@ jobs:
           grep -q '"spdxVersion"' "$sbom"
           grep -q 'SPDX-' "$sbom"
 
+          linux_archive=$(find dist -name 'nurtuo_*_linux_amd64.tar.gz' ! -name '*.spdx.json' -print -quit)
+          test -n "$linux_archive"
+          bindir=$(mktemp -d)
+          tar -xzf "$linux_archive" -C "$bindir" nurtuo
+          file "$bindir/nurtuo"
+          file "$bindir/nurtuo" | grep -q 'statically linked'
+          buildinfo=$(go version -m "$bindir/nurtuo")
+          printf '%s\n' "$buildinfo"
+          printf '%s\n' "$buildinfo" | grep -q 'CGO_ENABLED=0'
+          printf '%s\n' "$buildinfo" | grep -q -- '-trimpath=true'
+
       - name: Upload dist artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nurtuo-snapshot-${{ github.sha }}
           path: dist/
