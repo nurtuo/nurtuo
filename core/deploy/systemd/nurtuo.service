@@ -7,7 +7,7 @@ Wants=network-online.target
 
 [Service]
 User=nurtuo
-ExecStart=/usr/bin/nurtuo run --data-dir /var/lib/nurtuo
+ExecStart=/usr/bin/nurtuo run --config /etc/nurtuo/runtime.yaml
 Restart=on-failure
 LimitNOFILE=65536
 
