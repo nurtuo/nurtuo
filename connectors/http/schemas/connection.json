@@ -7,11 +7,24 @@
     "baseUrl": { "type": "string", "format": "uri" },
     "auth": {
       "type": "object",
+      "description": "Secret fields are resolved by the runtime and injected in memory; never stored in flows.",
       "properties": {
-        "type": { "enum": ["none", "basic", "bearer", "oauth2_client_credentials"] },
-        "secretRef": { "type": "string", "description": "Reference to a secret, never the value" }
+        "type": { "enum": ["none", "basic", "bearer", "apikey"], "default": "none" },
+        "username": { "type": "string" },
+        "password": { "type": "string", "x-nurtuo-secret": true },
+        "token": { "type": "string", "x-nurtuo-secret": true },
+        "apiKeyName": { "type": "string", "description": "Header or query parameter name" },
+        "apiKeyValue": { "type": "string", "x-nurtuo-secret": true },
+        "apiKeyIn": { "enum": ["header", "query"], "default": "header" }
       }
     },
-    "timeoutMs": { "type": "integer", "minimum": 1, "default": 30000 }
+    "headers": { "type": "object", "additionalProperties": { "type": "string" } },
+    "timeoutMs": { "type": "integer", "minimum": 1, "default": 30000 },
+    "insecureSkipVerify": { "type": "boolean", "default": false },
+    "testPath": { "type": "string", "default": "/", "description": "Path requested by Test connection" },
+    "retries": { "type": "integer", "minimum": 0, "default": 2, "description": "Retries for network errors, 408, 429 and 502/503/504. POST and PATCH are retried only if set explicitly." },
+    "retryBackoffMs": { "type": "integer", "minimum": 0, "default": 200 },
+    "openApiSpec": { "type": "string", "description": "Inline OpenAPI 3 document (JSON text) used by Browse to list operations and object types. Takes precedence over openApiUrl." },
+    "openApiUrl": { "type": "string", "format": "uri", "description": "URL of an OpenAPI 3 document fetched by Browse. Operator supplied; subject to the same SSRF policy as baseUrl." }
   }
 }
