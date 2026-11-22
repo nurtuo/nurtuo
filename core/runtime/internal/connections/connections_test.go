@@ -141,3 +141,28 @@ func (r *Resolver) Resolveerr(d *Definition, p map[string]bool) error {
 	_, err := r.Resolve(context.Background(), d, p)
 	return err
 }
+
+func TestResolveRef(t *testing.T) {
+	ctx := context.Background()
+	red := secrets.NewRedactor()
+	r := &Resolver{Secrets: mapProv{"hook.key": "s3cr3t-value"}, Redactor: red}
+	s, err := r.ResolveRef(ctx, "secret://hook.key")
+	if err != nil || s.Reveal() != "s3cr3t-value" {
+		t.Fatalf("got %v, %v", s, err)
+	}
+	if got := red.Redact("x s3cr3t-value y"); strings.Contains(got, "s3cr3t-value") {
+		t.Fatalf("value not registered for redaction: %q", got)
+	}
+	if _, err := r.ResolveRef(ctx, "plain-literal"); err == nil {
+		t.Fatal("literal accepted")
+	}
+	if _, err := r.ResolveRef(ctx, "secret://../etc"); err == nil {
+		t.Fatal("invalid name accepted")
+	}
+	if _, err := r.ResolveRef(ctx, "secret://missing"); err == nil || !strings.Contains(err.Error(), `"missing"`) {
+		t.Fatalf("missing: %v", err)
+	}
+	if _, err := (&Resolver{}).ResolveRef(ctx, "secret://x"); err == nil {
+		t.Fatal("nil provider accepted")
+	}
+}

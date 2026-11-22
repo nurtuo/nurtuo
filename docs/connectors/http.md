@@ -108,6 +108,59 @@ level deep. Without either setting Browse returns not implemented.
 - Secrets are redacted from error messages and diagnostics. Documents that carry secrets in
   headers or bodies are not scrubbed.
 
+## HTTP listener (Start step)
+
+Inbound HTTP is not handled by this connector but by the runtime's HTTP listener
+(`core/runtime/internal/listener`), configured on the flow's `start` step with
+`"type": "listener", "connector": "http"`. The listen address is runtime-wide (`http_addr` in
+`runtime.yaml`, default `127.0.0.1:0`); `path` and `method` are per flow. See
+[flow-reference.md](../flow-reference.md#start) for the schema.
+
+Protection is opt-in and configured on the same `start` step:
+
+```json
+{
+  "type": "listener",
+  "connector": "http",
+  "path": "/hooks/github",
+  "auth": {
+    "type": "hmac",
+    "secret": "secret://github-webhook",
+    "header": "X-Hub-Signature-256",
+    "prefix": "sha256="
+  },
+  "tls": { "cert": "secret://listener-cert", "key": "secret://listener-key" }
+}
+```
+
+| `auth.type` | The request must carry | Other fields |
+|---|---|---|
+| `bearer` | `Authorization: Bearer <secret>` (scheme case-insensitive) | |
+| `apiKey` | the secret as the value of `header` | `header`, default `X-API-Key` |
+| `hmac` | `prefix` + the HMAC of the raw request body, keyed with the secret, in `header` | `header` (default `X-Signature`), `algorithm` `sha256` (default) or `sha512`, `encoding` `hex` (default) or `base64`, `prefix` (default none) |
+
+- `secret`, `tls.cert` and `tls.key` must be `secret://<name>` references (the schema rejects literal
+  values). The runtime resolves them from its secret store (`secrets` in `runtime.yaml`, see
+  [operations.md](../operations.md)) when it starts the listener, and adds the values to the log
+  redactor. A missing secret fails the listener start, naming the secret.
+- Credentials are compared in constant time (`bearer`/`apiKey`: SHA-256 of both sides compared with
+  `crypto/subtle`; `hmac`: `hmac.Equal`). A request that fails the check gets `401 Unauthorized`
+  (with `WWW-Authenticate: Bearer` for `bearer`) and the flow does not run. `bearer` and `apiKey`
+  are checked before the body is read; `hmac` reads the body (still capped at 1 MiB) first.
+- For `bearer` and `apiKey` the credential header is **not** copied into the document properties
+  (`http.request.header.*`), so it does not reach flow steps, logs or tracked values. The `hmac`
+  signature header is not a secret and stays visible.
+- `tls` serves HTTPS with the given PEM certificate chain and private key; TLS 1.2 is the minimum.
+  Client certificates (mTLS) are not supported.
+- **Non-loopback binds need `auth`.** When `http_addr` is not a loopback address (`0.0.0.0`, `::`,
+  an empty host such as `:8080`, or any interface address), the runtime refuses to start an HTTP
+  listener whose `start` step has no `auth`, unless the step sets `"insecure": true`. Use
+  `insecure` only behind a proxy that authenticates for you.
+- Secrets are read when the listener starts. A listener restarts only when its deployment's bundle
+  changes, so after rotating a secret, redeploy the flow.
+- Not covered: rate limiting, replay protection (`hmac` signs only the body, with no timestamp or
+  nonce), client certificates, per-flow bind addresses.
+
 ## Limits
 
 32 MiB response body per document; 16 MiB OpenAPI document; 10 redirects; one document buffered

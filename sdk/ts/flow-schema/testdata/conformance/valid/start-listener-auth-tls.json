@@ -1,0 +1,45 @@
+{
+  "description": "http listener with hmac auth, tls and insecure flag",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [
+      {
+        "id": "start",
+        "kind": "start",
+        "config": {
+          "type": "listener",
+          "connector": "http",
+          "path": "/hook",
+          "method": "POST",
+          "auth": {
+            "type": "hmac",
+            "secret": "secret://hook.key",
+            "header": "X-Hub-Signature-256",
+            "algorithm": "sha256",
+            "encoding": "hex",
+            "prefix": "sha256="
+          },
+          "tls": {
+            "cert": "secret://tls.crt",
+            "key": "secret://tls.key"
+          },
+          "insecure": false
+        }
+      },
+      {
+        "id": "end",
+        "kind": "stop",
+        "config": {
+          "status": 202
+        }
+      }
+    ],
+    "edges": {
+      "start:default": "end"
+    }
+  },
+  "expect": []
+}

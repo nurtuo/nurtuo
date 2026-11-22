@@ -413,6 +413,16 @@ export const flowSchema: Record<string, any> = {
         "cron": {
           "type": "string",
           "minLength": 1
+        },
+        "auth": {
+          "$ref": "#/$defs/listenerAuth"
+        },
+        "tls": {
+          "$ref": "#/$defs/listenerTLS"
+        },
+        "insecure": {
+          "type": "boolean",
+          "description": "HTTP listener: allow binding a non-loopback address without auth."
         }
       },
       "allOf": [
@@ -468,6 +478,68 @@ export const flowSchema: Record<string, any> = {
           }
         }
       ]
+    },
+    "secretRef": {
+      "description": "Reference to a runtime secret; literal secret values are never stored in a flow.",
+      "type": "string",
+      "pattern": "^secret://[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+    },
+    "listenerAuth": {
+      "description": "HTTP listener authentication. bearer: the secret as an Authorization Bearer token. apiKey: the secret in header (default X-API-Key). hmac: HMAC of the raw body, keyed with the secret, in header (default X-Signature).",
+      "type": "object",
+      "required": [
+        "type",
+        "secret"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": [
+            "bearer",
+            "apiKey",
+            "hmac"
+          ]
+        },
+        "secret": {
+          "$ref": "#/$defs/secretRef"
+        },
+        "header": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "algorithm": {
+          "enum": [
+            "sha256",
+            "sha512"
+          ]
+        },
+        "encoding": {
+          "enum": [
+            "hex",
+            "base64"
+          ]
+        },
+        "prefix": {
+          "type": "string"
+        }
+      }
+    },
+    "listenerTLS": {
+      "description": "HTTP listener TLS (minimum TLS 1.2): PEM certificate chain and private key from secrets.",
+      "type": "object",
+      "required": [
+        "cert",
+        "key"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "cert": {
+          "$ref": "#/$defs/secretRef"
+        },
+        "key": {
+          "$ref": "#/$defs/secretRef"
+        }
+      }
     },
     "connectorConfig": {
       "description": "Connector step shell (operation against an external system). Ports: default.",

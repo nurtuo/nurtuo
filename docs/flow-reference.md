@@ -67,6 +67,27 @@ Output ports: `default`.
 | `method` | string | no |  |
 | `queue` | string | no | minLength 1 |
 | `cron` | string | no | minLength 1 |
+| `auth` | object (listenerAuth) | no |  |
+| `tls` | object (listenerTLS) | no |  |
+| `insecure` | boolean | no |  |
+
+`auth`: HTTP listener authentication. bearer: the secret as an Authorization Bearer token. apiKey: the secret in header (default X-API-Key). hmac: HMAC of the raw body, keyed with the secret, in header (default X-Signature).
+
+| Field | Type | Required | Constraints |
+|---|---|---|---|
+| `type` | enum | yes | one of `bearer`, `apiKey`, `hmac` |
+| `secret` | string (secretRef) | yes | pattern `^secret://[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$` |
+| `header` | string | no | pattern `^[A-Za-z0-9_-]+$` |
+| `algorithm` | enum | no | one of `sha256`, `sha512` |
+| `encoding` | enum | no | one of `hex`, `base64` |
+| `prefix` | string | no |  |
+
+`tls`: HTTP listener TLS (minimum TLS 1.2): PEM certificate chain and private key from secrets.
+
+| Field | Type | Required | Constraints |
+|---|---|---|---|
+| `cert` | string (secretRef) | yes | pattern `^secret://[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$` |
+| `key` | string (secretRef) | yes | pattern `^secret://[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$` |
 
 - When `type` is `"listener"`: required `connector`.
 - When `type` is `"queue"`: required `queue`.
@@ -74,6 +95,7 @@ Output ports: `default`.
 - A flow must have exactly one `start` step and it cannot have incoming edges.
 - Runtime status: only `listener` with `connector` `http` and `queue` start steps are bound to push listeners by the runtime (`core/runtime/internal/listener`). `manual` and `schedule` are accepted by the schema, but nothing in the runtime fires a cron schedule yet, and other connector listeners (bridge listeners) are not built by the listener factory.
 - The HTTP listener matches `path` exactly (it must start with `/`; there is no `{id}` path templating despite the `/employees/{id}` shape in `examples/flows/get-employee.flow.json`), defaults `method` to `POST`, and accepts bodies up to 1 MiB.
+- HTTP listener protection is opt-in: `auth` (`bearer`, `apiKey` or `hmac`; the secret is resolved from the runtime secret store and compared in constant time; a failed check is answered `401` before the flow runs) and `tls` (PEM certificate and key from secrets, TLS 1.2 minimum). The runtime refuses to start an HTTP listener on a non-loopback `http_addr` without `auth` unless `insecure` is `true`. `auth`, `tls` and `insecure` are ignored by other start types. See [connectors/http.md](connectors/http.md#http-listener-start-step).
 
 Example (`examples/flows/reference/start.flow.json`):
 

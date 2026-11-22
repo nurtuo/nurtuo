@@ -17,7 +17,7 @@ import (
 )
 
 func TestFromStartHTTP(t *testing.T) {
-	l, err := FromStart(flow.StartConfig{Type: "listener", Connector: "http", Path: "/in", Method: "put"}, FactoryDeps{})
+	l, err := FromStart(context.Background(), flow.StartConfig{Type: "listener", Connector: "http", Path: "/in", Method: "put"}, FactoryDeps{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,10 +28,10 @@ func TestFromStartHTTP(t *testing.T) {
 	if h.cfg.Path != "/in" || h.cfg.Method != "PUT" {
 		t.Fatalf("cfg = %+v", h.cfg)
 	}
-	if _, err := FromStart(flow.StartConfig{Type: "listener", Connector: "sftp", Path: "/x"}, FactoryDeps{}); err == nil {
+	if _, err := FromStart(context.Background(), flow.StartConfig{Type: "listener", Connector: "sftp", Path: "/x"}, FactoryDeps{}); err == nil {
 		t.Fatal("non-http connector must be rejected")
 	}
-	if _, err := FromStart(flow.StartConfig{Type: "listener", Connector: "http", Path: "no-slash"}, FactoryDeps{}); err == nil {
+	if _, err := FromStart(context.Background(), flow.StartConfig{Type: "listener", Connector: "http", Path: "no-slash"}, FactoryDeps{}); err == nil {
 		t.Fatal("bad path must be rejected")
 	}
 }
@@ -44,7 +44,7 @@ func TestFromStartQueueAckNack(t *testing.T) {
 	if err := mb.Ensure(ctx, queue.QueueDef{Name: "orders", MaxDeliveries: 2}); err != nil {
 		t.Fatal(err)
 	}
-	l, err := FromStart(flow.StartConfig{Type: "queue", Queue: "orders"}, FactoryDeps{Queues: mb})
+	l, err := FromStart(context.Background(), flow.StartConfig{Type: "queue", Queue: "orders"}, FactoryDeps{Queues: mb})
 	if err != nil {
 		t.Fatal(err)
 	}

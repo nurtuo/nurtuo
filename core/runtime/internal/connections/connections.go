@@ -239,3 +239,29 @@ func (r *Resolver) Resolve(ctx context.Context, d *Definition, secretPaths map[s
 	}
 	return &Resolved{Def: d, Config: &connectorv1.ConnectionConfig{Settings: st}, Values: revealed}, nil
 }
+
+// ResolveRef looks up a single secret://<name> reference (e.g. a listener's auth secret or TLS
+// key) and registers its value with the Redactor. Errors name the secret, never the value.
+func (r *Resolver) ResolveRef(ctx context.Context, ref string) (secrets.Secret, error) {
+	name, ok := strings.CutPrefix(ref, secrets.Ref)
+	if !ok {
+		return secrets.Secret{}, fmt.Errorf("%q is not a %s<name> reference (secrets are never stored in bundles)", ref, secrets.Ref)
+	}
+	if err := secrets.ValidName(name); err != nil {
+		return secrets.Secret{}, err
+	}
+	if r.Secrets == nil {
+		return secrets.Secret{}, errors.New("no secret provider configured")
+	}
+	s, err := r.Secrets.Get(ctx, name)
+	if err != nil {
+		if errors.Is(err, secrets.ErrNotFound) {
+			return secrets.Secret{}, fmt.Errorf("secret %q not found in the configured secret provider", name)
+		}
+		return secrets.Secret{}, err
+	}
+	if r.Redactor != nil {
+		r.Redactor.Add(s.Reveal())
+	}
+	return s, nil
+}

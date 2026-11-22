@@ -1,0 +1,49 @@
+{
+  "description": "listener tls without key; insecure not a boolean",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [
+      {
+        "id": "start",
+        "kind": "start",
+        "config": {
+          "type": "listener",
+          "connector": "http",
+          "path": "/hook",
+          "method": "POST",
+          "tls": {
+            "cert": "secret://c"
+          },
+          "insecure": "yes"
+        }
+      },
+      {
+        "id": "end",
+        "kind": "stop",
+        "config": {
+          "status": 202
+        }
+      }
+    ],
+    "edges": {
+      "start:default": "end"
+    }
+  },
+  "expect": [
+    {
+      "severity": "error",
+      "code": "schema.type",
+      "path": "/steps/0/config/insecure",
+      "stepId": "start"
+    },
+    {
+      "severity": "error",
+      "code": "schema.required",
+      "path": "/steps/0/config/tls/key",
+      "stepId": "start"
+    }
+  ]
+}

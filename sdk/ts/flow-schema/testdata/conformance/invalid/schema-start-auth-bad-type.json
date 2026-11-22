@@ -1,0 +1,43 @@
+{
+  "description": "listener auth type is unknown",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [
+      {
+        "id": "start",
+        "kind": "start",
+        "config": {
+          "type": "listener",
+          "connector": "http",
+          "path": "/hook",
+          "method": "POST",
+          "auth": {
+            "type": "basic",
+            "secret": "secret://x"
+          }
+        }
+      },
+      {
+        "id": "end",
+        "kind": "stop",
+        "config": {
+          "status": 202
+        }
+      }
+    ],
+    "edges": {
+      "start:default": "end"
+    }
+  },
+  "expect": [
+    {
+      "severity": "error",
+      "code": "schema.enum",
+      "path": "/steps/0/config/auth/type",
+      "stepId": "start"
+    }
+  ]
+}

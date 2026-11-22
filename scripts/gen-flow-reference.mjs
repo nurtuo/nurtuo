@@ -36,6 +36,7 @@ const NOTES = {
     "A flow must have exactly one `start` step and it cannot have incoming edges.",
     "Runtime status: only `listener` with `connector` `http` and `queue` start steps are bound to push listeners by the runtime (`core/runtime/internal/listener`). `manual` and `schedule` are accepted by the schema, but nothing in the runtime fires a cron schedule yet, and other connector listeners (bridge listeners) are not built by the listener factory.",
     "The HTTP listener matches `path` exactly (it must start with `/`; there is no `{id}` path templating despite the `/employees/{id}` shape in `examples/flows/get-employee.flow.json`), defaults `method` to `POST`, and accepts bodies up to 1 MiB.",
+    "HTTP listener protection is opt-in: `auth` (`bearer`, `apiKey` or `hmac`; the secret is resolved from the runtime secret store and compared in constant time; a failed check is answered `401` before the flow runs) and `tls` (PEM certificate and key from secrets, TLS 1.2 minimum). The runtime refuses to start an HTTP listener on a non-loopback `http_addr` without `auth` unless `insecure` is `true`. `auth`, `tls` and `insecure` are ignored by other start types. See [connectors/http.md](connectors/http.md#http-listener-start-step).",
   ],
   connector: [
     "`operation` is an operation name of the connector. The engine maps `GET`, `QUERY`, `CREATE`, `UPDATE`, `UPSERT` and `DELETE` (case-insensitive) to the matching contract operation type; any other value is sent as `EXECUTE` with that value as the custom type.",
@@ -94,13 +95,19 @@ const summary = (k) => schema.$defs[`${k}Config`].description.replace(/\s*(Ports
 const esc = (s) => String(s).replaceAll("|", "\\|");
 const code = (s) => "`" + esc(s) + "`";
 
+/** Resolves a local `#/$defs/<name>` reference (one level). */
+function deref(p) {
+  return p?.$ref ? schema.$defs[p.$ref.split("/").pop()] : p;
+}
 function typeOf(p) {
+  if (p.$ref) return `${deref(p).type ?? "any"} (${p.$ref.split("/").pop()})`;
   if (p.const !== undefined) return `const ${code(JSON.stringify(p.const))}`;
   if (p.enum) return "enum";
   if (p.type === "array") return `array of ${p.items?.$ref ? p.items.$ref.split("/").pop() : (p.items?.type ?? "any")}`;
   return p.type ?? "any";
 }
 function constraints(p) {
+  p = deref(p);
   const c = [];
   if (p.enum) c.push("one of " + p.enum.map((v) => code(v)).join(", "));
   if (p.minLength !== undefined) c.push(`minLength ${p.minLength}`);
@@ -166,6 +173,11 @@ function render() {
       if (p.type === "array" && p.items?.type === "object") {
         o.push(`Each element of ${code(name)}:\n`);
         o.push(table(p.items));
+      }
+      const d = deref(p);
+      if (p.$ref && d.type === "object" && d.properties) {
+        o.push(`${code(name)}${d.description ? ": " + esc(d.description) : ""}\n`);
+        o.push(table(d));
       }
     }
     for (const r of conditional(def)) o.push(`- ${r}`);

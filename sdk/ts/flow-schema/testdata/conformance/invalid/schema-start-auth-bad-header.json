@@ -1,0 +1,51 @@
+{
+  "description": "listener auth header is not a valid header name; algorithm unknown",
+  "flow": {
+    "schema": "nurtuo.flow/v1",
+    "id": "t",
+    "name": "T",
+    "revision": 1,
+    "steps": [
+      {
+        "id": "start",
+        "kind": "start",
+        "config": {
+          "type": "listener",
+          "connector": "http",
+          "path": "/hook",
+          "method": "POST",
+          "auth": {
+            "type": "hmac",
+            "secret": "secret://x",
+            "header": "X Sig",
+            "algorithm": "md5"
+          }
+        }
+      },
+      {
+        "id": "end",
+        "kind": "stop",
+        "config": {
+          "status": 202
+        }
+      }
+    ],
+    "edges": {
+      "start:default": "end"
+    }
+  },
+  "expect": [
+    {
+      "severity": "error",
+      "code": "schema.enum",
+      "path": "/steps/0/config/auth/algorithm",
+      "stepId": "start"
+    },
+    {
+      "severity": "error",
+      "code": "schema.pattern",
+      "path": "/steps/0/config/auth/header",
+      "stepId": "start"
+    }
+  ]
+}

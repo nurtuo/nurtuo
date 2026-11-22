@@ -4,9 +4,11 @@ package listener
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"net"
 	"net/http"
@@ -17,6 +19,7 @@ import (
 	"time"
 
 	"github.com/nurtuo/nurtuo/core/runtime/internal/engine/docs"
+	"github.com/nurtuo/nurtuo/sdk/go/flow"
 )
 
 // HTTP document property names set by the listener (and read back from Return documents).
@@ -37,6 +40,13 @@ type HTTPConfig struct {
 	MaxBodyBytes int64         // default 1 MiB
 	Timeout      time.Duration // per-request flow timeout; 0 = none
 	Spool        *docs.Spool   // payload spool; default in-memory-first spool
+
+	// Auth, when set, rejects unauthenticated requests with 401 before the flow runs.
+	Auth *HTTPAuth
+	// TLS, when set, serves HTTPS; MinVersion is raised to TLS 1.2 if lower.
+	TLS *tls.Config
+	// Insecure allows a non-loopback Addr without Auth. Without it NewHTTP refuses such a config.
+	Insecure bool
 }
 
 type httpListener struct {
@@ -71,6 +81,26 @@ func NewHTTP(cfg HTTPConfig) (Listener, error) {
 	if cfg.MaxBodyBytes <= 0 {
 		cfg.MaxBodyBytes = 1 << 20
 	}
+	if cfg.Auth != nil {
+		a := *cfg.Auth
+		if err := a.normalize(); err != nil {
+			return nil, err
+		}
+		cfg.Auth = &a
+	}
+	if cfg.Auth == nil && !cfg.Insecure && !isLoopback(cfg.Addr) {
+		return nil, fmt.Errorf("listener: refusing to serve %s on non-loopback address %s without authentication (configure auth, or set insecure: true)", cfg.Path, cfg.Addr)
+	}
+	if cfg.TLS != nil {
+		if len(cfg.TLS.Certificates) == 0 && cfg.TLS.GetCertificate == nil {
+			return nil, errors.New("listener: tls config has no certificate")
+		}
+		tc := cfg.TLS.Clone()
+		if tc.MinVersion < tls.VersionTLS12 {
+			tc.MinVersion = tls.VersionTLS12
+		}
+		cfg.TLS = tc
+	}
 	sp := cfg.Spool
 	if sp == nil {
 		sp = docs.NewSpool(docs.SpoolConfig{})
@@ -87,6 +117,9 @@ func (l *httpListener) Start(_ context.Context, h Handler) error {
 	ln, err := net.Listen("tcp", l.cfg.Addr)
 	if err != nil {
 		return err
+	}
+	if l.cfg.TLS != nil {
+		ln = tls.NewListener(ln, l.cfg.TLS)
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc(l.cfg.Path, l.serve)
@@ -159,12 +192,23 @@ func (l *httpListener) serve(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	auth := l.cfg.Auth
+	if auth != nil && auth.secretHeader() && !auth.checkHeader(r) {
+		unauthorized(w, auth)
+		return
+	}
 	if l.paused.Load() {
 		w.Header().Set("Retry-After", "5")
 		http.Error(w, "listener paused", http.StatusServiceUnavailable)
 		return
 	}
-	payload, err := l.spool.NewPayload(http.MaxBytesReader(w, r.Body, l.cfg.MaxBodyBytes))
+	var body io.Reader = http.MaxBytesReader(w, r.Body, l.cfg.MaxBodyBytes)
+	var mac hash.Hash
+	if auth != nil && auth.Type == flow.AuthHMAC {
+		mac = auth.newMAC()
+		body = io.TeeReader(body, mac)
+	}
+	payload, err := l.spool.NewPayload(body)
 	if err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
@@ -174,8 +218,16 @@ func (l *httpListener) serve(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cannot read body", http.StatusBadRequest)
 		return
 	}
+	if mac != nil && !auth.checkSignature(r, mac.Sum(nil)) {
+		_ = payload.Release()
+		unauthorized(w, auth)
+		return
+	}
 	props := map[string]string{PropMethod: r.Method, PropPath: r.URL.Path}
 	for k, v := range r.Header {
+		if auth != nil && auth.secretHeader() && http.CanonicalHeaderKey(k) == auth.Header {
+			continue // never hand the credential to the flow (documents are logged and tracked)
+		}
 		if len(v) > 0 {
 			props[PropHeaderPrefix+strings.ToLower(k)] = strings.Join(v, ",")
 		}
@@ -227,6 +279,13 @@ func (l *httpListener) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeReturned(w, res.Returned)
+}
+
+func unauthorized(w http.ResponseWriter, a *HTTPAuth) {
+	if a.Type == flow.AuthBearer {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="nurtuo"`)
+	}
+	http.Error(w, "unauthorized", http.StatusUnauthorized)
 }
 
 func writeReturned(w http.ResponseWriter, ret *docs.Set) {

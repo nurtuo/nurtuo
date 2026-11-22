@@ -88,7 +88,7 @@ YAML, or JSON when the file extension is `.json`. Loaded by `LoadConfig`; relati
 | `log_level` | no | parsed, but **not used** by the code today: the logger does not read it |
 | `bundle_dir` | no | directory of bundle files; when empty the runtime uses a placeholder deployer that only records deployments |
 | `trusted_keys` | no | list of hex Ed25519 public keys. When set, `bundle_dir` holds signed `<sha256>.bundle` archives that are digest-checked and signature-verified before use, and plain `.json` bundles are **not** accepted |
-| `http_addr` | no | listen address of HTTP-trigger listeners; default `127.0.0.1:0` (random loopback port) |
+| `http_addr` | no | listen address of HTTP-trigger listeners; default `127.0.0.1:0` (random loopback port). On a non-loopback address a listener starts only if its `start` step sets `auth` (or `insecure: true`); see [connectors/http.md](connectors/http.md#http-listener-start-step) |
 | `secrets` | no | `{provider: env\|dir\|encrypted-file, path, key_file}`: where `secret://name` references in bundle connections are resolved. Default `env` (`NURTUO_SECRET_<NAME>`). Manage values with `nurtuo secret` |
 | `connection_test` | no | `strict` (default: a failing connection `Test` fails the deployment), `warn` or `off` |
 
