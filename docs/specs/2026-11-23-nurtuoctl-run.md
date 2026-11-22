@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Spec: `nurtuo flow run` (run a canvas-exported flow locally against connection files)
 
-Status: approved. Date: 2026-11-23.
+Status: in-progress. Date: 2026-11-23.
 
 Extends: [connector-sftp](implemented/2026-11-21-connector-sftp.md),
 [engine-interpreter](implemented/2026-11-21-engine-interpreter.md),
@@ -359,7 +359,20 @@ Tests ship in the same change as the code. Names are proposed; none are written 
 - Specs: [connector-sftp](implemented/2026-11-21-connector-sftp.md), [engine-interpreter](implemented/2026-11-21-engine-interpreter.md), [ts-client-and-cli](implemented/2026-11-21-ts-client-and-cli.md), [canvas-editor](implemented/2026-11-21-canvas-editor.md), [license-boundaries](implemented/2026-11-21-license-boundaries.md)
 - Code: `core/runtime/cmd/nurtuo/{main,run}.go`, `core/runtime/internal/connections/connections.go`, `core/runtime/internal/connhost/{registry,manager}.go`, `core/runtime/internal/engine/{interp,steps}.go`, `connectors/sftp/{sftp,config}.go`, `sdk/go/flow/flow.go`, `examples/flows/reference/connector.flow.json`
 
+## Implementation Status
+
+Implementation PR: branch `feat/nurtuo-flow-run`, stacked on #50. Readiness report:
+[analysis/pre-implement-nurtuoctl-run.md](analysis/pre-implement-nurtuoctl-run.md) (conditional).
+
+| Phase | Status | Date | Notes |
+|-------|--------|------|-------|
+| Phase 1: command skeleton, parse and validate | Done | 2026-11-23 | Steps 1-3; `TestFlowRunUsage`, `TestFlowRunInvalidFlow`, `TestFlowRunConnectionParse`, `TestFlowRunConnectionMismatch` passing |
+| Phase 2: in-process run with a stub connector | Pending | | |
+| Phase 3: real SFTP and host-key policy | Pending | | |
+| Phase 4: container e2e in CI | Pending | | |
+
 ## Changelog
 
 - 2026-11-23: created as draft skeleton
 - 2026-11-23: approved; decisions recorded; command is nurtuo flow run
+- 2026-11-23: implementation started (status in-progress); phase 1 landed: `nurtuo flow` dispatch, flag parsing, flow and connection validation, id/kind cross-check (exit 2 before any network access); `nurtuo run` usage hints at `nurtuo flow run`
