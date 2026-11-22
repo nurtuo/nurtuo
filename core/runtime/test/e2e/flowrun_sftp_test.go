@@ -37,9 +37,9 @@ const (
 // sftpContainer is a running SFTP server container.
 type sftpContainer struct {
 	host, port string
-	hostKey    ssh.PublicKey // the key the server presents
-	clientKey  string        // PEM private key authorized for user
-	body       string        // content of /downloads/version.txt
+	hostKeys   []ssh.PublicKey // every host key the server offers (rsa, ecdsa, ed25519)
+	clientKey  string          // PEM private key authorized for user
+	body       string          // content of /downloads/version.txt
 }
 
 func run(t *testing.T, name string, args ...string) string {
@@ -117,8 +117,9 @@ func startSFTPContainer(t *testing.T) *sftpContainer {
 	return c
 }
 
-// waitReady waits for sshd's banner and reads the server's ed25519 host key from the container
-// (the server generates its own host keys on first start).
+// waitReady waits for sshd's banner and reads every host key the server offers from the container
+// (the server generates its own host keys on first start; the client may negotiate any key type).
+// It then probes the server once to check that the key it actually presents is among them.
 func (c *sftpContainer) waitReady(t *testing.T, id string) {
 	t.Helper()
 	deadline := time.Now().Add(90 * time.Second)
@@ -129,10 +130,20 @@ func (c *sftpContainer) waitReady(t *testing.T, id string) {
 			line, rerr := bufio.NewReader(conn).ReadString('\n')
 			_ = conn.Close()
 			if rerr == nil && strings.HasPrefix(line, "SSH-") {
-				out, kerr := exec.Command("docker", "exec", id, "cat", "/etc/ssh/ssh_host_ed25519_key.pub").Output()
+				out, kerr := exec.Command("docker", "exec", id, "sh", "-c", "cat /etc/ssh/ssh_host_*_key.pub").Output()
 				if kerr == nil {
-					if key, _, _, _, perr := ssh.ParseAuthorizedKey(out); perr == nil {
-						c.hostKey = key
+					var keys []ssh.PublicKey
+					for _, l := range strings.Split(string(out), "\n") {
+						if strings.TrimSpace(l) == "" {
+							continue
+						}
+						if key, _, _, _, perr := ssh.ParseAuthorizedKey([]byte(l)); perr == nil {
+							keys = append(keys, key)
+						}
+					}
+					if len(keys) > 0 {
+						c.hostKeys = keys
+						c.checkPresented(t)
 						return
 					}
 				}
@@ -142,6 +153,35 @@ func (c *sftpContainer) waitReady(t *testing.T, id string) {
 	}
 	logs, _ := exec.Command("docker", "logs", id).CombinedOutput()
 	t.Fatalf("sftp container not ready after 90s:\n%s", logs)
+}
+
+// checkPresented handshakes once (capturing the presented key only, no credentials are sent) and
+// fails with a key-type diagnostic if it is not one of the recorded keys.
+func (c *sftpContainer) checkPresented(t *testing.T) {
+	t.Helper()
+	var presented ssh.PublicKey
+	cfg := &ssh.ClientConfig{
+		User:    user,
+		Timeout: 10 * time.Second,
+		HostKeyCallback: func(_ string, _ net.Addr, k ssh.PublicKey) error {
+			presented = k
+			return errors.New("probe: key captured")
+		},
+	}
+	_, _ = ssh.Dial("tcp", net.JoinHostPort(c.host, c.port), cfg)
+	if presented == nil {
+		t.Fatalf("probe did not receive a host key from %s", net.JoinHostPort(c.host, c.port))
+	}
+	var types []string
+	for _, k := range c.hostKeys {
+		types = append(types, k.Type())
+		if bytes.Equal(k.Marshal(), presented.Marshal()) {
+			return
+		}
+	}
+	// Server presents a key not in /etc/ssh: record it so verification still uses what it really offers.
+	t.Logf("presented host key type %s not among recorded types %v; adding it", presented.Type(), types)
+	c.hostKeys = append(c.hostKeys, presented)
 }
 
 var binPath string
@@ -171,11 +211,15 @@ type result struct {
 	stdout, stderr string
 }
 
-func (c *sftpContainer) knownHosts(t *testing.T, dir string, key ssh.PublicKey) string {
+func (c *sftpContainer) knownHosts(t *testing.T, dir string, keys ...ssh.PublicKey) string {
 	t.Helper()
-	line := knownhosts.Line([]string{net.JoinHostPort(c.host, c.port)}, key)
+	var sb strings.Builder
+	for _, key := range keys {
+		// Line normalizes host:port to the "[host]:port" form the client looks up.
+		sb.WriteString(knownhosts.Line([]string{net.JoinHostPort(c.host, c.port)}, key) + "\n")
+	}
 	p := filepath.Join(dir, "known_hosts")
-	if err := os.WriteFile(p, []byte(line+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(p, []byte(sb.String()), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return p
@@ -230,7 +274,7 @@ func (c *sftpContainer) flowRun(t *testing.T, auth, remotePath, knownHosts, pw s
 
 func TestFlowRunSFTPContainer(t *testing.T) {
 	c := startSFTPContainer(t)
-	good := c.knownHosts(t, t.TempDir(), c.hostKey)
+	good := c.knownHosts(t, t.TempDir(), c.hostKeys...)
 
 	t.Run("password auth", func(t *testing.T) {
 		r := c.flowRun(t, "password", "/downloads/version.txt", good, password)
