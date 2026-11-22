@@ -14,7 +14,7 @@ package nurtuo.connector.v1;
 import "google/protobuf/struct.proto";
 
 service ConnectorService {
-  // Descriptor: operations, connection schema, capabilities (mirrors connector.yaml).
+  // ConnectorDescriptor: operations, connection schema, capabilities (mirrors connector.yaml).
   rpc Describe(DescribeRequest) returns (DescribeResponse);
   // Browse object types on the target system and return profiles (JSON Schema / XSD).
   rpc Browse(BrowseRequest) returns (BrowseResponse);
@@ -76,10 +76,10 @@ enum DocumentStatus {
 message DescribeRequest {}
 
 message DescribeResponse {
-  Descriptor descriptor = 1;
+  ConnectorDescriptor descriptor = 1;
 }
 
-message Descriptor {
+message ConnectorDescriptor {
   string id = 1; // e.g. "sap-idoc"
   string version = 2; // SemVer, e.g. "1.4.0"
   Host host = 3;

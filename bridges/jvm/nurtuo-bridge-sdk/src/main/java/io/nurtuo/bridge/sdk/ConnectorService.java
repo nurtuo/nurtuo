@@ -14,7 +14,7 @@ import nurtuo.connector.v1.Connector.BrowseRequest;
 import nurtuo.connector.v1.Connector.BrowseResponse;
 import nurtuo.connector.v1.Connector.DescribeRequest;
 import nurtuo.connector.v1.Connector.DescribeResponse;
-import nurtuo.connector.v1.Connector.Descriptor;
+import nurtuo.connector.v1.Connector.ConnectorDescriptor;
 import nurtuo.connector.v1.Connector.ExecuteRequest;
 import nurtuo.connector.v1.Connector.ExecuteResponse;
 import nurtuo.connector.v1.Connector.Host;
@@ -53,7 +53,7 @@ public final class ConnectorService extends ConnectorServiceGrpc.ConnectorServic
     @Override
     public void describe(DescribeRequest request, StreamObserver<DescribeResponse> out) {
         try {
-            Descriptor d = connector.describe();
+            ConnectorDescriptor d = connector.describe();
             if (d.getHost() == Host.HOST_UNSPECIFIED) {
                 d = d.toBuilder().setHost(Host.HOST_BRIDGE_JVM).build();
             }

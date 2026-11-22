@@ -36,7 +36,7 @@ from nurtuo_bridge._gen.nurtuo.connector.v1 import connector_pb2 as pb
 class EchoConnector(Connector):
     secret_keys = frozenset({"api_token"})
 
-    def describe(self) -> pb.Descriptor:
+    def describe(self) -> pb.ConnectorDescriptor:
         return make_descriptor(
             id="example-echo",
             version="0.1.0",

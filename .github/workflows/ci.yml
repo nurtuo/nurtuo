@@ -92,9 +92,6 @@ jobs:
 
   bridge-dotnet:
     runs-on: ubuntu-latest
-    # Non-blocking until the proto message `Descriptor` is renamed: protoc's C# output gives every
-    # message class a static `Descriptor` property, so a message named Descriptor does not compile (CS0542).
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-dotnet@v6

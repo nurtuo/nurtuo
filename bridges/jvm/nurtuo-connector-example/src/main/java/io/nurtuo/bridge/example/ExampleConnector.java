@@ -19,7 +19,7 @@ import java.util.Map;
 import nurtuo.connector.v1.Connector.BrowseRequest;
 import nurtuo.connector.v1.Connector.BrowseResponse;
 import nurtuo.connector.v1.Connector.Capabilities;
-import nurtuo.connector.v1.Connector.Descriptor;
+import nurtuo.connector.v1.Connector.ConnectorDescriptor;
 import nurtuo.connector.v1.Connector.Host;
 import nurtuo.connector.v1.Connector.ObjectType;
 import nurtuo.connector.v1.Connector.OperationDescriptor;
@@ -39,7 +39,7 @@ public final class ExampleConnector extends Connector {
     public static final String ID = "example-text";
 
     @Override
-    public Descriptor describe() {
+    public ConnectorDescriptor describe() {
         Struct connection = Structs.of(
                 "type", "object",
                 "required", List.of("endpoint"),
@@ -49,7 +49,7 @@ public final class ExampleConnector extends Connector {
         Struct options = Structs.of(
                 "type", "object",
                 "properties", Map.of("mode", Map.of("type", "string", "enum", List.of("upper", "lower", "reverse", "none"), "default", "none")));
-        return Descriptor.newBuilder()
+        return ConnectorDescriptor.newBuilder()
                 .setId(ID)
                 .setVersion("0.1.0")
                 .setHost(Host.HOST_BRIDGE_JVM)

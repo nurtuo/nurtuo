@@ -15,7 +15,7 @@ import (
 
 // Connector is the language-neutral contract (describe / browse / execute / test) in Go form.
 type Connector interface {
-	Describe(ctx context.Context) (*connectorv1.Descriptor, error)
+	Describe(ctx context.Context) (*connectorv1.ConnectorDescriptor, error)
 	Browse(ctx context.Context, req *connectorv1.BrowseRequest) (*connectorv1.BrowseResponse, error)
 	Execute(stream connectorv1.ConnectorService_ExecuteServer) error
 	Test(ctx context.Context, req *connectorv1.TestRequest) (*connectorv1.TestResponse, error)

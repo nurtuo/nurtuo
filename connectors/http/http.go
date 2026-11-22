@@ -65,7 +65,7 @@ var _ connector.Connector = (*Connector)(nil)
 func New() *Connector { return &Connector{} }
 
 // Describe returns the connector descriptor (mirrors connector.yaml).
-func (*Connector) Describe(context.Context) (*connectorv1.Descriptor, error) {
+func (*Connector) Describe(context.Context) (*connectorv1.ConnectorDescriptor, error) {
 	schema, err := structpb.NewStruct(connectionSchema)
 	if err != nil {
 		return nil, err
@@ -76,7 +76,7 @@ func (*Connector) Describe(context.Context) (*connectorv1.Descriptor, error) {
 			Type: connectorv1.OperationType_OPERATION_TYPE_EXECUTE, CustomType: m, SupportsBrowse: true,
 		})
 	}
-	return &connectorv1.Descriptor{
+	return &connectorv1.ConnectorDescriptor{
 		Id:                "http",
 		Version:           Version,
 		Host:              connectorv1.Host_HOST_GO_NATIVE,
