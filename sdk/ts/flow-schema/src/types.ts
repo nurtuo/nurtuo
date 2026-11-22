@@ -25,7 +25,28 @@ export interface StartConfig {
   method?: string;
   queue?: string;
   cron?: string;
+  /** HTTP listener authentication (opt-in; required to bind a non-loopback address unless `insecure`). */
+  auth?: ListenerAuth;
+  /** HTTP listener TLS, minimum TLS 1.2. */
+  tls?: ListenerTLS;
+  /** HTTP listener: allow a non-loopback bind address without `auth`. */
+  insecure?: boolean;
 }
+/** A `secret://<name>` reference resolved by the runtime secret provider. */
+export type SecretRef = `secret://${string}`;
+export interface ListenerAuth {
+  type: "bearer" | "apiKey" | "hmac";
+  secret: SecretRef;
+  /** apiKey default `X-API-Key`; hmac default `X-Signature`; ignored for bearer. */
+  header?: string;
+  /** hmac only; default sha256. */
+  algorithm?: "sha256" | "sha512";
+  /** hmac only; default hex. */
+  encoding?: "hex" | "base64";
+  /** hmac only: prefix before the signature in the header, e.g. `sha256=`. */
+  prefix?: string;
+}
+export interface ListenerTLS { cert: SecretRef; key: SecretRef }
 export interface ConnectorConfig { connector: string; operation: string; objectType?: string; connection?: string }
 export interface QueueConfig { queue: string; operation: "publish" }
 export interface MapConfig { jsonata: string }

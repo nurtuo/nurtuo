@@ -38,9 +38,9 @@ type Options struct {
 	Secrets secrets.Provider
 }
 
-// newConnManager builds the connection manager and returns a logger that redacts every resolved
-// secret value.
-func newConnManager(cfg Config, o Options, log *slog.Logger) (*connhost.Manager, *slog.Logger, error) {
+// newResolver builds the secret resolver shared by connections and listeners, and returns a
+// logger that redacts every value it resolves.
+func newResolver(cfg Config, o Options, log *slog.Logger) (*connections.Resolver, *slog.Logger, error) {
 	prov := o.Secrets
 	if prov == nil {
 		st, err := secrets.Open(cfg.Secrets)
@@ -49,14 +49,19 @@ func newConnManager(cfg Config, o Options, log *slog.Logger) (*connhost.Manager,
 		}
 		prov = st
 	}
+	red := secrets.NewRedactor()
+	return &connections.Resolver{Secrets: prov, Redactor: red}, slog.New(red.Handler(log.Handler())), nil
+}
+
+// newConnManager builds the connection manager over res.
+func newConnManager(cfg Config, o Options, res *connections.Resolver) *connhost.Manager {
 	reg := o.Connectors
 	if reg == nil {
 		reg = connhost.Builtins()
 	}
-	red := secrets.NewRedactor()
-	mgr := connhost.NewManager(reg, &connections.Resolver{Secrets: prov, Redactor: red})
+	mgr := connhost.NewManager(reg, res)
 	mgr.TestMode = cfg.ConnectionTest
-	return mgr, slog.New(red.Handler(log.Handler())), nil
+	return mgr
 }
 
 // Run starts the gateway client and supervisor and blocks until ctx is cancelled (graceful stop).
@@ -97,17 +102,19 @@ func RunWith(ctx context.Context, cfg Config, o Options) error {
 				eng.Registry.RegisterScriptRunner(engine.NewScriptRunner(we, engine.NewScriptModules()))
 			}
 			ed := NewEngineDeployer(eng, memory.New(), src)
+			res, lg, err := newResolver(cfg, o, log)
+			if err != nil {
+				return err
+			}
+			log = lg
 			if !eng.Registry.Has(flow.KindConnector) {
 				// Production wiring: bundle connections + secrets + native connector registry.
-				mgr, lg, err := newConnManager(cfg, o, log)
-				if err != nil {
-					return err
-				}
-				log = lg
+				mgr := newConnManager(cfg, o, res)
 				eng.Registry.RegisterConnectorLookup(mgr)
 				ed.Conns = mgr
 			}
 			ed.Deps.HTTPAddr = cfg.HTTPAddr
+			ed.Deps.Secrets = res // listener auth / tls secret:// references
 			cmds = ed.Commands()
 			defer func() {
 				sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

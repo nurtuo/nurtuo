@@ -23,7 +23,7 @@ runtimes, external systems reached by connectors, and anyone who can send reques
 | Runtime to control plane (gateway) | eavesdropping, impersonating either side, inbound attack on the runtime | runtime dials out only and never listens for the gateway; client requires TLS 1.3 and verifies the server against a CA file; client certificate presented (mutual TLS); the control plane gateway (`core/control-plane/src/gateway.ts`) requires TLS 1.3 and a client certificate signed by its CA, takes the runtime identity from the certificate and rejects a `Hello.runtime_id` that differs | no certificate rotation or revocation; the identity is the certificate CN or DNS SAN, so issue one certificate per runtime from a CA you control |
 | Deployment bundle to runtime | tampered or substituted bundle | bundle format with Ed25519 signature and hash pinning (below); with `trusted_keys` set in `runtime.yaml` the runtime accepts only signed `.bundle` archives whose digest matches the deployment and whose signature verifies against a trusted key | without `trusted_keys` the runtime still reads plain `<digest>.json` files without any signature check (the default); no key rotation or revocation list |
 | Flow author to external systems | author makes a connector do more than intended | per-connector notes (below); connection secrets are `secret://` references resolved by the runtime secret store; secrets redaction | no authorization model for who may use which connection; no egress controls |
-| Network client to listeners | unauthenticated calls, oversized bodies | HTTP listener: body limit 1 MiB (413), method check, pause support, binds `127.0.0.1` by default | no authentication, TLS or rate limiting on the HTTP listener; put it behind a gateway or reverse proxy |
+| Network client to listeners | unauthenticated calls, eavesdropping, oversized bodies | HTTP listener: opt-in `auth` on the `start` step (`bearer`, `apiKey`, or `hmac` body signatures; secrets from the secret store, constant-time comparison, `401` before the flow runs, credential header kept out of document properties); opt-in `tls` (TLS 1.2 minimum); refuses a non-loopback `http_addr` without `auth` unless `insecure: true`; body limit 1 MiB (413), method check, pause support, binds `127.0.0.1` by default; see [connectors/http.md](connectors/http.md#http-listener-start-step) | auth and TLS are off unless configured; no rate limiting, no replay protection for `hmac`, no client certificates; secrets are read at listener start (redeploy after rotation) |
 | Users to the control plane REST API | unauthorised reads and writes | authentication (sessions, API tokens, optional OIDC), workspace RBAC with a fail-closed route policy, CSRF protection and an audit log; see [auth.md](auth.md) | components, runtimes and deployments are not partitioned by workspace yet (single-tenant in practice); SAML and SCIM are stubs; no TLS termination, put it behind a proxy; `NURTUO_INSECURE_NO_AUTH=1` disables everything |
 | AI agent to flows | agent makes destructive changes | MCP tools only edit flows through validated commands (`apply_ops`, atomic, revision checked); `dry_run` refuses invalid flows; the `deploy` tool exists only with `--allow-deploy` and requires a second call with `confirm=true` after the human has seen the plan | the confirmation is a protocol convention the server enforces, not an authorization boundary: whoever can call the tool with the server's control plane token can deploy |
 | Supply chain | malicious dependency or release artifact | license allow-lists in CI, goreleaser config with cosign keyless signing and SBOM (`.goreleaser.yaml`), committed lockfiles | release signing and CI jobs were not run for this page; the runtime does **not** verify bridge signatures (it starts whatever bridge command its configuration names) |
@@ -129,6 +129,8 @@ What is **not** covered:
 - `processCall` nesting is capped at depth 16; `branch` is capped at 25 paths.
 - The HTTP listener caps request bodies at 1 MiB; connectors cap bodies as documented per
   connector.
+- The HTTP listener authenticates requests only when its `start` step sets `auth`. Without `auth`
+  it starts only on a loopback `http_addr`, or with `insecure: true`.
 
 ## What is and is not verified, in short
 
@@ -137,7 +139,8 @@ What is **not** covered:
 | Bundle signature, hash pinning, canonical container, size cap | implemented and unit-tested; enforced by the runtime when `trusted_keys` is set |
 | Runtime mTLS client (TLS 1.3, CA verification) and gateway server (client certificates, identity check) | implemented; unit tests and cross-language interop tests, not run against a deployed control plane |
 | Secret store and reference resolution (`env`, `dir`, `encrypted-file`) | implemented and tested; no Windows ACL hardening |
-| Authentication and RBAC on the control plane REST API | implemented (sessions, tokens, OIDC, audit); SAML and SCIM are stubs; listeners themselves are unauthenticated |
+| Authentication and RBAC on the control plane REST API | implemented (sessions, tokens, OIDC, audit); SAML and SCIM are stubs |
+| HTTP listener authentication (`bearer`, `apiKey`, `hmac`), TLS, refusal of an unauthenticated non-loopback bind | implemented and unit-tested (`core/runtime/internal/listener`); opt-in per flow; not run against a deployed runtime |
 | WASM script sandbox | implemented (wazero) and tested; modules are not delivered by bundles yet |
 | Redaction of secrets in connector errors | implemented and tested per connector |
 | Release signing (cosign), SBOM | configured in `.goreleaser.yaml`, not run |
@@ -148,6 +151,8 @@ What is **not** covered:
 ## Hardening checklist for an early adopter
 
 - Keep the control plane and listeners on loopback or a private network behind an authenticating proxy.
+- If an HTTP listener must be reachable from other hosts, set `auth` (and `tls`, unless a proxy
+  terminates TLS) on its `start` step; avoid `insecure: true`.
 - Issue per-runtime client certificates from your own CA; keep keys readable by the service account only.
 - Use least-privilege accounts for every connector (database role, SFTP user, NATS permissions).
 - Allow egress from the runtime host only to the systems the flows need.

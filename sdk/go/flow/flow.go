@@ -61,6 +61,34 @@ type StartConfig struct {
 	Method    string `json:"method,omitempty"`
 	Queue     string `json:"queue,omitempty"`
 	Cron      string `json:"cron,omitempty"`
+	// Auth, TLS and Insecure apply to HTTP listeners only.
+	Auth     *ListenerAuth `json:"auth,omitempty"`
+	TLS      *ListenerTLS  `json:"tls,omitempty"`
+	Insecure bool          `json:"insecure,omitempty"` // allow a non-loopback bind address without Auth
+}
+
+// HTTP listener authentication types (ListenerAuth.Type).
+const (
+	AuthBearer = "bearer" // Authorization: Bearer <secret>
+	AuthAPIKey = "apiKey" // <secret> in Header (default X-API-Key)
+	AuthHMAC   = "hmac"   // signature of the raw body in Header (default X-Signature)
+)
+
+// ListenerAuth authenticates requests to an HTTP listener. Secret is a secret://<name> reference.
+type ListenerAuth struct {
+	Type      string `json:"type"`
+	Secret    string `json:"secret"`
+	Header    string `json:"header,omitempty"`
+	Algorithm string `json:"algorithm,omitempty"` // hmac: sha256 (default) | sha512
+	Encoding  string `json:"encoding,omitempty"`  // hmac: hex (default) | base64
+	Prefix    string `json:"prefix,omitempty"`    // hmac: prefix before the signature, e.g. "sha256="
+}
+
+// ListenerTLS serves an HTTP listener over TLS (minimum 1.2). Cert and Key are secret://<name>
+// references to the PEM certificate chain and private key.
+type ListenerTLS struct {
+	Cert string `json:"cert"`
+	Key  string `json:"key"`
 }
 
 type ConnectorConfig struct {

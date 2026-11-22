@@ -4,14 +4,17 @@ package listener
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"strconv"
 	"sync/atomic"
+	"time"
 
 	"github.com/nurtuo/nurtuo/core/runtime/internal/engine"
 	"github.com/nurtuo/nurtuo/core/runtime/internal/engine/docs"
 	"github.com/nurtuo/nurtuo/core/runtime/internal/queue"
+	"github.com/nurtuo/nurtuo/core/runtime/internal/secrets"
 	"github.com/nurtuo/nurtuo/sdk/go/flow"
 )
 
@@ -20,6 +23,14 @@ type FactoryDeps struct {
 	Queues   queue.QueueBackend // required for queue starts
 	Spool    *docs.Spool        // payload spool; default in-memory-first
 	HTTPAddr string             // HTTP listen address; default 127.0.0.1:0
+	// Secrets resolves secret:// references in a Start step's auth and tls settings (in the
+	// runtime: the connections.Resolver over the configured secret provider).
+	Secrets SecretResolver
+}
+
+// SecretResolver resolves one secret://<name> reference.
+type SecretResolver interface {
+	ResolveRef(ctx context.Context, ref string) (secrets.Secret, error)
 }
 
 // StartOf returns the typed config of f's Start step when it is a listener or queue start.
@@ -45,13 +56,17 @@ func StartOf(f *flow.Flow) (flow.StartConfig, bool, error) {
 // (or an empty connector) becomes an HTTP listener copying path/method; {"type":"queue"} becomes
 // a queue Source on deps.Queues wrapped by NewSourceListener. Other connector listeners are
 // bridge listeners and are not built here.
-func FromStart(sc flow.StartConfig, deps FactoryDeps) (Listener, error) {
+func FromStart(ctx context.Context, sc flow.StartConfig, deps FactoryDeps) (Listener, error) {
 	switch sc.Type {
 	case StartListener:
 		if sc.Connector != "" && sc.Connector != "http" {
 			return nil, fmt.Errorf("listener: connector %q listeners are not supported by the factory", sc.Connector)
 		}
-		return NewHTTP(HTTPConfig{Addr: deps.HTTPAddr, Path: sc.Path, Method: sc.Method, Spool: deps.Spool})
+		cfg, err := httpConfig(ctx, sc, deps)
+		if err != nil {
+			return nil, err
+		}
+		return NewHTTP(cfg)
 	case StartQueue:
 		if sc.Queue == "" {
 			return nil, errors.New("listener: queue start requires a queue")
@@ -68,6 +83,38 @@ func FromStart(sc flow.StartConfig, deps FactoryDeps) (Listener, error) {
 	return nil, fmt.Errorf("listener: start type %q is not a listener", sc.Type)
 }
 
+// httpConfig builds the HTTP listener config of sc, resolving its auth and TLS secrets.
+func httpConfig(ctx context.Context, sc flow.StartConfig, deps FactoryDeps) (HTTPConfig, error) {
+	cfg := HTTPConfig{Addr: deps.HTTPAddr, Path: sc.Path, Method: sc.Method, Spool: deps.Spool, Insecure: sc.Insecure}
+	if (sc.Auth != nil || sc.TLS != nil) && deps.Secrets == nil {
+		return cfg, errors.New("listener: auth/tls need a secret provider, none is configured")
+	}
+	if a := sc.Auth; a != nil {
+		s, err := deps.Secrets.ResolveRef(ctx, a.Secret)
+		if err != nil {
+			return cfg, fmt.Errorf("listener: auth: %w", err)
+		}
+		cfg.Auth = &HTTPAuth{Type: a.Type, Secret: []byte(s.Reveal()), Header: a.Header,
+			Algorithm: a.Algorithm, Encoding: a.Encoding, Prefix: a.Prefix}
+	}
+	if t := sc.TLS; t != nil {
+		cert, err := deps.Secrets.ResolveRef(ctx, t.Cert)
+		if err != nil {
+			return cfg, fmt.Errorf("listener: tls cert: %w", err)
+		}
+		key, err := deps.Secrets.ResolveRef(ctx, t.Key)
+		if err != nil {
+			return cfg, fmt.Errorf("listener: tls key: %w", err)
+		}
+		pair, err := tls.X509KeyPair([]byte(cert.Reveal()), []byte(key.Reveal()))
+		if err != nil {
+			return cfg, errors.New("listener: tls: cannot load certificate/key pair (want PEM)") // never wrap: may quote key material
+		}
+		cfg.TLS = &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{pair}}
+	}
+	return cfg, nil
+}
+
 // ForFlow returns a Desired entry (for Manager.Apply) that runs f on every trigger of its Start
 // step: the factory builds the listener and the handler runs eng.Run(f, in). Flows whose start
 // is not a listener or queue (e.g. manual/cron) return ok=false.
@@ -77,7 +124,9 @@ func ForFlow(key, spec string, eng *engine.Engine, f *flow.Flow, deps FactoryDep
 		return Desired{}, false, err
 	}
 	return Desired{Key: key, Spec: spec, Factory: func() (Listener, Handler, error) {
-		l, err := FromStart(sc, deps)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		l, err := FromStart(ctx, sc, deps)
 		if err != nil {
 			return nil, nil, err
 		}
