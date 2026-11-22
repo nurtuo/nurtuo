@@ -120,6 +120,22 @@ and exits 1 if there is any error, so a valid flow prints nothing and exits 0. (
 the `bin` of `@nurtuo/cli`; in this checkout invoke it as `node cli/dist/index.js`.) The Go
 validator in `sdk/go/flow` produces the same diagnostics; see [flow-validation.md](flow-validation.md).
 
+## Try it: run a flow against a connection file
+
+`nurtuo flow run` runs a flow file in-process, without a control plane. With an SFTP connection file
+(see [cli.md](cli.md#nurtuo-flow-run-run-a-flow-file-locally-go-runtime-binary)) and the password in the
+environment, this prints the bytes of `/downloads/version.txt`:
+
+```sh
+go build -o nurtuo ./core/runtime/cmd/nurtuo
+export NURTUO_SECRET_SFTP_PASSWORD='...'
+./nurtuo flow run examples/flows/sftp-download.flow.json \
+  --connection examples/connections/sftp.connection.json \
+  --set path=/downloads/version.txt
+```
+
+The SFTP host key is checked against `~/.ssh/known_hosts` (`--known-hosts <file>` to use another file).
+
 ## Run the tests that matter for docs and contracts
 
 `make docs` runs the last two checks below (verified with `make docs` on Windows). CI runs them
@@ -150,7 +166,7 @@ go build -o nurtuo.exe ./core/runtime/cmd/nurtuo
 Verified output for a local build: `nurtuo dev (none, unknown)`. Release builds inject the
 version through `-ldflags` (`.goreleaser.yaml`).
 
-Commands: `run`, `standalone`, `service` and `secret` are implemented; `role` is a stub and prints
+Commands: `run`, `flow run`, `standalone`, `service` and `secret` are implemented; `role` is a stub and prints
 `not implemented yet` (exit 1). See [operations.md](operations.md).
 
 ## Status: what works today

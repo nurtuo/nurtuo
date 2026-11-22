@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -23,6 +24,12 @@ import (
 	"github.com/nurtuo/nurtuo/core/runtime/internal/engine/docs"
 	"github.com/nurtuo/nurtuo/core/runtime/internal/secrets"
 	"github.com/nurtuo/nurtuo/sdk/go/flow"
+)
+
+// SFTP host key policies (connectors/sftp settings.hostKeyPolicy).
+const (
+	sftpPolicyKnownHosts = "known_hosts"
+	sftpPolicyInsecure   = "insecure"
 )
 
 // Exit codes of "nurtuo flow run" (experimental contract; differs from nurtuoctl on purpose).
@@ -246,6 +253,58 @@ func reportError(stderr io.Writer, asJSON bool, err error) int {
 	return fe.exit
 }
 
+// applyHostKeys applies the SFTP host-key options to the needed sftp connections in memory (the
+// connection files are never modified). Verification stays on by default: the content of
+// --known-hosts (default ~/.ssh/known_hosts) fills settings.knownHosts. --insecure-host-key, or an
+// insecure policy already in the connection, skips verification and warns on stderr.
+func applyHostKeys(defs []*connections.Definition, needed []string, o *flowRunOptions, stderr io.Writer) error {
+	byID := map[string]*connections.Definition{}
+	for _, d := range defs {
+		byID[d.ID] = d
+	}
+	var known string
+	var haveKnown bool
+	for _, id := range needed {
+		d := byID[id]
+		if d.Connector != "sftp" {
+			continue
+		}
+		if d.Settings == nil {
+			d.Settings = map[string]any{}
+		}
+		policy, _ := d.Settings["hostKeyPolicy"].(string)
+		if o.insecure {
+			d.Settings["hostKeyPolicy"] = sftpPolicyInsecure
+			policy = sftpPolicyInsecure
+		}
+		switch policy {
+		case sftpPolicyInsecure:
+			_, _ = fmt.Fprintf(stderr, "nurtuo: warning: host key verification is disabled for connection %q; the server is not authenticated\n", id)
+		case "", sftpPolicyKnownHosts:
+			if kh, _ := d.Settings["knownHosts"].(string); kh != "" {
+				continue // content given in the connection file
+			}
+			if !haveKnown {
+				path := o.knownHosts
+				if path == "" {
+					home, err := os.UserHomeDir()
+					if err != nil {
+						return execErr("cannot find the default known_hosts file (%v); pass --known-hosts <file> or --insecure-host-key", err)
+					}
+					path = filepath.Join(home, ".ssh", "known_hosts")
+				}
+				b, err := os.ReadFile(path)
+				if err != nil {
+					return execErr("cannot read known_hosts file: %v; pass --known-hosts <file> (or --insecure-host-key, not recommended)", err)
+				}
+				known, haveKnown = string(b), true
+			}
+			d.Settings["knownHosts"] = known
+		}
+	}
+	return nil
+}
+
 // checkLiterals rejects literal values in secret-marked settings of the needed connections before
 // any connector is configured (no network): the connector's connection schema says which settings
 // are secret.
@@ -332,6 +391,9 @@ func flowRun(args []string, stdout, stderr io.Writer, reg *connhost.Registry) in
 		ctx, cancel = context.WithTimeout(ctx, opts.timeout)
 		defer cancel()
 	}
+	if err := applyHostKeys(defs, needed, opts, stderr); err != nil {
+		return fail(err)
+	}
 	if err := checkLiterals(ctx, reg, defs, needed); err != nil {
 		return fail(err)
 	}
@@ -368,7 +430,11 @@ func flowRun(args []string, stdout, stderr io.Writer, reg *connhost.Registry) in
 		var msgs []string
 		for _, d := range res.Failed.Docs() {
 			if e := d.Err(); e != nil {
-				msgs = append(msgs, fmt.Sprintf("step %s: %s", e.Step, e.Error()))
+				m := e.Error()
+				if p := d.Props["path"]; p != "" {
+					m += " (path " + p + ")" // the document's path property, as set with --set path=...
+				}
+				msgs = append(msgs, m)
 			}
 		}
 		return fail(execErr("%d document(s) failed: %s", n, strings.Join(msgs, "; ")))

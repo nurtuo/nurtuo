@@ -368,7 +368,7 @@ Implementation PR: branch `feat/nurtuo-flow-run`, stacked on #50. Readiness repo
 |-------|--------|------|-------|
 | Phase 1: command skeleton, parse and validate | Done | 2026-11-23 | Steps 1-3; `TestFlowRunUsage`, `TestFlowRunInvalidFlow`, `TestFlowRunConnectionParse`, `TestFlowRunConnectionMismatch` passing |
 | Phase 2: in-process run with a stub connector | Done | 2026-11-23 | Steps 4-5; stub connector via the injectable `connhost.Registry`; `TestFlowRunPrintsReturnedPayload`, `SetProperties`, `ListenerStartIgnored`, `MissingSecret`, `ExitCodes`, `JSONEnvelope`, `MultipleDocumentsRaw`, `Redaction`, `StdoutStderrSeparation` passing |
-| Phase 3: real SFTP and host-key policy | Pending | | |
+| Phase 3: real SFTP and host-key policy | Done | 2026-11-23 | Steps 6-7; in-process SSH server tests (password, key, wrong password, host-key mismatch, insecure warning, default known_hosts); examples and docs (`cli.md`, `getting-started.md`, `connectors/sftp.md`); `check-example-operations` and `check-docs-links` pass. `gen-flow-reference.mjs --validate --check` needs the TS build (not run here, see PR) |
 | Phase 4: container e2e in CI | Pending | | |
 
 ## Changelog
@@ -377,3 +377,4 @@ Implementation PR: branch `feat/nurtuo-flow-run`, stacked on #50. Readiness repo
 - 2026-11-23: approved; decisions recorded; command is nurtuo flow run
 - 2026-11-23: implementation started (status in-progress); phase 1 landed: `nurtuo flow` dispatch, flag parsing, flow and connection validation, id/kind cross-check (exit 2 before any network access); `nurtuo run` usage hints at `nurtuo flow run`
 - 2026-11-23: phase 2 landed: in-process run (`connhost.Manager`, `engine.New()`, env-then-dir secrets chain, `start` as pass-through), output and exit-code mapping, `--json` envelope and JSON errors. Choices within the drafting assumptions: a Stop without a status exits 0 with empty output; the literal-secret check runs before `Prepare` so it exits 2; the non-UTF-8-to-TTY refusal ([ASSUMPTION], non-blocking) is not implemented
+- 2026-11-23: phase 3 landed: `--known-hosts` (default `~/.ssh/known_hosts`) and `--insecure-host-key` applied in memory, a `hostKeyPolicy: insecure` in a connection file also warns, password and key auth through env or `--secrets-dir`; `examples/flows/sftp-download.flow.json`, `examples/connections/sftp.connection.json`, docs. The in-process SSH server is copied from `connectors/sftp/sftp_test.go` (the spec named `helper_test.go`, which only holds `dialConnector`). A failed document's message includes its `path` property so a missing remote file is named
