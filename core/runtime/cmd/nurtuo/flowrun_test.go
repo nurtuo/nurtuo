@@ -4,6 +4,8 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,13 +59,13 @@ func TestFlowRunUsage(t *testing.T) {
 	dir := t.TempDir()
 	flowFile := writeTemp(t, dir, "f.json", flowJSON(manualStart, "http", "a"))
 	cases := map[string][]string{
-		"no args":         {},
-		"unknown flag":    {flowFile, "--nope"},
-		"set without =":   {flowFile, "--set", "path"},
-		"set empty key":   {flowFile, "--set", "=x"},
-		"two flows":       {flowFile, flowFile},
+		"no args":          {},
+		"unknown flag":     {flowFile, "--nope"},
+		"set without =":    {flowFile, "--set", "path"},
+		"set empty key":    {flowFile, "--set", "=x"},
+		"two flows":        {flowFile, flowFile},
 		"negative timeout": {flowFile, "--timeout", "-1s"},
-		"bad duration":    {flowFile, "--timeout", "soon"},
+		"bad duration":     {flowFile, "--timeout", "soon"},
 	}
 	for name, args := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -168,5 +170,232 @@ func TestFlowRunConnectionMismatch(t *testing.T) {
 				t.Fatalf("code=%d stdout=%q stderr=%q", code, out, errs)
 			}
 		})
+	}
+}
+
+// stubRun runs a flow with a manual start and one stub connection built from settings.
+func stubRun(t *testing.T, settings string, extra ...string) (code int, stdout, stderr string, st *stubConnector) {
+	t.Helper()
+	dir := t.TempDir()
+	reg, st := stubRegistry()
+	flowFile := writeTemp(t, dir, "f.json", flowJSON(manualStart, "stub", "s"))
+	conn := writeTemp(t, dir, "c.json", connJSON("s", "stub", settings))
+	args := append([]string{flowFile, "--connection", conn}, extra...)
+	code, stdout, stderr = runFlow(t, reg, args...)
+	return code, stdout, stderr, st
+}
+
+func TestFlowRunPrintsReturnedPayload(t *testing.T) {
+	t.Run("exact bytes, no newline", func(t *testing.T) {
+		code, out, errs, _ := stubRun(t, stubSettings("payload", `"v1.2.3"`))
+		if code != 0 || out != "v1.2.3" || errs != "" {
+			t.Fatalf("code=%d stdout=%q stderr=%q", code, out, errs)
+		}
+	})
+	t.Run("1 MiB", func(t *testing.T) {
+		big := strings.Repeat("0123456789abcdef", 64*1024)
+		code, out, errs, _ := stubRun(t, stubSettings("payload", `"`+big+`"`))
+		if code != 0 || out != big || errs != "" {
+			t.Fatalf("code=%d len(stdout)=%d stderr=%q", code, len(out), errs)
+		}
+	})
+}
+
+func TestFlowRunSetProperties(t *testing.T) {
+	code, out, errs, st := stubRun(t, stubSettings(), "--set", "path=/downloads/version.txt", "--set", "a=1=2", "--set", "a=last", "--set", "empty=")
+	if code != 0 || out != "/downloads/version.txt" || errs != "" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, out, errs)
+	}
+	if len(st.seen) != 1 {
+		t.Fatalf("connector saw %d documents, want 1", len(st.seen))
+	}
+	p := st.seen[0]
+	if p["path"] != "/downloads/version.txt" || p["a"] != "last" || p["empty"] != "" {
+		t.Fatalf("properties = %v", p)
+	}
+	if _, ok := p["empty"]; !ok {
+		t.Fatalf("empty value dropped: %v", p)
+	}
+}
+
+func TestFlowRunListenerStartIgnored(t *testing.T) {
+	for name, start := range map[string]string{
+		"http listener":    `{"type":"listener","connector":"http","path":"/employees/{id}"}`,
+		"listener no path": `{"type":"listener","connector":"http"}`,
+		"queue listener":   `{"type":"queue","queue":"orders"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			reg, st := stubRegistry()
+			flowFile := writeTemp(t, dir, "f.json", flowJSON(start, "stub", "s"))
+			conn := writeTemp(t, dir, "c.json", connJSON("s", "stub", stubSettings("payload", `"ok"`)))
+			code, out, errs := runFlow(t, reg, flowFile, "--connection", conn)
+			if code != 0 || out != "ok" || errs != "" {
+				t.Fatalf("code=%d stdout=%q stderr=%q", code, out, errs)
+			}
+			if len(st.seen) != 1 || len(st.seen[0]) != 0 {
+				t.Fatalf("want one empty document, connector saw %v", st.seen)
+			}
+		})
+	}
+}
+
+func TestFlowRunMissingSecret(t *testing.T) {
+	settings := stubSettings("password", `"secret://stub_password"`, "payload", `"ok"`)
+	t.Run("unset names the secret", func(t *testing.T) {
+		t.Setenv("NURTUO_SECRET_STUB_PASSWORD", "")
+		code, out, errs, _ := stubRun(t, settings)
+		if code != 1 || out != "" || !strings.Contains(errs, `"stub_password"`) || !strings.Contains(errs, "not found") {
+			t.Fatalf("code=%d stdout=%q stderr=%q", code, out, errs)
+		}
+	})
+	t.Run("env resolves", func(t *testing.T) {
+		t.Setenv("NURTUO_SECRET_STUB_PASSWORD", "from-env-value")
+		code, out, errs, _ := stubRun(t, settings)
+		if code != 0 || out != "ok" || errs != "" {
+			t.Fatalf("code=%d stdout=%q stderr=%q", code, out, errs)
+		}
+	})
+	t.Run("secrets dir resolves", func(t *testing.T) {
+		t.Setenv("NURTUO_SECRET_STUB_PASSWORD", "")
+		sd := filepath.Join(t.TempDir(), "secrets")
+		if err := os.Mkdir(sd, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		writeTemp(t, sd, "stub_password", "from-dir-value\n")
+		code, out, errs, _ := stubRun(t, settings, "--secrets-dir", sd)
+		if code != 0 || out != "ok" || errs != "" {
+			t.Fatalf("code=%d stdout=%q stderr=%q", code, out, errs)
+		}
+	})
+	t.Run("literal password is a validation error", func(t *testing.T) {
+		code, out, errs, _ := stubRun(t, stubSettings("password", `"hunter2-literal"`))
+		if code != 2 || out != "" || !strings.Contains(errs, "secret://") || !strings.Contains(errs, "NURTUO_SECRET_") || strings.Contains(errs, "hunter2-literal") {
+			t.Fatalf("code=%d stdout=%q stderr=%q", code, out, errs)
+		}
+	})
+}
+
+func TestFlowRunExitCodes(t *testing.T) {
+	t.Run("connector error", func(t *testing.T) {
+		code, out, errs, _ := stubRun(t, stubSettings("mode", `"fail"`))
+		if code != 1 || out != "" || !strings.Contains(errs, "cannot connect") {
+			t.Fatalf("code=%d stdout=%q stderr=%q", code, out, errs)
+		}
+	})
+	t.Run("document failed", func(t *testing.T) {
+		code, out, errs, _ := stubRun(t, stubSettings("mode", `"failure"`), "--set", "path=/nope.txt")
+		if code != 1 || out != "" || !strings.Contains(errs, "/nope.txt") {
+			t.Fatalf("code=%d stdout=%q stderr=%q", code, out, errs)
+		}
+	})
+	t.Run("no_runner", func(t *testing.T) {
+		script := filepath.Join("..", "..", "..", "..", "examples", "flows", "reference", "script.flow.json")
+		code, out, errs := runFlow(t, nil, script)
+		if code != 1 || out != "" || !strings.Contains(errs, "no runner registered") {
+			t.Fatalf("code=%d stdout=%q stderr=%q", code, out, errs)
+		}
+	})
+	t.Run("timeout cancels", func(t *testing.T) {
+		code, out, errs, _ := stubRun(t, stubSettings("mode", `"block"`), "--timeout", "100ms")
+		if code != 1 || out != "" || !strings.Contains(errs, "timed out") {
+			t.Fatalf("code=%d stdout=%q stderr=%q", code, out, errs)
+		}
+	})
+	t.Run("stop with status", func(t *testing.T) {
+		dir := t.TempDir()
+		f := writeTemp(t, dir, "f.json", `{"schema":"nurtuo.flow/v1","id":"s","name":"s","revision":1,"steps":[
+ {"id":"start","kind":"start","config":{"type":"manual"}},
+ {"id":"halt","kind":"stop","config":{"status":404}}],"edges":{"start:default":"halt"}}`)
+		code, out, errs := runFlow(t, nil, f)
+		if code != 3 || out != "" || !strings.Contains(errs, "flow stopped with status 404") {
+			t.Fatalf("code=%d stdout=%q stderr=%q", code, out, errs)
+		}
+		code, out, errs = runFlow(t, nil, f, "--json")
+		if code != 3 || out != "" || !strings.Contains(errs, `"code":"stopped"`) {
+			t.Fatalf("json: code=%d stdout=%q stderr=%q", code, out, errs)
+		}
+	})
+	t.Run("success", func(t *testing.T) {
+		if code, _, _, _ := stubRun(t, stubSettings("payload", `"x"`)); code != 0 {
+			t.Fatalf("code=%d", code)
+		}
+	})
+}
+
+func TestFlowRunJSONEnvelope(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		code, out, errs, _ := stubRun(t, stubSettings("payload", `"hello"`), "--json", "--set", "path=/p")
+		if code != 0 || errs != "" {
+			t.Fatalf("code=%d stderr=%q", code, errs)
+		}
+		var env struct {
+			Status    int `json:"status"`
+			Documents []struct {
+				ID         string            `json:"id"`
+				Properties map[string]string `json:"properties"`
+				Payload    string            `json:"payload"`
+			} `json:"documents"`
+		}
+		if err := json.Unmarshal([]byte(out), &env); err != nil {
+			t.Fatalf("stdout is not JSON: %v: %q", err, out)
+		}
+		if env.Status != 200 || len(env.Documents) != 1 || env.Documents[0].Payload != base64.StdEncoding.EncodeToString([]byte("hello")) ||
+			env.Documents[0].Properties["path"] != "/p" {
+			t.Fatalf("envelope = %+v", env)
+		}
+	})
+	t.Run("multiple documents", func(t *testing.T) {
+		code, out, _, _ := stubRun(t, stubSettings("mode", `"two"`, "payload", `"x"`), "--json")
+		var env struct{ Documents []json.RawMessage }
+		if err := json.Unmarshal([]byte(out), &env); code != 0 || err != nil || len(env.Documents) != 2 {
+			t.Fatalf("code=%d err=%v stdout=%q", code, err, out)
+		}
+	})
+	t.Run("error is JSON on stderr, stdout empty", func(t *testing.T) {
+		code, out, errs, _ := stubRun(t, stubSettings("mode", `"fail"`), "--json")
+		var e struct {
+			Error struct{ Code, Message string }
+		}
+		if err := json.Unmarshal([]byte(errs), &e); code != 1 || out != "" || err != nil || e.Error.Code != "execution" || !strings.Contains(e.Error.Message, "cannot connect") {
+			t.Fatalf("code=%d stdout=%q stderr=%q err=%v", code, out, errs, err)
+		}
+	})
+	t.Run("validation error is JSON", func(t *testing.T) {
+		code, out, errs := runFlow(t, nil, filepath.Join(t.TempDir(), "absent.json"), "--json")
+		if code != 2 || out != "" || !strings.HasPrefix(errs, `{"error":{"code":"validation"`) {
+			t.Fatalf("code=%d stdout=%q stderr=%q", code, out, errs)
+		}
+	})
+}
+
+func TestFlowRunMultipleDocumentsRaw(t *testing.T) {
+	code, out, errs, _ := stubRun(t, stubSettings("mode", `"two"`, "payload", `"x"`))
+	if code != 1 || out != "" || !strings.Contains(errs, "--json") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, out, errs)
+	}
+}
+
+func TestFlowRunRedaction(t *testing.T) {
+	t.Setenv("NURTUO_SECRET_STUB_PASSWORD", "very-secret-pw-123")
+	code, out, errs, _ := stubRun(t, stubSettings("mode", `"leak"`, "password", `"secret://stub_password"`))
+	if code != 1 || out != "" || strings.Contains(errs, "very-secret-pw-123") || !strings.Contains(errs, "***") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, out, errs)
+	}
+	code, out, errs, _ = stubRun(t, stubSettings("mode", `"leak"`, "password", `"secret://stub_password"`), "--json")
+	if code != 1 || out != "" || strings.Contains(errs, "very-secret-pw-123") {
+		t.Fatalf("json: code=%d stdout=%q stderr=%q", code, out, errs)
+	}
+}
+
+func TestFlowRunStdoutStderrSeparation(t *testing.T) {
+	t.Setenv("NURTUO_SECRET_STUB_PASSWORD", "another-secret-456")
+	code, out, errs, _ := stubRun(t, stubSettings("payload", `"data"`, "password", `"secret://stub_password"`))
+	if code != 0 || out != "data" || errs != "" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, out, errs)
+	}
+	code, out, errs, _ = stubRun(t, stubSettings("mode", `"fail"`))
+	if code != 1 || out != "" || errs == "" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, out, errs)
 	}
 }

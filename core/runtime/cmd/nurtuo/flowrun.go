@@ -3,18 +3,25 @@
 package main
 
 import (
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/nurtuo/nurtuo/core/runtime/internal/connections"
 	"github.com/nurtuo/nurtuo/core/runtime/internal/connhost"
+	"github.com/nurtuo/nurtuo/core/runtime/internal/engine"
+	"github.com/nurtuo/nurtuo/core/runtime/internal/engine/docs"
+	"github.com/nurtuo/nurtuo/core/runtime/internal/secrets"
 	"github.com/nurtuo/nurtuo/sdk/go/flow"
 )
 
@@ -239,6 +246,61 @@ func reportError(stderr io.Writer, asJSON bool, err error) int {
 	return fe.exit
 }
 
+// checkLiterals rejects literal values in secret-marked settings of the needed connections before
+// any connector is configured (no network): the connector's connection schema says which settings
+// are secret.
+func checkLiterals(ctx context.Context, reg *connhost.Registry, defs []*connections.Definition, needed []string) error {
+	byID := map[string]*connections.Definition{}
+	for _, d := range defs {
+		byID[d.ID] = d
+	}
+	for _, id := range needed {
+		d := byID[id]
+		c, err := reg.New(d.Connector)
+		if err != nil {
+			return validationErr("%v", err)
+		}
+		desc, derr := c.Describe(ctx)
+		closeConnector(c)
+		if derr != nil {
+			return execErr("connection %q: describe %s: %v", id, d.Connector, derr)
+		}
+		if err := d.CheckLiterals(connections.SecretPaths(desc.GetConnectionSchema())); err != nil {
+			return validationErr("%v; set it with the environment variable %s<NAME> or --secrets-dir", err, secrets.EnvPrefix)
+		}
+	}
+	return nil
+}
+
+func closeConnector(c any) {
+	switch x := c.(type) {
+	case interface{ Close() error }:
+		_ = x.Close()
+	case interface{ Close() }:
+		x.Close()
+	}
+}
+
+// chainProvider resolves a secret from the first provider that has it.
+type chainProvider []secrets.Provider
+
+func (c chainProvider) Get(ctx context.Context, name string) (secrets.Secret, error) {
+	var first error
+	for _, p := range c {
+		s, err := p.Get(ctx, name)
+		if err == nil {
+			return s, nil
+		}
+		if !errors.Is(err, secrets.ErrNotFound) {
+			return secrets.Secret{}, err
+		}
+		if first == nil {
+			first = err
+		}
+	}
+	return secrets.Secret{}, first
+}
+
 // flowRun implements "nurtuo flow run". reg is the connector registry (a test seam).
 func flowRun(args []string, stdout, stderr io.Writer, reg *connhost.Registry) int {
 	asJSON := wantsJSON(args)
@@ -247,17 +309,123 @@ func flowRun(args []string, stdout, stderr io.Writer, reg *connhost.Registry) in
 		_, _ = fmt.Fprintln(stderr, flowRunUsage)
 		return reportError(stderr, asJSON, err)
 	}
+	redactor := secrets.NewRedactor()
+	fail := func(err error) int {
+		return reportError(stderr, opts.json, redactor.RedactError(err))
+	}
 	f, err := loadFlow(opts.flowPath)
 	if err != nil {
-		return reportError(stderr, opts.json, err)
+		return fail(err)
 	}
 	defs, err := loadConnections(opts.connections)
 	if err != nil {
-		return reportError(stderr, opts.json, err)
+		return fail(err)
 	}
-	if _, err := crossCheck(f, defs, reg); err != nil {
-		return reportError(stderr, opts.json, err)
+	needed, err := crossCheck(f, defs, reg)
+	if err != nil {
+		return fail(err)
 	}
-	_ = stdout
-	return reportError(stderr, opts.json, execErr("running a flow is not implemented yet"))
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if opts.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, opts.timeout)
+		defer cancel()
+	}
+	if err := checkLiterals(ctx, reg, defs, needed); err != nil {
+		return fail(err)
+	}
+
+	var provider chainProvider = []secrets.Provider{secrets.NewEnv()}
+	if opts.secretsDir != "" {
+		provider = append(provider, secrets.NewDir(opts.secretsDir))
+	}
+	mgr := connhost.NewManager(reg, &connections.Resolver{Secrets: provider, Redactor: redactor})
+	defer mgr.Close()
+	prepared, err := mgr.Prepare(ctx, "flow-run", []*flow.Flow{f}, defs)
+	if err != nil {
+		return fail(execErr("%v", err))
+	}
+	mgr.Commit(prepared)
+
+	eng := engine.New()
+	eng.Registry.RegisterConnectorLookup(mgr) // start is a pass-through when no runner is registered
+	in := docs.NewSet(docs.New("flow-run", opts.set, nil))
+	res, err := eng.Run(ctx, f, in, engine.NewProcess(nil))
+	if res != nil {
+		defer func() { _ = res.Returned.Close(); _ = res.Failed.Close() }()
+	}
+	if err != nil {
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
+			return fail(execErr("timed out after %s", opts.timeout))
+		case errors.Is(err, context.Canceled):
+			return fail(execErr("interrupted"))
+		}
+		return fail(execErr("%v", err))
+	}
+	if n := res.Failed.Len(); n > 0 {
+		var msgs []string
+		for _, d := range res.Failed.Docs() {
+			if e := d.Err(); e != nil {
+				msgs = append(msgs, fmt.Sprintf("step %s: %s", e.Step, e.Error()))
+			}
+		}
+		return fail(execErr("%d document(s) failed: %s", n, strings.Join(msgs, "; ")))
+	}
+	if res.Stop != nil && res.Stop.Status != 0 {
+		fe := &flowRunError{exit: exitStopped, code: "stopped", msg: fmt.Sprintf("flow stopped with status %d", res.Stop.Status)}
+		if res.Stop.Message != "" {
+			fe.msg += ": " + res.Stop.Message
+		}
+		return fail(fe)
+	}
+	if err := writeOutput(stdout, res.Returned, opts.json); err != nil {
+		return fail(execErr("write output: %v", err))
+	}
+	return exitOK
+}
+
+// writeOutput prints the returned documents: raw payload bytes, or the JSON envelope.
+func writeOutput(stdout io.Writer, ret *docs.Set, asJSON bool) error {
+	if asJSON {
+		type docOut struct {
+			ID         string            `json:"id"`
+			Properties map[string]string `json:"properties"`
+			Payload    string            `json:"payload"` // base64
+		}
+		out := struct {
+			Status    int      `json:"status"`
+			Documents []docOut `json:"documents"`
+		}{Status: 200, Documents: []docOut{}}
+		for _, d := range ret.Docs() {
+			var b []byte
+			if p := d.Payload(); p != nil {
+				var err error
+				if b, err = p.Bytes(); err != nil {
+					return err
+				}
+			}
+			props := d.Props
+			if props == nil {
+				props = map[string]string{}
+			}
+			out.Documents = append(out.Documents, docOut{ID: d.ID, Properties: props, Payload: base64.StdEncoding.EncodeToString(b)})
+		}
+		enc := json.NewEncoder(stdout)
+		return enc.Encode(out)
+	}
+	switch ret.Len() {
+	case 0:
+		return nil
+	case 1:
+		r, err := ret.At(0).Open()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = r.Close() }()
+		_, err = io.Copy(stdout, r)
+		return err
+	}
+	return fmt.Errorf("the flow returned %d documents; use --json to print them", ret.Len())
 }
