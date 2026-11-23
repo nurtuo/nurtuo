@@ -87,3 +87,16 @@ Choose the smallest set that covers your change. Do not run the full monorepo su
 | Specs and ADRs | `docs/specs/`, `docs/adr/` | Spec before code; see Always. |
 | Docs | `docs/` | Apache-2.0 SPDX comment first (not in lesson records). Run `make docs`. |
 | Lessons | `docs/lessons/` | Route first, open only matching records. Frontmatter `---` first, SPDX comment after it. |
+
+## Skills
+
+Imported third-party skills live in `.agents/skills/` (source of truth; MIT, see [NOTICE](.agents/skills/NOTICE.md)). Copies in `.claude/skills/` and `.cursor/skills/` are kept identical by `scripts/check-agent-skills-sync.sh`; edit only `.agents/skills/`.
+
+| Skill | Use it when |
+|---|---|
+| `git-guardrails-claude-code` | Changing or debugging the git safety hook (`scripts/hooks/block-dangerous-git.sh`, tests: `scripts/test-git-guardrails.sh`). If a git command is blocked, stop and ask; never work around it. |
+| `domain-modeling` | A term is fuzzy or overloaded, or you add to `docs/GLOSSARY.md` or write an ADR in `docs/adr/`. Both live under `docs/`, not at the repo root as the skill's examples show. Do not invent decisions. |
+| `grill-with-docs` | Stress-testing a plan or design before writing a spec. Depends on `grilling`. |
+| `grilling` | Interviewing the user round by round to stress-test a plan or decision. Dependency of `grill-with-docs`; also usable on its own. |
+| `to-tickets` | Splitting an `approved` spec into issues. Does not replace the spec; sizeable work still needs one (see Always). |
+| `setup-pre-commit` | Only when the owner asks. Do not run it on your own: pre-commit hooks are not installed in this repo. |
