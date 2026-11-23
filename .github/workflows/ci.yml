@@ -84,6 +84,83 @@ jobs:
           node scripts/check-docs-links.mjs
           node scripts/check-example-operations.mjs
 
+  # Playwright e2e for the canvas (core/web/e2e). The flow-run-export spec also runs its exported flow with
+  # the real `nurtuo` binary against an atmoz/sftp container (same digest as the Go container e2e), verifying
+  # the host key from a known_hosts file (no --insecure-host-key). Not a required check.
+  web-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with: { node-version: 24, cache: pnpm }
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: core/runtime/go.mod
+          # No root go.sum: the workspace has one sum per module (go.work).
+          cache-dependency-path: |
+            core/runtime/go.sum
+            sdk/go/go.sum
+            connectors/go.sum
+      - run: pnpm install --frozen-lockfile
+      - name: Playwright version
+        id: pw
+        run: echo "version=$(pnpm --silent --filter @nurtuo/web exec playwright --version | awk '{print $NF}')" >> "$GITHUB_OUTPUT"
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}
+      - name: Install Playwright chromium
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: pnpm --filter @nurtuo/web exec playwright install chromium
+      # OS libraries live outside the browser cache, so they are installed on every run.
+      - name: Install Playwright OS dependencies
+        run: pnpm --filter @nurtuo/web exec playwright install-deps chromium
+      - name: Build nurtuo
+        run: |
+          CGO_ENABLED=0 go build -o "$RUNNER_TEMP/nurtuo" ./core/runtime/cmd/nurtuo
+          echo "NURTUO_FLOW_RUN_BIN=$RUNNER_TEMP/nurtuo" >> "$GITHUB_ENV"
+      - name: Start SFTP server, connection file and known_hosts
+        run: |
+          d="$RUNNER_TEMP/sftp"
+          mkdir -p "$d/downloads" && chmod 755 "$d" "$d/downloads"
+          # Known exact content, no trailing newline (keeps it safe to pass through the environment).
+          expect="version 9.9.${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          printf '%s' "$expect" > "$d/downloads/version.txt"
+          pw="$(openssl rand -hex 16)"
+          echo "::add-mask::$pw"
+          id="$(docker run -d -p 127.0.0.1::22 -v "$d/downloads:/home/deploy/downloads:ro" \
+            atmoz/sftp@sha256:c5fb9e4beb8b7054a4c0b65c5e11df47cc20da95ad6002e88aecff62bab06372 "deploy:$pw:1001")"
+          port="$(docker port "$id" 22/tcp | head -n1 | sed 's/.*://')"
+          # Wait until sshd answers and has presented its (first-start generated) host keys.
+          for i in $(seq 1 60); do
+            ssh-keyscan -p "$port" 127.0.0.1 2>/dev/null > "$d/known_hosts" && [ "$(wc -l < "$d/known_hosts")" -ge 3 ] && break
+            sleep 1
+          done
+          if [ "$(wc -l < "$d/known_hosts")" -lt 3 ]; then docker logs "$id" 2>&1 | sed "s/$pw/***/g"; echo "sshd not ready"; exit 1; fi
+          printf '{"schema":"nurtuo.connection/v1","id":"private-sftp","connector":"sftp","settings":{"host":"127.0.0.1","port":%s,"user":"deploy","password":"secret://sftp_password"}}\n' "$port" > "$d/conn.json"
+          {
+            echo "NURTUO_FLOW_RUN_CONN=$d/conn.json"
+            echo "NURTUO_FLOW_RUN_KNOWN_HOSTS=$d/known_hosts"
+            echo "NURTUO_FLOW_RUN_EXPECT=$expect"
+            echo "NURTUO_SECRET_SFTP_PASSWORD=$pw"
+          } >> "$GITHUB_ENV"
+      - name: Playwright e2e
+        run: pnpm --filter @nurtuo/web run test:e2e
+      - name: Upload Playwright report and traces
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: playwright-report
+          path: |
+            core/web/playwright-report
+            core/web/test-results
+          retention-days: 5
+          if-no-files-found: ignore
+
   bridge-python:
     runs-on: ubuntu-latest
     steps:
