@@ -51,3 +51,7 @@ playwright-report/
 *.egg-info/
 __pycache__/
 .venv/
+
+# Built binaries
+/nurtuo
+/core/runtime/cmd/nurtuo/nurtuo

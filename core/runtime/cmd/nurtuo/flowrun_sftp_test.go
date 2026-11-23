@@ -5,14 +5,17 @@ package main
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	pkgsftp "github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
@@ -34,6 +37,12 @@ type sftpFixture struct {
 }
 
 func startSFTPFixture(t *testing.T) *sftpFixture {
+	t.Helper()
+	return startSFTPFixtureWith(t, nil)
+}
+
+// startSFTPFixtureWith lets the caller replace handlers of the in-memory server (e.g. to stall reads).
+func startSFTPFixtureWith(t *testing.T, wrap func(*pkgsftp.Handlers)) *sftpFixture {
 	t.Helper()
 	_, hostPriv, _ := ed25519.GenerateKey(rand.Reader)
 	hostSigner, err := ssh.NewSignerFromKey(hostPriv)
@@ -70,6 +79,9 @@ func startSFTPFixture(t *testing.T) *sftpFixture {
 	}
 	t.Cleanup(func() { _ = l.Close() })
 	handlers := pkgsftp.InMemHandler()
+	if wrap != nil {
+		wrap(&handlers)
+	}
 	go func() {
 		for {
 			nc, err := l.Accept()
@@ -241,6 +253,8 @@ func TestFlowRunSFTPInProc(t *testing.T) {
 
 func TestFlowRunSFTPKeyAuth(t *testing.T) {
 	fx := startSFTPFixture(t)
+	t.Setenv("NURTUO_SECRET_SFTP_PASSWORD", "") // env wins over --secrets-dir
+	t.Setenv("NURTUO_SECRET_SFTP_KEY", "")
 	env := newSFTPEnv(t, fx, "key")
 	code, out, errs := runFlow(t, nil, env.args("--set", "path=/downloads/version.txt")...)
 	if code != 0 || out != sftpTestBody || errs != "" {
@@ -259,6 +273,8 @@ func TestFlowRunSFTPKeyAuth(t *testing.T) {
 
 func TestFlowRunSFTPWrongPassword(t *testing.T) {
 	fx := startSFTPFixture(t)
+	t.Setenv("NURTUO_SECRET_SFTP_PASSWORD", "") // env wins over --secrets-dir
+	t.Setenv("NURTUO_SECRET_SFTP_KEY", "")
 	env := newSFTPEnv(t, fx, "password")
 	writeTemp(t, env.secretsDir, "sftp_password", "definitely-wrong-pw")
 	code, out, errs := runFlow(t, nil, env.args("--set", "path=/downloads/version.txt")...)
@@ -300,13 +316,70 @@ func TestFlowRunInsecureHostKeyWarning(t *testing.T) {
 	if after, _ := os.ReadFile(env.conn); string(after) != string(before) {
 		t.Fatalf("the connection file was modified:\n%s", after)
 	}
-	t.Run("insecure policy inside the connection file also warns", func(t *testing.T) {
+	t.Run("warning is JSON with --json", func(t *testing.T) {
+		code, _, errs := runFlow(t, nil, append(args, "--json")...)
+		first, _, _ := strings.Cut(strings.TrimSpace(errs), "\n")
+		if code != 0 || !json.Valid([]byte(first)) || !strings.Contains(first, "insecure_host_key") {
+			t.Fatalf("code=%d stderr=%q", code, errs)
+		}
+	})
+	t.Run("insecure policy inside the connection file without the flag is exit 2", func(t *testing.T) {
 		env := newSFTPEnv(t, fx, "password", "hostKeyPolicy", `"insecure"`)
 		code, out, errs := runFlow(t, nil, env.flow, "--connection", env.conn, "--secrets-dir", env.secretsDir, "--set", "path=/downloads/version.txt")
+		if code != 2 || out != "" || !strings.Contains(errs, "--insecure-host-key") {
+			t.Fatalf("code=%d stdout=%q stderr=%q", code, out, errs)
+		}
+	})
+	t.Run("the flag overrides an insecure policy in the file", func(t *testing.T) {
+		env := newSFTPEnv(t, fx, "password", "hostKeyPolicy", `"insecure"`)
+		code, out, errs := runFlow(t, nil, env.flow, "--connection", env.conn, "--secrets-dir", env.secretsDir, "--insecure-host-key", "--set", "path=/downloads/version.txt")
 		if code != 0 || out != sftpTestBody || !strings.Contains(errs, "warning: host key verification is disabled") {
 			t.Fatalf("code=%d stdout=%q stderr=%q", code, out, errs)
 		}
 	})
+}
+
+// stallReaderAt blocks every read until release is closed.
+type stallReaderAt struct{ release chan struct{} }
+
+func (r stallReaderAt) ReadAt([]byte, int64) (int, error) {
+	<-r.release
+	return 0, io.EOF
+}
+
+type stallFileGet struct {
+	release chan struct{}
+	inner   pkgsftp.FileReader
+}
+
+func (g stallFileGet) Fileread(req *pkgsftp.Request) (io.ReaderAt, error) {
+	return stallReaderAt{g.release}, nil
+}
+
+// A stalled GET must honour cancellation after the handshake: exit 1, empty stdout.
+func TestFlowRunSFTPCancelStalledGet(t *testing.T) {
+	release := make(chan struct{})
+	fx := startSFTPFixtureWith(t, func(h *pkgsftp.Handlers) { h.FileGet = stallFileGet{release: release, inner: h.FileGet} })
+	t.Cleanup(func() { close(release) })
+	t.Setenv("NURTUO_SECRET_SFTP_PASSWORD", "")
+	env := newSFTPEnv(t, fx, "password")
+	type result struct {
+		code      int
+		out, errs string
+	}
+	done := make(chan result, 1)
+	go func() {
+		code, out, errs := runFlow(t, nil, env.args("--set", "path=/downloads/version.txt", "--timeout", "1s")...)
+		done <- result{code, out, errs}
+	}()
+	select {
+	case r := <-done:
+		if r.code != 1 || r.out != "" || r.errs == "" {
+			t.Fatalf("code=%d stdout=%q stderr=%q", r.code, r.out, r.errs)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("stalled GET ignored cancellation")
+	}
 }
 
 func TestFlowRunExamples(t *testing.T) {

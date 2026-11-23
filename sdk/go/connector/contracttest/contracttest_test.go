@@ -18,8 +18,8 @@ import (
 // APPLICATION_ERROR, everything else succeeds.
 type fake struct{}
 
-func (fake) Describe(context.Context) (*connectorv1.Descriptor, error) {
-	return &connectorv1.Descriptor{
+func (fake) Describe(context.Context) (*connectorv1.ConnectorDescriptor, error) {
+	return &connectorv1.ConnectorDescriptor{
 		Id:          "fake",
 		Version:     "0.1.0",
 		Host:        connectorv1.Host_HOST_GO_NATIVE,

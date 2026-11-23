@@ -47,7 +47,7 @@ Normally the runtime starts it (`connectors/bridge`). Ctrl-C, SIGTERM, or closin
 
 Subclass `Connector`:
 
-- `describe()` returns a `Descriptor` (`make_descriptor`, `operation` helpers; host is set to
+- `describe()` returns a `ConnectorDescriptor` (`make_descriptor`, `operation` helpers; host is set to
   `HOST_BRIDGE_PYTHON`).
 - `test(settings)` returns `TestResult(ok, diagnostic)`; exceptions become `ok=False` with a
   redacted message.

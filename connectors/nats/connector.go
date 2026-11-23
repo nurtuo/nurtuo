@@ -61,7 +61,7 @@ var _ connector.Connector = (*Connector)(nil)
 func New() *Connector { return &Connector{} }
 
 // Describe returns the connector descriptor.
-func (*Connector) Describe(context.Context) (*connectorv1.Descriptor, error) {
+func (*Connector) Describe(context.Context) (*connectorv1.ConnectorDescriptor, error) {
 	schema, err := structpb.NewStruct(map[string]any{
 		"type":     "object",
 		"required": []any{"url"},
@@ -97,7 +97,7 @@ func (*Connector) Describe(context.Context) (*connectorv1.Descriptor, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &connectorv1.Descriptor{
+	return &connectorv1.ConnectorDescriptor{
 		Id:               ID,
 		Version:          Version,
 		Host:             connectorv1.Host_HOST_GO_NATIVE,

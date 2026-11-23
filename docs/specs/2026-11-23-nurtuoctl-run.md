@@ -45,7 +45,7 @@ nurtuo flow run sftp-download.flow.json \
 
 The flow is `start` (manual, or a listener/http start that is ignored) -> `connector` (`sftp`, `GET`,
 connection `private-sftp`) -> `returnDocuments`. The path arrives as the initial document property
-`path` set by `--set`. The host key is checked against `~/.ssh/known_hosts`.
+`path` set by `--set`. The host key is checked against `~/.ssh/known_hosts` (unless the connection uses a `fingerprint` policy).
 
 ## Decisions
 
@@ -59,7 +59,7 @@ blocking question remains.
 | Q3 | Connection files | `--connection <file>`, repeatable, matched by connection `id`. |
 | Q4 | Connection kind | `nurtuo.connection/v1` unchanged; secrets as `secret://`; no literal passwords. |
 | Q5 | SFTP credentials | Password and key both supported; secrets from env `NURTUO_SECRET_*` or `--secrets-dir`. |
-| Q6 | Host key | Verified by default via `--known-hosts` (default `~/.ssh/known_hosts`); disabled only with `--insecure-host-key`, with a warning on stderr. |
+| Q6 | Host key | Verified by default; disabled only with `--insecure-host-key`, with a warning on stderr. A file-level `hostKeyPolicy: insecure` is not an opt-out (exit 2). Precedence: see Design, step 4. |
 | Q7 | stdout | Raw document bytes; `--json` prints the envelope `{status, documents}`. |
 | Q8 | Exit codes | 0 ok, 1 execution error, 2 usage/flow validation error, 3 Stop with status. |
 | Q9 | Errors | On stderr, stdout empty; `--json` switches the stderr format. |
@@ -128,14 +128,14 @@ Non-goals:
   `nurtuo.connection/v1` (`schema`, `id` matching `^[a-z][a-z0-9_-]*$`, `connector`, `settings`;
   unknown fields rejected). `Resolver.Resolve` replaces `secret://<name>` references in memory from a
   `secrets.Provider` (`env`: `NURTUO_SECRET_<NAME>`, `dir`, `encrypted-file`).
-  `connections.CheckLiterals` rejects literal values in secret-marked fields (`writeOnly`).
+  `(*connections.Definition).CheckLiterals`, called from `Resolver.Resolve`, rejects literal values in secret-marked fields (`writeOnly`).
   `connhost.Manager.Prepare` validates, resolves, builds and `Test`s connections for a deployment and
   `Manager.Lookup` serves them to the `connector` step.
 - **Connector registry**: `connhost.Builtins()` (`core/runtime/internal/connhost/registry.go`)
   registers `http`, `sftp`, `postgres`, `nats`; `cmd/nurtuo/run.go` exposes it as `nativeConnectors()`.
 - **SFTP connector**: `connectors/sftp` (`sftp.go`, `config.go`, `schemas/connection.json`; Apache-2.0).
   `GET` streams a file as output document `<id>.out` (properties `path`, `filename`; tracked `size`).
-  The path comes from the input document property `path` (or step option `directory` for uploads).
+  The path comes from the input document property `path`. `directory` is an `Execute` option (for uploads) that the `connhost.Manager.Lookup` entry leaves empty, and `flow.ConnectorConfig` has no options field, so a flow cannot set it; the path for `GET` is passed with a `setProperties` step or `--set`.
   Settings: `host`, `port`, `user`, `password`, `privateKey`, `passphrase`, `hostKeyPolicy`
   (`known_hosts` default, `fingerprint`, `insecure`), `knownHosts` (**content**, not a path),
   `hostKeyFingerprint`, `rootPath`, `timeoutMs`. Secrets are `writeOnly`.
@@ -171,17 +171,21 @@ Steps of `nurtuo flow run <flow.json> [flags]`:
 1. Parse args (see Contracts). Unknown flag, missing `<flow.json>`, malformed `--set`: exit 2.
 2. Read the flow; `flow.ValidateJSON` then `flow.Parse`. Failure: exit 2, diagnostics on stderr, no connection built.
 3. Read each `--connection` file with `connections.Parse`; reject duplicate ids. For every `connector` step, look up the connection by `id`; a missing id or a `connector` kind that differs from the step's is exit 2 before any network access (same rule as `connhost.Manager.Prepare`).
-4. Apply host-key options to `sftp` connections in memory: `--known-hosts` content fills `settings.knownHosts`; `--insecure-host-key` sets `hostKeyPolicy: insecure` and prints a warning on stderr. Connection files on disk are never modified.
-5. Secrets: `connections.Resolver` with the `env` provider (`NURTUO_SECRET_<NAME>`) and, when `--secrets-dir` is set, the `dir` provider **[ASSUMPTION: env first, then dir]**. `Redactor` is active for all stderr output. A missing secret names the secret, never a value.
+4. Apply host-key rules to `sftp` connections in memory, in this order (the connector's `parseConfig` only defaults an empty policy, so the CLI defines the precedence). Connection files on disk are never modified.
+   1. `--insecure-host-key` sets `hostKeyPolicy: insecure` and prints a warning on stderr.
+   2. A file that says `hostKeyPolicy: insecure` without the flag exits 2 and does not connect.
+   3. `hostKeyPolicy: fingerprint` keeps `hostKeyFingerprint`; it does not need or read `--known-hosts`.
+   4. For `known_hosts` (the default), an explicit `--known-hosts <file>` wins and fills `settings.knownHosts`; otherwise a non-empty `settings.knownHosts` is kept; otherwise `~/.ssh/known_hosts` is read. Exit 1 only if the resulting content is still empty (missing or empty file), with a message suggesting `--known-hosts`.
+5. Secrets: `connections.Resolver` with the `env` provider (`NURTUO_SECRET_<NAME>`) and, when `--secrets-dir` is set, the `dir` provider **[ASSUMPTION: env first, then dir]**. `Redactor` is active for all stderr output. A missing secret names the secret, never a value. `CheckLiterals` runs inside `Prepare`, so the implementation must classify that error (a literal in a secret field -> exit 2; unavailable secret, `Test`/auth/host-key failure -> exit 1) rather than mapping every `Prepare` error to 1.
 6. `connhost.NewManager(connhost.Builtins(), resolver)`; `Prepare` + `Commit` for a synthetic deployment, which `Test`s each connection (fail fast on auth or host-key error); `defer Close`.
-7. `engine.New()`; register `start` (no-op), `connector` (`RegisterConnectorLookup(mgr)`), `map`, `setProperties`, `message`. Other step kinds fail with the engine's `no_runner`. A `start` of type `listener`/`http` is accepted and ignored (Decision 11).
+7. `engine.New()`; register `connector` (`RegisterConnectorLookup(mgr)`); `map`, `setProperties`, `message` come from `NewRegistry`. Registering `start` is optional: an unregistered `start` step already passes the set through (`interp.go` `runStep`), and `listener.StartRunner` only validates the config. `decision`, `route`, `branch`, `tryCatch`, `stop` and `returnDocuments` are interpreter cases (`interp.go`), not registry runners. Registry kinds without a runner (`script`, `queue`, `notify`) fail with the engine's `no_runner`; no script runner is registered (`RegisterScriptRunner` is not called). A `start` of type `listener`/`http` is accepted and ignored (Decision 11).
 8. Inject **one empty document** carrying the `--set` properties into `start` and `Run` under a signal-aware context (`--timeout` bounds the whole run **[ASSUMPTION: flag, default none]**).
 9. Report: success prints per the output format; `Result.Failed` -> exit 1; `Result.Stop` with status -> exit 3; close all sets and connections.
 
 ### Credentials (Decision 5)
 
 SFTP password auth: `settings.password = "secret://sftp_password"`. Key auth:
-`settings.privateKey = "secret://sftp_key"` and optionally `settings.passphrase`. A key is a multi-line
+`settings.privateKey = "secret://sftp_key"` and optionally `settings.passphrase = "secret://sftp_passphrase"`. A key is a multi-line
 PEM and fits a `--secrets-dir` file better than env. Both are supported; one connection uses one of them,
 because the connector schema `oneOf` rejects both on the same connection (unchanged). No secret is an
 argv value.
@@ -191,11 +195,11 @@ argv value.
 - Default: stdout is exactly the payload bytes of the single returned document, no added newline. Stdout is
   written only on success; on any error stdout is empty and the error is on stderr as `nurtuo: <message>`.
 - `--json`: stdout is the envelope `{"status": <int>, "documents": [{"id", "properties", "payload"}]}`
-  **[ASSUMPTION: `payload` is a base64 string, `status` is 200 unless a Stop sets it]**. Errors with `--json`
+  **[ASSUMPTION: `payload` is a base64 string, `status` is 200]**. A Stop never prints the envelope. Errors with `--json`
   go to stderr as one JSON object `{"error": {"code", "message"}}` and stdout stays empty.
 - More than one returned document without `--json` fails with exit 1 and tells the user to use `--json`
   **[ASSUMPTION]**. Zero returned documents succeeds with empty stdout.
-- Stop with status (Decision 8): exit 3, stderr `nurtuo: flow stopped with status <n>`; with `--json` stderr carries the JSON error. Stdout stays empty **[ASSUMPTION]**.
+- Stop with status (Decision 8): exit 3, stderr `nurtuo: flow stopped with status <n>`; with `--json` stderr carries the JSON error. A Stop never prints the envelope; stdout stays empty **[ASSUMPTION]**.
 - Logs and diagnostics go to stderr only (`slog` text handler as in `run.go`).
 
 ## Contracts (all **experimental**)
@@ -206,16 +210,16 @@ argv value.
 | `--connection <file>` | repeatable; each file is one `nurtuo.connection/v1` document; matched to `connector` steps by connection `id`; required when the flow has a `connector` step |
 | `--set key=value` | repeatable; sets an initial document property on the injected document (`path=/downloads/version.txt`); first `=` splits; duplicate key: last wins **[ASSUMPTION]** |
 | `--secrets-dir <dir>` | `dir` secrets provider (files 0600, dir 0700, per the existing provider); in addition to env |
-| `--known-hosts <file>` | known_hosts file whose content fills `settings.knownHosts` of `sftp` connections; default `~/.ssh/known_hosts` |
-| `--insecure-host-key` | sets `hostKeyPolicy: insecure` for `sftp` connections; prints a warning on stderr; the only way to skip verification |
+| `--known-hosts <file>` | known_hosts file whose content fills `settings.knownHosts` of `sftp` connections with policy `known_hosts`; wins over inline `knownHosts`; ignored for `fingerprint`; without it, non-empty inline `knownHosts` is kept, else `~/.ssh/known_hosts` is read |
+| `--insecure-host-key` | sets `hostKeyPolicy: insecure` for `sftp` connections; prints a warning on stderr; the only way to skip verification (a file saying `insecure` without the flag exits 2) |
 | `--json` | stdout envelope `{status, documents}`; stderr errors as JSON |
 | `--timeout <d>` | bounds the whole run **[ASSUMPTION]** |
 | Flow input | `nurtuo.flow/v1` as exported by the canvas (`<id>.flow.json`); `.layout.json` not needed |
-| Connection input | `nurtuo.connection/v1` unchanged; secrets as `secret://<name>`, literals in secret fields rejected by `connections.CheckLiterals` |
+| Connection input | `nurtuo.connection/v1` unchanged; secrets as `secret://<name>`, literals in secret fields rejected by `(*connections.Definition).CheckLiterals` |
 | Environment | `NURTUO_SECRET_<NAME>` |
 | stdout | raw payload bytes (default) or the JSON envelope (`--json`); empty on error |
 | stderr | `nurtuo: <message>` text or JSON error (`--json`); warnings, diagnostics; never secrets |
-| Exit codes | 0 ok; 1 execution error (connector, `Result.Failed`, `no_runner`, cancel, secret/host-key/auth failure); 2 usage or flow/connection validation error; 3 Stop with status |
+| Exit codes | 0 ok; 1 execution error (connector, `Result.Failed`, `no_runner`, cancel, missing secret, empty known_hosts, host-key/auth failure); 2 usage, flow/connection validation error, literal secret, file-level `insecure` without the flag; 3 Stop with status |
 
 Exit codes differ from the `nurtuoctl` table (0/1/2/3 network/4 auth) on purpose (Decision 8); they are
 documented in `cli.md` by the implementation PR.
@@ -230,11 +234,11 @@ imports `core/`.
 
 ## Security
 
-- **Secrets never in files.** Connection files hold `secret://` references; the resolver injects the value in memory (ADR 0010). Literal passwords are rejected by `connections.CheckLiterals` and the error names the `secret://` fix and the `NURTUO_SECRET_<NAME>` variable. `Secret` renders `***`; `Redactor` scrubs errors and logs. Output document content is **not** redacted (user data), so the command never sends stdout to logs.
+- **Secrets never in files.** Connection files hold `secret://` references; the resolver injects the value in memory (ADR 0010). Literal passwords are rejected (exit 2) by `(*connections.Definition).CheckLiterals` and the error names the `secret://` fix and the `NURTUO_SECRET_<NAME>` variable. `Secret` renders `***`; `Redactor` scrubs errors and logs. Output document content is **not** redacted (user data), so the command never sends stdout to logs.
 - **Secret sources.** Env `NURTUO_SECRET_*` (visible to same-user processes via `/proc/<pid>/environ`) or `--secrets-dir` (0700/0600 enforced by the provider). Keys (multi-line PEM) fit `--secrets-dir`. No secret is accepted as an argv value (same rule as `nurtuo secret`).
-- **Host-key verification (Decision 6).** On by default: `known_hosts` policy with content read from `--known-hosts` (default `~/.ssh/known_hosts`). Missing or unreadable default file with an `sftp` connection: exit 1 with a message suggesting `--known-hosts`. `--insecure-host-key` is the only opt-out, always prints a warning on stderr, and is never implied by any config. A `hostKeyPolicy: insecure` already inside a connection file is honoured by the connector but also triggers the same stderr warning **[ASSUMPTION]**.
+- **Host-key verification (Decision 6).** On by default. `--insecure-host-key` is the only opt-out; it always prints a warning on stderr and is never implied by any config. A file-level `hostKeyPolicy: insecure` without the flag exits 2 and does not connect. `fingerprint` keeps `hostKeyFingerprint` and does not read `--known-hosts`. For `known_hosts`: explicit `--known-hosts` wins, else non-empty inline `settings.knownHosts`, else `~/.ssh/known_hosts`; still-empty content exits 1 with a message suggesting `--known-hosts`.
 - **Path confinement.** `rootPath` confinement of `connectors/sftp` applies; a flow can read any file under `rootPath`.
-- **Untrusted flow.** A flow can contain mutating `connector` operations (SFTP `DELETE`/`RENAME`, SQL writes) and `map` expressions; running a foreign flow with real credentials is the user's risk (see Gaps). `script` steps fail with `no_runner`. No listener is opened and no control-plane request is made.
+- **Untrusted flow.** A flow can contain mutating `connector` operations (SFTP `DELETE`/`RENAME`, SQL writes) and `map` expressions; running a foreign flow with real credentials is the user's risk (see Gaps). `script` steps fail with `no_runner` (no script runner is registered). No listener is opened and no control-plane request is made.
 - **Output to terminal.** Writing a binary file to a TTY can inject escape sequences; refusing non-UTF-8 output to a TTY unless `--json` is a non-blocking **[ASSUMPTION]**.
 - **Resource limits.** Large payloads stream through `docs.Spool` (spills to disk); stdout is written with `io.Copy`, `EPIPE` is handled and the temp dir is cleaned up.
 
@@ -250,12 +254,12 @@ Phases are independently shippable. Each step leaves the system working and name
 
 ### Phase 2: in-process run with a stub connector
 
-4. Resolver (`env` + `--secrets-dir`), `connhost.Manager` with an injectable `Registry` (test seam), `engine.New()`, `start`/`connector` runners; inject one document with `--set` properties. Verified by `TestFlowRunPrintsReturnedPayload`, `TestFlowRunSetProperties`, `TestFlowRunListenerStartIgnored`, `TestFlowRunMissingSecret`.
+4. Resolver (`env` + `--secrets-dir`), `connhost.Manager` with an injectable `Registry` (test seam), `engine.New()`, `connector` runner (`start` is a pass-through); inject one document with `--set` properties. Verified by `TestFlowRunPrintsReturnedPayload`, `TestFlowRunSetProperties`, `TestFlowRunListenerStartIgnored`, `TestFlowRunMissingSecret` (exit 1), `TestFlowRunLiteralSecret` (exit 2, `Prepare` error classified).
 5. Output and exit-code mapping, `--json` envelope and JSON errors. Verified by `TestFlowRunExitCodes`, `TestFlowRunJSONEnvelope`, `TestFlowRunStdoutStderrSeparation`, `TestFlowRunRedaction`.
 
 ### Phase 3: real SFTP and host-key policy
 
-6. `connhost.Builtins()` wired; `--known-hosts` (default `~/.ssh/known_hosts`) and `--insecure-host-key` applied in memory; password and key auth. Verified by `TestFlowRunSFTPInProc`, `TestFlowRunSFTPKeyAuth`, `TestFlowRunSFTPWrongPassword`, `TestFlowRunSFTPHostKeyMismatch`, `TestFlowRunInsecureHostKeyWarning`.
+6. `connhost.Builtins()` wired; host-key rules of Design step 4 (`--insecure-host-key`, file-level `insecure` -> exit 2, `fingerprint`, `--known-hosts` > inline `knownHosts` > `~/.ssh/known_hosts`) applied in memory; password and key auth. Verified by `TestFlowRunSFTPInProc`, `TestFlowRunSFTPKeyAuth`, `TestFlowRunSFTPWrongPassword`, `TestFlowRunSFTPHostKeyMismatch`, `TestFlowRunInsecureHostKeyWarning`, `TestFlowRunHostKeyPrecedence`.
 7. Examples `examples/flows/sftp-download.flow.json` and `examples/connections/sftp.connection.json`, plus a section in [cli.md](../cli.md) and [connectors/sftp.md](../connectors/sftp.md). Verified by `node scripts/gen-flow-reference.mjs --validate --check` and `node scripts/check-docs-links.mjs`.
 
 ### Phase 4: container e2e in CI
@@ -264,19 +268,19 @@ Phases are independently shippable. Each step leaves the system working and name
 
 ## Acceptance criteria
 
-- WHEN `nurtuo flow run` is given a valid flow, a valid connection file for a reachable SFTP server and `--set path=/downloads/version.txt` and the file exists THEN stdout contains exactly the file's bytes, stderr is empty of secrets and the exit code is 0.
+- WHEN `nurtuo flow run` is given a valid flow, a valid connection file for a reachable SFTP server and `--set path=/downloads/version.txt` and the file exists THEN stdout contains exactly the file's bytes, stderr contains no secret and the exit code is 0.
 - WHEN the remote file does not exist THEN stdout is empty, stderr names the path (not any credential) and the exit code is 1.
 - WHEN the flow fails `flow.ValidateJSON`, an argument is invalid or a `--set` value has no `=` THEN no connection is opened, diagnostics go to stderr, stdout is empty and the exit code is 2.
 - WHEN a `connector` step's connection id is absent from the `--connection` files, or the kinds differ THEN the command fails with exit 2 before any network access.
-- WHEN a connection file contains a literal password THEN the command fails with exit 2 and names the `secret://` fix; WHEN a referenced secret is unavailable THEN it fails naming the secret name, never a value.
+- WHEN a connection file contains a literal password THEN the command fails with exit 2 and names the `secret://` fix; WHEN a referenced secret is unavailable THEN it fails with exit 1 naming the secret name, never a value.
 - WHEN `--secrets-dir` holds the secret or the env var `NURTUO_SECRET_<NAME>` is set THEN the secret resolves; WHEN a private key is supplied through either THEN key auth succeeds.
-- WHEN the SFTP host key is unknown or does not match `--known-hosts` (default `~/.ssh/known_hosts`) THEN the command fails with exit 1 and empty stdout; WHEN `--insecure-host-key` is given THEN it connects and prints a warning on stderr.
-- WHEN a password, key or passphrase appears in any error THEN it is masked (`***`); WHEN the run succeeds THEN no secret appears on stdout or stderr.
+- WHEN the SFTP host key is unknown or does not match the resolved known_hosts content (`--known-hosts`, else inline `knownHosts`, else `~/.ssh/known_hosts`) THEN the command fails with exit 1 and empty stdout; WHEN that content is still empty THEN exit 1 without connecting; WHEN `--insecure-host-key` is given THEN it connects and prints a warning on stderr; WHEN the connection file says `hostKeyPolicy: insecure` without the flag THEN exit 2 and no connection is made; WHEN the policy is `fingerprint` THEN `hostKeyFingerprint` is used and `--known-hosts` is not needed.
+- WHEN a password, key or passphrase appears in any error THEN it is masked (`***`); WHEN the run succeeds THEN no secret appears on stderr, in logs or in diagnostics (stdout is the raw payload and is not scanned or redacted).
 - WHEN `--json` is given THEN stdout is the envelope `{status, documents}` on success and empty on error, and errors on stderr are JSON.
 - WHEN the flow ends in a Stop with a status THEN the exit code is 3; WHEN a document fails or the connector errors THEN the exit code is 1.
 - WHEN the flow's `start` step is a `listener`/`http` type THEN it is ignored and one empty document is injected.
 - WHEN the flow contains a step kind with no runner THEN the command fails with the engine's `no_runner` message and exit code 1.
-- WHEN the process receives SIGINT during the transfer THEN connections are closed, partial output is not reported as success and the exit code is 1.
+- WHEN the process receives SIGINT during the transfer THEN connections are closed, partial output is not reported as success and the exit code is 1 (`TestFlowRunSIGINT`).
 - WHEN `nurtuo flow run` is used THEN no listener port is opened and no control-plane request is made; WHEN `nurtuo run` is invoked THEN it behaves as before.
 
 ## Tests
@@ -291,9 +295,10 @@ Tests ship in the same change as the code. Names are proposed; none are written 
 | `TestFlowRunInvalidFlow` | table of invalid flows (bad schema tag, missing start, unknown edge target): exit 2, no connector built |
 | `TestFlowRunConnectionParse` | wrong `schema`, bad `id`, unknown field, bad `secret://` name, literal in a `writeOnly` field |
 | `TestFlowRunConnectionMismatch` | kind mismatch, missing id, duplicate id across repeated `--connection` |
-| `TestFlowRunMissingSecret` | env var unset: message names the secret, not a value; `--secrets-dir` resolves it |
+| `TestFlowRunMissingSecret` | env var unset: exit 1, message names the secret, not a value; `--secrets-dir` resolves it |
+| `TestFlowRunLiteralSecret` | literal in a secret field: exit 2 (the `CheckLiterals` error from `Prepare` is classified, not mapped to 1) |
 | `TestFlowRunSetProperties` | `--set path=...` reaches the stub connector as document property; repeated and duplicate keys |
-| `TestFlowRunListenerStartIgnored` | `examples/flows/get-employee.flow.json`-style start runs with one empty document |
+| `TestFlowRunListenerStartIgnored` | new test fixture: `listener`/`http` start followed directly by `returnDocuments` (no Postgres; not `get-employee.flow.json`, which needs Postgres and ends in a 404 `stop`); runs with one empty document |
 | `TestFlowRunPrintsReturnedPayload` | stub connector via injected `connhost.Registry`; stdout equals payload byte for byte, no trailing newline, 1 MiB payload |
 | `TestFlowRunJSONEnvelope` | `--json` success envelope, JSON error on stderr, multiple documents |
 | `TestFlowRunMultipleDocumentsRaw` | more than one returned document without `--json`: exit 1 |
@@ -301,12 +306,14 @@ Tests ship in the same change as the code. Names are proposed; none are written 
 | `TestFlowRunRedaction` | stub connector echoes the password in its error: stderr shows `***` |
 | `TestFlowRunStdoutStderrSeparation` | logs only on stderr; stdout is the payload |
 | `TestFlowRunInsecureHostKeyWarning` | `--insecure-host-key` sets the policy in memory and warns on stderr; files unchanged |
+| `TestFlowRunHostKeyPrecedence` | file `insecure` without flag: exit 2, no connect; `fingerprint` ignores `--known-hosts`; `--known-hosts` beats inline `knownHosts`; inline kept when no flag; empty content: exit 1 |
+| `TestFlowRunSIGINT` | SIGINT mid-run (blocking stub connector): connections closed, exit 1, stdout empty |
 
 ### Integration with an in-process SSH server (`core/runtime/cmd/nurtuo/flowrun_sftp_test.go`)
 
 | Test | Covers |
 |---|---|
-| `TestFlowRunSFTPInProc` | server pattern from `connectors/sftp/helper_test.go` (`startServer`, copied: it is a `_test.go` helper of another module); password auth, GET returns the file |
+| `TestFlowRunSFTPInProc` | server pattern from `connectors/sftp/sftp_test.go` (`startServer`, copied: it is a `_test.go` helper of another module); password auth, GET returns the file |
 | `TestFlowRunSFTPKeyAuth` | private key from `--secrets-dir` |
 | `TestFlowRunSFTPWrongPassword` | exit 1, password absent from output |
 | `TestFlowRunSFTPHostKeyMismatch` | `--known-hosts` with another key: exit 1, empty stdout |
@@ -333,7 +340,7 @@ Tests ship in the same change as the code. Names are proposed; none are written 
 | # | Scenario (concrete) | Severity | Area | Mitigation / follow-up |
 |---|---|---|---|---|
 | 1 | The user types `nurtuo run flow.json`; today `nurtuo run` ignores positionals and exits 2 with usage (`fs.NArg() > 0`). | low | UX, naming | The usage error of `nurtuo run` should hint `nurtuo flow run` (implementation PR); otherwise unchanged |
-| 2 | The user puts the SFTP password literally in the connection file; `connections.CheckLiterals` rejects it and the user switches to `--insecure-host-key` or scripts with the password in argv. | medium | usability, security | Error message gives the exact `secret://` fix and env var name; example in cli.md |
+| 2 | The user puts the SFTP password literally in the connection file; `(*connections.Definition).CheckLiterals` rejects it and the user switches to `--insecure-host-key` or scripts with the password in argv. | medium | usability, security | Error message gives the exact `secret://` fix and env var name; example in cli.md |
 | 3 | `settings.knownHosts` expects content; a user passes a path. The connector fails with `invalid knownHosts`, and the SFTP spec's gap 4 (key algorithm / `[host]:port` form) bites on non-22 ports. | medium | usability | `--known-hosts` reads the file; diagnostics name the file and host:port |
 | 4 | A canvas-exported flow lacks the `setProperties` `path` step because `ConnectorConfig` has no path field; SFTP `GET` fails with `errBadInput`. | medium | contract | Decision 12 supplies `path` through `--set`; example flow and a hint in the error message |
 | 5 | A hostile flow file is run with real SFTP credentials and `DELETE`/`RENAME` operations; remote files are deleted. | high | security | Document in cli.md; `--read-only` is a follow-up |
@@ -341,8 +348,10 @@ Tests ship in the same change as the code. Names are proposed; none are written 
 | 7 | The SFTP `timeoutMs` covers only connect + handshake (SFTP spec gap 1); a stalled server hangs the command. | medium | reliability | `--timeout` bounds the whole run via context |
 | 8 | Bad auth fails the whole `Execute` stream (SFTP spec gap 6); it could be mapped to the wrong exit code. | low | exit codes | All execution errors are exit 1 (Decision 8); tests classify the message, not the code |
 | 9 | Binary output on a TTY corrupts the terminal. | low | UX | **[ASSUMPTION]** refuse non-UTF-8 to a TTY without `--json`; non-blocking |
-| 10 | Drafting assumptions (base64 payload in the envelope, multiple documents in raw mode fail, Stop prints nothing on stdout, `--timeout`, env-then-dir secret order, warning for file-level `insecure`) differ from what the user expects. | low | contract | Experimental contracts; change in the implementation PR with a changelog line; non-blocking |
+| 10 | Drafting assumptions (base64 payload in the envelope, multiple documents in raw mode fail, Stop prints nothing on stdout, `--timeout`, env-then-dir secret order) differ from what the user expects. | low | contract | Experimental contracts; change in the implementation PR with a changelog line; non-blocking |
 | 11 | Running multiple connectors (`postgres`, `nats`) from a one-shot process leaves side effects (writes, published messages) with no dry run. | medium | safety | Document; `--dry-run` as a follow-up |
+| 12 | A canvas flow uses CEL `&&` / `||` in a `decision`/`route` condition; `BasicEvaluator` does not handle them, so the step errors at run time (exit 1). | low | engine | Out of scope; documented limitation, fix belongs to the evaluator |
+| 13 | A connection says `hostKeyPolicy: insecure` and the user expects it to work. | low | UX, security | Exit 2 with a message naming `--insecure-host-key` (Decision 6); no second opt-out |
 
 ## Improvement opportunities
 
@@ -369,7 +378,7 @@ Implementation PR: branch `feat/nurtuo-flow-run`, stacked on #50. Readiness repo
 | Phase 1: command skeleton, parse and validate | Done | 2026-11-23 | Steps 1-3; `TestFlowRunUsage`, `TestFlowRunInvalidFlow`, `TestFlowRunConnectionParse`, `TestFlowRunConnectionMismatch` passing |
 | Phase 2: in-process run with a stub connector | Done | 2026-11-23 | Steps 4-5; stub connector via the injectable `connhost.Registry`; `TestFlowRunPrintsReturnedPayload`, `SetProperties`, `ListenerStartIgnored`, `MissingSecret`, `ExitCodes`, `JSONEnvelope`, `MultipleDocumentsRaw`, `Redaction`, `StdoutStderrSeparation` passing |
 | Phase 3: real SFTP and host-key policy | Done | 2026-11-23 | Steps 6-7; in-process SSH server tests (password, key, wrong password, host-key mismatch, insecure warning, default known_hosts); examples and docs (`cli.md`, `getting-started.md`, `connectors/sftp.md`); `check-example-operations` and `check-docs-links` pass. `gen-flow-reference.mjs --validate --check` needs the TS build (not run here, see PR) |
-| Phase 4: container e2e in CI | Done (CI unverified) | 2026-11-23 | Step 8; `TestFlowRunSFTPContainer` in `core/runtime/test/e2e` skips cleanly without the gate or Docker (verified); the CI job `flow-run-sftp-e2e` has not run yet: Docker is not available on the authoring machine |
+| Phase 4: container e2e in CI | Done (CI unverified) | 2026-11-23 | Step 8; `TestFlowRunSFTPContainer` in `core/runtime/test/e2e` skips cleanly without the gate; with the gate set and no Docker it fails (verified); the CI job `flow-run-sftp-e2e` has not run yet: Docker is not available on the authoring machine |
 
 ## Changelog
 
@@ -377,5 +386,7 @@ Implementation PR: branch `feat/nurtuo-flow-run`, stacked on #50. Readiness repo
 - 2026-11-23: approved; decisions recorded; command is nurtuo flow run
 - 2026-11-23: implementation started (status in-progress); phase 1 landed: `nurtuo flow` dispatch, flag parsing, flow and connection validation, id/kind cross-check (exit 2 before any network access); `nurtuo run` usage hints at `nurtuo flow run`
 - 2026-11-23: phase 2 landed: in-process run (`connhost.Manager`, `engine.New()`, env-then-dir secrets chain, `start` as pass-through), output and exit-code mapping, `--json` envelope and JSON errors. Choices within the drafting assumptions: a Stop without a status exits 0 with empty output; the literal-secret check runs before `Prepare` so it exits 2; the non-UTF-8-to-TTY refusal ([ASSUMPTION], non-blocking) is not implemented
-- 2026-11-23: phase 3 landed: `--known-hosts` (default `~/.ssh/known_hosts`) and `--insecure-host-key` applied in memory, a `hostKeyPolicy: insecure` in a connection file also warns, password and key auth through env or `--secrets-dir`; `examples/flows/sftp-download.flow.json`, `examples/connections/sftp.connection.json`, docs. The in-process SSH server is copied from `connectors/sftp/sftp_test.go` (the spec named `helper_test.go`, which only holds `dialConnector`). A failed document's message includes its `path` property so a missing remote file is named
+- 2026-11-23: phase 3 landed: `--known-hosts` (default `~/.ssh/known_hosts`) and `--insecure-host-key` applied in memory, password and key auth through env or `--secrets-dir`; `examples/flows/sftp-download.flow.json`, `examples/connections/sftp.connection.json`, docs. The in-process SSH server is copied from `connectors/sftp/sftp_test.go` (the spec named `helper_test.go`, which only holds `dialConnector`). A failed document's message includes its `path` property so a missing remote file is named
 - 2026-11-23: phase 4 landed: `core/runtime/test/e2e/flowrun_sftp_test.go` (builds the real `nurtuo` binary, `atmoz/sftp` pinned by digest, override with `NURTUO_TEST_SFTP_IMAGE`) and CI job `flow-run-sftp-e2e` with `NURTUO_TEST_SFTP_E2E=1`. Deviation in the fixture detail ([ASSUMPTION] area): the host key is generated by the container and read with `docker exec` instead of being mounted, because sshd refuses a bind-mounted key not owned by root; the client public key is mounted under `~/.ssh/keys`
+- 2026-11-23: address review: host-key precedence replaces file-level `insecure` assumption (exit 2 without flag), exit-code classification for secrets, Stop never prints the envelope, listener-start test fixture, test names, corrected citations
+- 2026-11-23: implementation aligned with the revised host-key rules (file-level `insecure` without `--insecure-host-key` exits 2; `--known-hosts` > inline `knownHosts` > `~/.ssh/known_hosts`); review fixes on PR #51 (SFTP cancellation after the handshake, `--json` usage/warning output, Stop redaction keeps exit 3)
