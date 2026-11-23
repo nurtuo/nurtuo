@@ -23,7 +23,7 @@ import java.util.concurrent.TimeUnit;
 import nurtuo.connector.v1.Connector.ConnectionConfig;
 import nurtuo.connector.v1.Connector.DocumentChunk;
 import nurtuo.connector.v1.Connector.DocumentResult;
-import nurtuo.connector.v1.Connector.Descriptor;
+import nurtuo.connector.v1.Connector.ConnectorDescriptor;
 import nurtuo.connector.v1.Connector.ExecuteEnd;
 import nurtuo.connector.v1.Connector.ExecuteRequest;
 import nurtuo.connector.v1.Connector.ExecuteResponse;
@@ -92,7 +92,7 @@ public final class ConnectorTestHarness implements AutoCloseable {
         return blocking;
     }
 
-    public Descriptor describe() {
+    public ConnectorDescriptor describe() {
         return blocking.describe(nurtuo.connector.v1.Connector.DescribeRequest.getDefaultInstance()).getDescriptor();
     }
 

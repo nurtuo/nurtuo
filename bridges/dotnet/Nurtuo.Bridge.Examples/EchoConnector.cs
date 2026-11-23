@@ -17,7 +17,7 @@ public sealed class EchoConnector : ConnectorBase
 {
     public override IReadOnlySet<string>? SecretKeys { get; } = new HashSet<string> { "api_token" };
 
-    public override Descriptor Describe() => MakeDescriptor(
+    public override ConnectorDescriptor Describe() => MakeDescriptor(
         id: "example-echo-dotnet",
         version: "0.1.0",
         displayName: "Echo (.NET example)",

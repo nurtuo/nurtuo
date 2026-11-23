@@ -13,7 +13,7 @@ Durable rules learned from real incidents in this repository. Hard boundaries li
 
 ## Record format
 
-File: `docs/lessons/<kebab-case-slug>.md`, starting with the SPDX comment.
+File: `docs/lessons/<kebab-case-slug>.md`, starting with the frontmatter. Lesson records are the exception to the "SPDX first" rule: `---` comes first so the YAML is recognized as frontmatter, and the SPDX comment follows the closing `---`.
 
 ```markdown
 ---
@@ -22,6 +22,7 @@ packages: ["core", "connectors"]
 areas: ["architecture", "testing"]
 topics: ["contracts", "sftp", "migrations"]
 ---
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # {Same title}
 

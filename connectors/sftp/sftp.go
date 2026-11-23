@@ -47,13 +47,13 @@ var _ connector.Connector = (*Connector)(nil)
 func New() *Connector { return &Connector{} }
 
 // Describe returns the descriptor (mirrors connector.yaml).
-func (*Connector) Describe(context.Context) (*connectorv1.Descriptor, error) {
+func (*Connector) Describe(context.Context) (*connectorv1.ConnectorDescriptor, error) {
 	schema := &structpb.Struct{}
 	if err := schema.UnmarshalJSON(connectionSchema); err != nil {
 		return nil, err
 	}
 	t := connectorv1.OperationType_OPERATION_TYPE_QUERY
-	return &connectorv1.Descriptor{
+	return &connectorv1.ConnectorDescriptor{
 		Id:               "sftp",
 		Version:          "0.1.0",
 		Host:             connectorv1.Host_HOST_GO_NATIVE,

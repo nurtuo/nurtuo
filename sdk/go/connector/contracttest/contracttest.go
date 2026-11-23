@@ -71,7 +71,7 @@ type Options struct {
 	// Connection is passed to Browse, Test and Execute.
 	Connection *connectorv1.ConnectionConfig
 	// Golden, if set, must equal the descriptor returned by Describe.
-	Golden *connectorv1.Descriptor
+	Golden *connectorv1.ConnectorDescriptor
 	// Secrets are values that must never appear in the Test diagnostic.
 	Secrets []string
 	// Execute cases; if empty the Execute subtests are skipped.

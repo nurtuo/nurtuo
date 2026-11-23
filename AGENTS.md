@@ -6,12 +6,14 @@ Instructions for coding agents working in this monorepo. Human contributors: rea
 
 - Check the Task Router below before researching or coding.
 - Before a non-trivial change, look for an existing spec in [docs/specs/](docs/specs/) and in [docs/specs/INDEX.md](docs/specs/INDEX.md). Read the ADRs in [docs/adr/](docs/adr/) that the spec links.
-- Spec first. Sizeable work needs a spec at `docs/specs/YYYY-MM-DD-<topic>.md`, written before code from [docs/specs/_template.md](docs/specs/_template.md). Sizeable means: a new module, command or API; a public contract change; security work; or work that spans areas or takes 3+ steps. Start implementing only when the spec status is `approved`. Follow [docs/specs/README.md](docs/specs/README.md).
-- A PR that implements a spec MUST cite `Source: docs/specs/...` and fill the "Source spec" field of the PR template. Tests MUST land in the same PR as the code.
+- Spec first. Sizeable work needs a spec at `docs/specs/YYYY-MM-DD-<topic>.md`, written before code from [docs/specs/_template.md](docs/specs/_template.md). Sizeable means (copied from [docs/specs/README.md](docs/specs/README.md)): a new module, connector, step kind, CLI command, MCP tool or API resource; a public contract change; security work (authentication, authorization, secrets, signatures, sandboxing, TLS); or work spanning more than one area or more than about a day. Start implementing only when the spec status is `approved` or `in progress` (not `draft`).
+- A PR that implements a spec MUST cite `Source spec: docs/specs/YYYY-MM-DD-<topic>.md` in the "Source spec" field of the PR template. Tests MUST land in the same PR as the code.
 - Small fixes (bug fix, refactor without behaviour change, dependency bump, CI tweak, docs-only) need no spec; a short note in the issue is enough.
+- Apache-2.0 packages that users consume need a changeset (`pnpm changeset`), or a note for the Go module tag (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 - Work trunk-based: branch from `main`, use Conventional Commits (`feat(runtime): ...`, `fix(canvas): ...`, `docs: ...`). PRs are squash-merged.
-- Put code in the directory whose license fits. `core/` is AGPL-3.0-only; `proto/`, `sdk/`, `connectors/`, `bridges/`, `cli/`, `examples/`, `docs/` are Apache-2.0. Start every new source file with an SPDX header matching the directory license (see [LICENSING.md](LICENSING.md), [docs/adr/0001-monorepo-license-split.md](docs/adr/0001-monorepo-license-split.md)). New Markdown under `docs/` starts with `<!-- SPDX-License-Identifier: Apache-2.0 -->`.
-- Change `.proto` files only under `proto/`, then run `make gen` and commit the regenerated code (`sdk/go/gen`, `sdk/ts/proto/src/gen`).
+- Put code in the directory whose license fits. `core/` is AGPL-3.0-only; `proto/`, `sdk/`, `connectors/`, `bridges/`, `cli/`, `examples/`, `docs/` are Apache-2.0. Root files and new `scripts/*` files are `AGPL-3.0-only`. Start every new source file with an SPDX header matching the directory license (see [LICENSING.md](LICENSING.md), [docs/adr/0001-monorepo-license-split.md](docs/adr/0001-monorepo-license-split.md)). New Markdown under `docs/` starts with `<!-- SPDX-License-Identifier: Apache-2.0 -->`; the one exception is lesson records in `docs/lessons/`, which start with `---` frontmatter and carry the SPDX comment right after it.
+- Change `.proto` files only under `proto/`, then run `make gen` and commit the regenerated code (`sdk/go/gen`, `sdk/ts/proto/src/gen`). Also regenerate the committed Python stubs with `python bridges/python/scripts/gen_proto.py` (CI checks `gen_proto.py --check` in `bridge-python`).
+- Merging: Recenzent merges everything on its own when CI is green and the change matches its spec. Only these go to Łukasz: breaking contract/API changes, incompatible licenses, and security weakening.
 - When a lesson record matches your task, read it: see [docs/lessons/README.md](docs/lessons/README.md). Never bulk-read `docs/lessons/`.
 
 ## Ask First
@@ -23,15 +25,22 @@ Stop and get owner approval (comment on the issue or PR) before you:
 - reduce the agreed scope of a spec;
 - change CI (`.github/workflows/`), branch protection, or release automation (`.goreleaser.yaml`, `make snapshot`);
 - make an architecture, license, or product-scope decision (new ADR, moving code between license directories).
-- TODO(team): define which changes need a benchmark review beyond `make bench` on hot-path code.
+
+TODO(team): define which changes need a benchmark review beyond `make bench` on hot-path code.
 
 ## Never
 
 - Never push to `main`. Open a PR from a branch.
 - Never import or depend on `core/` (AGPL) from an Apache-2.0 directory. `make boundaries` enforces this.
-- Never edit generated files by hand: buf output under `sdk/go/gen` and `sdk/ts/proto/src/gen` (regenerate with `make gen`), and `docs/flow-reference.md` (regenerate with `node scripts/gen-flow-reference.mjs`).
+- Never edit generated files by hand. Regenerate them instead:
+  - `sdk/go/gen`, `sdk/ts/proto/src/gen`: `make gen`.
+  - `bridges/python/src/nurtuo_bridge/_gen/`: `python bridges/python/scripts/gen_proto.py`.
+  - `sdk/ts/flow-schema/src/schema.generated.ts`, `sdk/go/flow/flow.v1.schema.json`: `pnpm --filter @nurtuo/flow-schema run sync`.
+  - `sdk/ts/client/src/schema.generated.ts`: `pnpm --filter @nurtuo/client run gen`.
+  - `core/mcp/src/connectors.generated.ts`: `pnpm --filter @nurtuo/mcp run sync`.
+  - `docs/flow-reference.md`: `node scripts/gen-flow-reference.mjs`.
 - Never commit credentials, tokens, private keys, or secrets. Never open a public issue for a vulnerability; follow [SECURITY.md](SECURITY.md).
-- Never start code for sizeable work whose spec is not `approved`.
+- Never start code for sizeable work whose spec is `draft` or missing.
 - Never rename or restructure proto messages without checking [docs/lessons/proto-message-name-descriptor-breaks-csharp.md](docs/lessons/proto-message-name-descriptor-breaks-csharp.md).
 
 ## Validation Commands
@@ -40,8 +49,9 @@ Choose the smallest set that covers your change. Do not run the full monorepo su
 
 | Change | Command |
 |---|---|
-| Docs / Markdown / links | `make docs` (or `node scripts/check-docs-links.mjs` for links only) |
-| License or import boundaries, SPDX headers | `make boundaries` |
+| Docs / Markdown / links | `node scripts/check-docs-links.mjs` for links; `make docs` also validates `examples/flows/reference/` and needs `pnpm --filter @nurtuo/flow-validate build` first |
+| Example operation catalog | `node scripts/check-example-operations.mjs` |
+| License or import boundaries, SPDX headers | `make boundaries` (checks SPDX only in `*.go`, `*.ts`, `*.tsx`, `*.proto`, not Markdown) |
 | `proto/` | `buf lint`, `buf breaking`, then `make gen` |
 | Go code | `go test -race ./<module-path>/...` in the touched module (modules: see `go.work`) |
 | TS packages | `pnpm --filter <package> run test` (also `lint`, `typecheck`) |
@@ -61,11 +71,11 @@ Choose the smallest set that covers your change. Do not run the full monorepo su
 | Protobuf contracts | `proto/` | Apache-2.0. Run `buf breaking`; regenerate with `make gen`; contract change = Ask First. |
 | CLI | `cli/` | Apache-2.0. Flags are public contract. See [docs/cli.md](docs/cli.md). |
 | SDKs | `sdk/go`, `sdk/ts/*` | Apache-2.0. `sdk/go/gen` and `sdk/ts/proto/src/gen` are generated. |
-| Language bridges | `bridges/jvm`, `bridges/python`, `bridges/dotnet` | Apache-2.0. Generated stubs are produced in each bridge's build. |
-| Examples | `examples/` | Apache-2.0. Flow examples are validated by `make docs`. |
+| Language bridges | `bridges/jvm`, `bridges/python`, `bridges/dotnet` | Apache-2.0. JVM and .NET stubs are generated in the bridge build; Python stubs are committed (see Never). |
+| Examples | `examples/` | Apache-2.0. Flow examples under `examples/flows/reference/` are validated by `make docs`; operation catalogs by `node scripts/check-example-operations.mjs`. |
 | Specs and ADRs | `docs/specs/`, `docs/adr/` | Spec before code; see Always. |
-| Docs | `docs/` | Apache-2.0 SPDX comment first. Run `make docs`. |
-| Lessons | `docs/lessons/` | Route first, open only matching records. |
+| Docs | `docs/` | Apache-2.0 SPDX comment first (not in lesson records). Run `make docs`. |
+| Lessons | `docs/lessons/` | Route first, open only matching records. Frontmatter `---` first, SPDX comment after it. |
 
 ## Skills
 

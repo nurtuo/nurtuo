@@ -23,7 +23,7 @@ type client struct {
 	cl connectorv1.ConnectorServiceClient
 }
 
-func (c *client) Describe(ctx context.Context) (*connectorv1.Descriptor, error) {
+func (c *client) Describe(ctx context.Context) (*connectorv1.ConnectorDescriptor, error) {
 	resp, err := c.cl.Describe(ctx, &connectorv1.DescribeRequest{})
 	if err != nil {
 		return nil, err

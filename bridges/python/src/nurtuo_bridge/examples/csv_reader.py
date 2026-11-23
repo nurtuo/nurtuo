@@ -66,7 +66,7 @@ def _rows_jsonl(binary: IO[bytes], delimiter: str, max_rows: int | None) -> Iter
 
 
 class CsvReaderConnector(Connector):
-    def describe(self) -> pb.Descriptor:
+    def describe(self) -> pb.ConnectorDescriptor:
         return make_descriptor(
             id="example-csv",
             version="0.1.0",

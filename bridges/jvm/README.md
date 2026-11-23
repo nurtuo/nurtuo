@@ -94,7 +94,7 @@ Extend `io.nurtuo.bridge.sdk.Connector`, give it a public no-arg constructor, li
 
 ```java
 public final class MyConnector extends Connector {
-    @Override public Descriptor describe() { /* id, SemVer version, operations, schemas, capabilities */ }
+    @Override public ConnectorDescriptor describe() { /* id, SemVer version, operations, schemas, capabilities */ }
     @Override public TestResult test(Settings connection) throws Exception { /* diagnostic without secrets */ }
     @Override protected void executeDocument(ExecuteContext ctx, InputDocument doc, ResultSink sink) throws Exception {
         try (InputStream in = doc.data()) {                       // streamed, never the whole batch in memory
@@ -226,7 +226,7 @@ signed OCI packaging (cosign, `oras`) belongs to the release pipeline.
 - The **contract** is `nurtuo.connector.v1`; the SDK declares it in the manifest
   (`Nurtuo-Connector-Contract`). Within v1 only additive proto changes are allowed (`buf breaking`),
   so an SDK built against v1 keeps working with newer v1 runtimes; a `v2` package needs a new SDK major.
-- Each **connector** has its own SemVer in its descriptor (`Descriptor.version`), e.g. `jms` 0.1.0.
+- Each **connector** has its own SemVer in its descriptor (`ConnectorDescriptor.version`), e.g. `jms` 0.1.0.
   Bump minor for new options/operations, major for removed or changed ones (flow definitions pin
   connector versions).
 - Dependency versions (grpc, protobuf, Artemis) are in `gradle/libs.versions.toml`.

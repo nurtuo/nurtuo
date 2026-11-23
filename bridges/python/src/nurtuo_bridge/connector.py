@@ -29,7 +29,7 @@ log = logging.getLogger("nurtuo_bridge")
 #: Aliases so connector code does not need to import the generated module.
 Status = pb.DocumentStatus
 OperationType = pb.OperationType
-Descriptor = pb.Descriptor
+ConnectorDescriptor = pb.ConnectorDescriptor
 Host = pb.Host
 
 SUCCESS = pb.DOCUMENT_STATUS_SUCCESS
@@ -108,7 +108,7 @@ class Outcome:
 
     status: int = SUCCESS
     message: str = ""
-    #: Values for ``Descriptor.tracked_properties`` (Process Reporting). May be a callable, which
+    #: Values for ``ConnectorDescriptor.tracked_properties`` (Process Reporting). May be a callable, which
     #: is evaluated after the output documents were streamed (for values only known by then).
     tracked: Mapping[str, str] | Callable[[], Mapping[str, str]] = field(default_factory=dict)
     outputs: Iterable[OutputDocument | bytes] = ()
@@ -164,9 +164,9 @@ def make_descriptor(
     streaming: bool = True,
     max_batch_size: int = 0,
     transactional: bool = False,
-) -> pb.Descriptor:
-    """Build a ``Descriptor`` with ``host=HOST_BRIDGE_PYTHON``."""
-    d = pb.Descriptor(
+) -> pb.ConnectorDescriptor:
+    """Build a ``ConnectorDescriptor`` with ``host=HOST_BRIDGE_PYTHON``."""
+    d = pb.ConnectorDescriptor(
         id=id,
         version=version,
         host=pb.HOST_BRIDGE_PYTHON,
@@ -187,7 +187,7 @@ class Connector(abc.ABC):
     secret_keys: ClassVar[frozenset[str] | None] = None
 
     @abc.abstractmethod
-    def describe(self) -> pb.Descriptor:
+    def describe(self) -> pb.ConnectorDescriptor:
         """Operations, connection schema and capabilities. Must be cheap and side-effect free."""
 
     @abc.abstractmethod
