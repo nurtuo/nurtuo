@@ -13,18 +13,29 @@ Instructions for coding agents working in this monorepo. Human contributors: rea
 - Work trunk-based: branch from `main`, use Conventional Commits (`feat(runtime): ...`, `fix(canvas): ...`, `docs: ...`). PRs are squash-merged.
 - Put code in the directory whose license fits. `core/` is AGPL-3.0-only; `proto/`, `sdk/`, `connectors/`, `bridges/`, `cli/`, `examples/`, `docs/` are Apache-2.0. Root files and new `scripts/*` files are `AGPL-3.0-only`. Start every new source file with an SPDX header matching the directory license (see [LICENSING.md](LICENSING.md), [docs/adr/0001-monorepo-license-split.md](docs/adr/0001-monorepo-license-split.md)). New Markdown under `docs/` starts with `<!-- SPDX-License-Identifier: Apache-2.0 -->`; the one exception is lesson records in `docs/lessons/`, which start with `---` frontmatter and carry the SPDX comment right after it.
 - Change `.proto` files only under `proto/`, then run `make gen` and commit the regenerated code (`sdk/go/gen`, `sdk/ts/proto/src/gen`). Also regenerate the committed Python stubs with `python bridges/python/scripts/gen_proto.py` (CI checks `gen_proto.py --check` in `bridge-python`).
-- Merging: Recenzent merges everything on its own when CI is green and the change matches its spec. Only these go to Łukasz: breaking contract/API changes, incompatible licenses, and security weakening.
+- Merging: Recenzent squash-merges when required CI is green (go, ts, proto, licenses, cla, bridge-dotnet), the PR matches its spec (or is a small fix with no spec), and no blocker/major is open. CI/workflow changes that only add tests or jobs are mergeable. Label `needs-owner-review` and wait for Łukasz only for the three cases under "Ask First: before merge".
 - When a lesson record matches your task, read it: see [docs/lessons/README.md](docs/lessons/README.md). Never bulk-read `docs/lessons/`.
 
 ## Ask First
 
-Stop and get owner approval (comment on the issue or PR) before you:
+Owner approval (comment on the issue or PR) is needed at two points only.
 
-- change a public contract: `proto/`, `nurtuo.flow/v1`, `nurtuo.bundle/v1`, `core/control-plane/openapi.yaml`, CLI flags, MCP tool schemas, runtime config keys;
-- add a production dependency;
-- reduce the agreed scope of a spec;
-- change CI (`.github/workflows/`), branch protection, or release automation (`.goreleaser.yaml`, `make snapshot`);
-- make an architecture, license, or product-scope decision (new ADR, moving code between license directories).
+Before implementation (no code until approved):
+
+- a new spec in `docs/specs/` (status `approved` first, see Always);
+- a public contract change (`proto/`, `nurtuo.flow/v1`, `nurtuo.bundle/v1`, `core/control-plane/openapi.yaml`, CLI flags, MCP tool schemas, runtime config keys); a breaking one also needs the merge approval below;
+- a new production dependency;
+- reducing the agreed scope of a spec;
+- an architecture, license, or product-scope decision (new ADR, moving code between license directories);
+- changing release automation (`.goreleaser.yaml`, `make snapshot`).
+
+Before merge (label `needs-owner-review`; Recenzent does not merge until Łukasz approves):
+
+- breaking contract/API changes;
+- incompatible third-party licenses;
+- security weakening: disabling or skipping checks; loosening workflow permissions; changing branch protection (including `main`); loosening the license/CLA allow-list; any change to `LICENSE*` or `LICENSING.md`.
+
+Everything else, including CI changes that only add tests or jobs, needs no owner approval.
 
 TODO(team): define which changes need a benchmark review beyond `make bench` on hot-path code.
 
