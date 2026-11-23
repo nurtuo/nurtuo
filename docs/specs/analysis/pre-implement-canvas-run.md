@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Pre-implement: canvas Run (test-run a flow from the canvas against a real connection)
 
-**Readiness:** no-go
+**Readiness:** no-go (as analysed; superseded by the [Resolution](#resolution-2026-11-23) below, spec now approved)
 **Spec:** docs/specs/2026-11-23-canvas-run.md
 
 Date: 2026-11-23. Analysis only: the spec, the code and tracker state were not changed. Code was
@@ -69,7 +69,7 @@ branches `origin/feat/nurtuo-flow-run` (PR #51), `origin/ci/playwright-e2e` (PR 
 
 - **Critical: readiness gate fails (draft, blocking questions, undecided split).** Evidence: spec
   header `Status: draft`, Decisions table "Blocking: yes" on D1, D3, D4, D6–D11, D16; D14 pending →
-  Fix: Łukasz answers the rows listed in [What would unblock approval](#what-would-unblock-approval),
+  Fix: Łukasz answers the rows listed in [What would unblock approval](#resolution-2026-11-23),
   then the author folds the answers in, removes the `[DEFAULT, pending Łukasz]` markers and sets
   `approved`.
 - **Critical: the D11 allowlist names a non-existent operation.** Evidence: SFTP declares
@@ -240,7 +240,29 @@ branches `origin/feat/nurtuo-flow-run` (PR #51), `origin/ci/playwright-e2e` (PR 
 | F14 | Goal ("ARCHITECTURE.md §10"), References ("§6.3 and §10 (Epic 10)") | Epic 10 in §10 | §10 is "Versioning and branches"; the epic table (row 10, Canvas) is in §11 "What to create first" (`docs/ARCHITECTURE.md:419-443`) |
 | F15 | Gaps #7 | "`docs.Spool` disk use in the child bounded by `TMPDIR=<tmp>`" | `TMPDIR` only moves the spool; nothing bounds its size, and `writeOutput` loads each payload fully with `p.Bytes()` |
 
-## What would unblock approval
+## Resolution (2026-11-23)
+
+Łukasz accepted D1–D16 as recommended on 2026-11-23 18:30 (Europe/Warsaw); the spec is `approved`. Findings F1–F15 are fixed in the spec as below. The Warning and Important items were folded into the spec too: explicit D6 roles and a `runtime` assertion, `signal` plumbing, widened drift-test regex, full egress list, `stopped` status, `connection_required`, changeset, dev-only canvas and no Windows (Non-goals), CSRF restore from `/v1/auth/me`, schema copy into `dist`, workspace-delete purge, restart criterion qualified by `DATABASE_URL`, scan on the shared semaphore (#54), negotiated-key fingerprint in `host-key` and CI, EXPERIMENTAL labelling and the 413 in `openapi.yaml`, and the PR #50 status. Two decision-versus-finding conflicts are noted at F2 and F6; F1 is a naming correction inside D11.
+
+| Finding | Resolution |
+|---|---|
+| F1 | Fixed in spec: D11 (Applied as), Phase 3 step 2, Security, acceptance criteria, Gaps #2, Tests (`egress.test.ts`). Operations are `GET` and `QUERY`, compared case-insensitively. D11 conflict: the accepted recommendation literally said `GET`/`LIST`; `LIST` does not exist, so the decision's intent (read-only download and listing) is applied as `GET`/`QUERY` and the wording correction is recorded in D11. Flagged for Łukasz's attention. |
+| F2 | Fixed in spec: Phase 2 (explicit 404 for `/v1/workspaces/...` in `route()`), Step plan 5, Tests (`api.test.ts`), acceptance criterion. D9 conflict: the decision says 404, so the decision wins and the code is changed to match (not the decision to 405). |
+| F3 | Fixed in spec: D12 (Applied as), Phase 2 (`envVar` port includes the prefix, shared fixture), Phase 3 step 6, Tests (`TestEnvVarFixture`, `env-var.test.ts`). |
+| F4 | Fixed in spec: What exists today (SFTP row), Phase 3 response example (`flow-run.out`; properties = input properties + `path`, `filename`). |
+| F5 | Fixed in spec: Phase 3 response example (`returndocuments-1` `out: 1`) and What exists today (`Out` semantics). |
+| F6 | Fixed in spec: Phase 3 step 8, Failure modes, acceptance criteria, Gaps #20, Tests (`TestFlowRunErrorMessages`, `runner.test.ts`). D16 conflict: D16 was accepted as `steps` only, so the report's proposal to add `stop`, a `timeout` code and a `connection` field to the CLI is not adopted; the control plane classifies timeouts itself and parses the CLI's existing stop and `Prepare` messages, with tests that pin the messages. Structured fields are listed as a later additive follow-up. |
+| F7 | Fixed in spec: Phase 3 step 8 and failure example, Failure modes, acceptance criteria (no CLI `steps` for pre-engine errors; connector steps derived from the connection id in the message). |
+| F8 | Fixed in spec: D6 (explicit role list, `runtime` none), Step plan 4, Tests (`rbac.test.ts` assertion), acceptance criterion. |
+| F9 | Fixed in spec: Phase 2 (keyed by id because `workspace.update` changes only `name` today). |
+| F10 | Fixed in spec: Compatibility, Roles (editors lack `member:manage`; `canGrant` matters only for owner/admin). |
+| F11 | Fixed in spec: header `Extends:` (linked, merged as `d5adeeb`), Status table, Drift table, Phase 1, References. The branch was merged with `origin/main`. |
+| F12 | Fixed in spec: What exists today (`flow.Parse` runs `ValidateJSON`; `secrets.NewDir` only with `--secrets-dir`). |
+| F13 | Fixed in spec: What exists today (SFTP row lists `maxListEntries`). |
+| F14 | Fixed in spec: Goal and References now cite ARCHITECTURE.md §11 (epic table, row 10). |
+| F15 | Fixed in spec: Gaps #7 and Phase 3 step 7 (spool size polled, 64 MiB cap, `output_too_large`), Security, acceptance criterion, Tests. `--max-output-bytes` would extend D16, so it is only a follow-up; the residual memory risk is stated. |
+
+## What would have unblocked approval (historical)
 
 Łukasz must answer these Decisions-table rows (one comment on the spec PR is enough):
 
@@ -268,6 +290,7 @@ revised step plan.
   Warning/Important fixes, and get Łukasz's answers to the rows above. Then set `approved` and
   re-run pre-implement-spec.
 
-Readiness: no-go
+
+Readiness: no-go at analysis time; approved after Resolution (re-run pre-implement-spec before coding).
 Report: docs/specs/analysis/pre-implement-canvas-run.md
 Spec: docs/specs/2026-11-23-canvas-run.md
