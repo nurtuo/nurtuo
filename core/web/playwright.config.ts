@@ -6,7 +6,8 @@ export default defineConfig({
   outputDir: "./test-results",
   fullyParallel: true,
   retries: 0,
-  reporter: [["list"]],
+  // CI also writes an HTML report (core/web/playwright-report), uploaded as an artifact when the job fails.
+  reporter: process.env["CI"] ? [["list"], ["html", { open: "never" }]] : [["list"]],
   use: {
     baseURL: "http://127.0.0.1:5199",
     screenshot: "only-on-failure",
