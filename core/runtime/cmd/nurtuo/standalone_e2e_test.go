@@ -36,15 +36,15 @@ func repoRoot() string {
 // TestStandaloneE2EHandshakeAndDeploy runs the standalone stack as `nurtuo standalone` wires it
 // (real bootstrapper, the real control plane main.js as a supervised node child with auth and
 // the mTLS gateway, runtime registration, runtime.Run with the standalone client certificate),
-// deploys a flow over the authenticated REST API and waits for the runtime to report it running
-// through the gateway session. It then restarts the stack on the same data directory and deploys
+// deploys a flow over the authenticated REST API and waits for the runtime to report it failed
+// ("no bundle_dir configured") through the gateway session. It then restarts the stack on the same data directory and deploys
 // again. Embedded PostgreSQL is replaced by the control plane's in-memory repository, or by an
 // external server when NURTUO_TEST_POSTGRES_URL is set (the test seeds a fixed admin token so
 // reruns against the same database can log in).
 //
-// Limit (#58): runRealRuntime sets no BundleDir, so "running" comes from the placeholder deployer;
-// the test proves session acceptance, desired-state delivery and status reporting, not that the
-// flow's engine starts.
+// runRealRuntime sets no BundleDir until FetchArtifact lands (#64), so the placeholder deployer
+// refuses the deployment; the test proves session acceptance, desired-state delivery and honest
+// status reporting, not that the flow's engine starts.
 func TestStandaloneE2EHandshakeAndDeploy(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: skipped with -short")
@@ -171,15 +171,20 @@ func standaloneE2ERun(t *testing.T, node, entry string, dirs DataDirs, dsn strin
 	dep := call(http.MethodPost, "v1/deployments", map[string]any{"componentId": compID, "revision": 1, "runtimeId": standaloneRuntimeID}, http.StatusAccepted)
 	depID := dep["deployment"].(map[string]any)["id"].(string)
 
-	var status string
+	var status, message string
 	for end := time.Now().Add(30 * time.Second); time.Now().Before(end); time.Sleep(100 * time.Millisecond) {
-		status, _ = call(http.MethodGet, "v1/deployments/"+depID, nil, http.StatusOK)["status"].(string)
-		if status == "running" {
+		got := call(http.MethodGet, "v1/deployments/"+depID, nil, http.StatusOK)
+		status, _ = got["status"].(string)
+		message, _ = got["message"].(string)
+		if status == "failed" || status == "running" {
 			break
 		}
 	}
-	if status != "running" {
-		t.Fatalf("deployment status %q, want running (gateway handshake or desired-state delivery failed)\nlog:\n%s", status, log)
+	if status != "failed" {
+		t.Fatalf("deployment status %q, want failed (no bundle_dir; never running) (gateway handshake or desired-state delivery failed)\nlog:\n%s", status, log)
+	}
+	if !strings.Contains(message, "bundle_dir") {
+		t.Fatalf("deployment message %q, want it to name bundle_dir\nlog:\n%s", message, log)
 	}
 	if strings.Contains(log.String(), "does not match certificate identity") {
 		t.Fatalf("gateway refused the runtime identity\nlog:\n%s", log)

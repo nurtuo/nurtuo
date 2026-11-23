@@ -86,7 +86,7 @@ YAML, or JSON when the file extension is `.json`. Loaded by `LoadConfig`; relati
 | `ca_file` | yes | CA certificate (PEM) that signed the control plane's server certificate |
 | `server_name` | no | TLS server name override (SNI and verification name) |
 | `log_level` | no | parsed, but **not used** by the code today: the logger does not read it |
-| `bundle_dir` | no | directory of bundle files; when empty the runtime uses a placeholder deployer that only records deployments |
+| `bundle_dir` | no | directory of bundle files; when empty the runtime still connects but cannot run anything: it logs a warning and reports every deployment as `error` ("no bundle_dir configured"), never `running` |
 | `trusted_keys` | no | list of hex Ed25519 public keys. When set, `bundle_dir` holds signed `<sha256>.bundle` archives that are digest-checked and signature-verified before use, and plain `.json` bundles are **not** accepted |
 | `http_addr` | no | listen address of HTTP-trigger listeners; default `127.0.0.1:0` (random loopback port). On a non-loopback address a listener starts only if its `start` step sets `auth` (or `insecure: true`); see [connectors/http.md](connectors/http.md#http-listener-start-step) |
 | `secrets` | no | `{provider: env\|dir\|encrypted-file, path, key_file}`: where `secret://name` references in bundle connections are resolved. Default `env` (`NURTUO_SECRET_<NAME>`). Manage values with `nurtuo secret` |
@@ -156,6 +156,11 @@ from `secrets/admin-token`). It is restarted with exponential
 backoff (500 ms up to 30 s); the supervisor gives up after 10 consecutive restarts that each
 ran less than 30 s, and standalone then exits with an error. Standalone waits up to 60 s for the
 control plane to answer `GET /`.
+
+Limitation (#58, phase 2 tracked in #64): standalone has no bundle source yet (`bundle_dir` is not
+set), so the runtime connects but cannot run deployments. They are reported as `error` with
+"no bundle_dir configured" and appear as `failed` in the control plane, never `running`. Running
+flows in standalone needs `FetchArtifact` (bundle artifact delivery).
 
 The control plane serves the runtime gateway (mTLS, TLS 1.3, runtime identity taken from the client
 certificate) on `--gateway-addr`. Nothing was run end to end against a real embedded PostgreSQL; the
