@@ -9,6 +9,11 @@
 # (aliases, scripts, variables). Boundary: `git restore <path>` and `git checkout <branch>` are
 # allowed; only whole-tree forms (`.`, `:/`, `*`) are blocked.
 #
+# Known gaps (not blocked): switch -C, checkout -B, worktree remove --force, update-ref -d,
+# reflog expire, gc --prune=now, filter-branch, variable/alias indirection. Separators (; & |)
+# are split without regard to quotes, so `git commit -m "a; git push -f"` is a known false
+# positive (pinned in tests).
+#
 # Test override: GIT_GUARDRAILS_CURRENT_BRANCH replaces the branch lookup.
 set -uo pipefail
 
@@ -119,6 +124,8 @@ check_segment() {
   local seg=$1 depth=$2
   local -a t
   read -r -a t <<<"$seg"
+  # Normalise quoted/escaped words ("main", '--hard', --for\ce) so they match like bare words.
+  t=("${t[@]//[\\\"\']/}")
   local i=0 n=${#t[@]}
   # Strip leading VAR=val assignments and common wrappers.
   while [ $i -lt $n ]; do

@@ -69,6 +69,29 @@ blocked 'sudo git clean -fd'
 blocked 'bash -c "git reset --hard"'
 blocked 'cd x && (git push --force)'
 blocked 'echo $(git clean -fd)'
+blocked 'git push origin "main"'
+blocked "git push origin 'main'"
+blocked 'git push origin "HEAD:main"'
+blocked 'git push origin "refs/heads/main"'
+blocked 'git reset "--hard"'
+blocked "git reset '--hard'"
+blocked 'git reset --har\d'
+blocked 'git push "--force" origin feat/x'
+blocked "git push '-f' origin feat/x"
+blocked 'git push origin "+feat/x"'
+blocked 'git push origin "+HEAD:feat/x"'
+blocked 'git push origin "--delete" feat/x'
+blocked 'git push origin \main'
+blocked 'git clean "-fdx"'
+blocked "git clean '-f'"
+blocked 'git branch "-D" foo'
+blocked "git branch '-D' foo"
+blocked 'git checkout "."'
+blocked 'git restore "."'
+blocked 'git "push" --force'
+blocked 'bash -c "git push origin \"main\""'
+blocked 'git commit -m "a; git push -f"' # known false positive: separators ignore quotes (pinned)
+BR=main blocked 'git push origin "HEAD"'
 BR=main blocked 'git push'
 BR=main blocked 'git push origin'
 BR=main blocked 'git push origin HEAD'
@@ -76,6 +99,9 @@ BR=master blocked 'git push -u origin HEAD'
 
 # --- allowed ---
 allowed 'git push'
+allowed 'git push origin "feat/x"'
+allowed "git push '-u' origin feat/x"
+allowed 'git clean "-n"'
 allowed 'git push -u origin feat/x'
 allowed 'git push origin feat/agent-skills'
 allowed 'git push -u origin feat/agent-skills'
