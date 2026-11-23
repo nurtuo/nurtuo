@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sync"
 	"time"
 
 	"github.com/nurtuo/nurtuo/core/runtime/internal/connections"
@@ -26,7 +25,7 @@ import (
 // Options tweaks Run; the zero value is production behaviour.
 type Options struct {
 	Logger   *slog.Logger
-	Deployer supervisor.Deployer                  // default: in-memory placeholder until the engine lands
+	Deployer supervisor.Deployer                  // default: bundle_dir deployer, or a placeholder that reports error when bundle_dir is unset
 	Gateway  func(Config) (gateway.Config, error) // test seam; default builds mTLS credentials
 	// Engine is used by the bundle_dir deployer instead of a default engine. If it already has a
 	// connector step runner, that runner is used as-is (embedding/tests); otherwise the runtime
@@ -123,7 +122,8 @@ func RunWith(ctx context.Context, cfg Config, o Options) error {
 			}()
 			dep = ed
 		} else {
-			dep = newMemDeployer()
+			log.Warn("bundle_dir is not set; deployments will be reported as error")
+			dep = newUnconfiguredDeployer()
 		}
 	}
 	build := o.Gateway
@@ -156,34 +156,24 @@ func defaultGatewayConfig(cfg Config) (gateway.Config, error) {
 	return gateway.Config{Target: cfg.ControlPlaneURL, RuntimeID: cfg.RuntimeID, Version: version.Version, TLS: creds}, nil
 }
 
-// memDeployer tracks deployments in memory; the real engine replaces it.
-type memDeployer struct {
-	mu sync.Mutex
-	m  map[string]supervisor.Deployment
+// errNoBundleDir is what a runtime without a bundle source reports for every deployment.
+var errNoBundleDir = errors.New("no bundle_dir configured: the runtime cannot run deployments")
+
+// unconfiguredDeployer is the placeholder used when no bundle_dir is set. It refuses every
+// deployment, so the supervisor reports "error" and never "running" for something nothing started.
+//
+// TODO(#64): phase 2 of docs/specs/2026-11-23-runtime-bundle-dir.md: FetchArtifact plus a
+// standalone BundleDir and local signing key replace this placeholder for `nurtuo standalone`.
+type unconfiguredDeployer struct{}
+
+func newUnconfiguredDeployer() *unconfiguredDeployer { return &unconfiguredDeployer{} }
+
+func (*unconfiguredDeployer) Actual(context.Context) (map[string]supervisor.Deployment, error) {
+	return map[string]supervisor.Deployment{}, nil
 }
 
-func newMemDeployer() *memDeployer { return &memDeployer{m: map[string]supervisor.Deployment{}} }
-
-func (d *memDeployer) Actual(context.Context) (map[string]supervisor.Deployment, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	out := make(map[string]supervisor.Deployment, len(d.m))
-	for k, v := range d.m {
-		out[k] = v
-	}
-	return out, nil
+func (*unconfiguredDeployer) Apply(context.Context, supervisor.Deployment) error {
+	return errNoBundleDir
 }
 
-func (d *memDeployer) Apply(_ context.Context, dp supervisor.Deployment) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.m[dp.ID] = dp
-	return nil
-}
-
-func (d *memDeployer) Remove(_ context.Context, id string) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	delete(d.m, id)
-	return nil
-}
+func (*unconfiguredDeployer) Remove(context.Context, string) error { return nil }
