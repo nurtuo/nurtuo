@@ -66,7 +66,7 @@ public abstract class ConnectorBase
     public virtual IReadOnlySet<string>? SecretKeys => null;
 
     /// <summary>Operations, connection schema and capabilities. Cheap and side-effect free.</summary>
-    public abstract Descriptor Describe();
+    public abstract ConnectorDescriptor Describe();
 
     /// <summary>Check reachability. Redact the diagnostic.</summary>
     public abstract Task<TestResult> TestAsync(ConnectionSettings settings, CancellationToken ct);
@@ -143,12 +143,12 @@ public abstract class ConnectorBase
         return op;
     }
 
-    protected static Descriptor MakeDescriptor(
+    protected static ConnectorDescriptor MakeDescriptor(
         string id, string version, string displayName, IEnumerable<OperationDescriptor> operations,
         Struct? connectionSchema = null, IEnumerable<string>? trackedProperties = null,
         bool streaming = true, uint maxBatchSize = 0, bool transactional = false)
     {
-        var d = new Descriptor
+        var d = new ConnectorDescriptor
         {
             Id = id,
             Version = version,

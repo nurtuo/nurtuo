@@ -144,7 +144,7 @@ There are three independent version numbers:
 |---|---|---|
 | Contract package | proto package `nurtuo.connector.v1`, handshake field `contract` | Wire compatibility. Only additive changes within `v1` (new fields, enum values, RPCs), enforced by `buf breaking`; anything else is a new package `nurtuo.connector.v2`. |
 | Handshake version | handshake field 2 (`1`) | The process protocol in this document. |
-| Connector version | `Descriptor.version` (SemVer) | The connector's own version, reported by `Describe`. |
+| Connector version | `ConnectorDescriptor.version` (SemVer) | The connector's own version, reported by `Describe`. |
 
 Negotiation happens once per process start: the runtime offers an ordered list in
 `NURTUO_BRIDGE_CONTRACT`; the bridge picks the first entry it supports and prints it in the
@@ -159,7 +159,7 @@ Consequences of additive-only evolution inside `v1` that bridge authors must res
 - Ignore unknown fields and tolerate unknown enum values (protobuf keeps them as numbers).
 - A runtime newer than the bridge may call an RPC the bridge does not know (for example `Listen`
   on a bridge without listeners): the generated base returns `UNIMPLEMENTED`, which callers treat as
-  "capability not available". Declare what you support in `Descriptor.capabilities` and
+  "capability not available". Declare what you support in `ConnectorDescriptor.capabilities` and
   `operations`.
 - A bridge newer than the runtime may fill fields the runtime ignores; never make correct
   behaviour depend on the runtime reading them.

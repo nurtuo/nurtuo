@@ -32,8 +32,8 @@ var _ connector.Connector = (*Connector)(nil)
 func New() *Connector { return &Connector{} }
 
 // Describe returns the descriptor: identity, host, operations and tracked properties.
-func (*Connector) Describe(context.Context) (*connectorv1.Descriptor, error) {
-	return &connectorv1.Descriptor{
+func (*Connector) Describe(context.Context) (*connectorv1.ConnectorDescriptor, error) {
+	return &connectorv1.ConnectorDescriptor{
 		Id:          "uppercase",
 		Version:     Version,
 		Host:        connectorv1.Host_HOST_GO_NATIVE,

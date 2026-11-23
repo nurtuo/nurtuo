@@ -26,7 +26,7 @@ passes (both inside the Go workspace and standalone with `GOWORK=off`).
 
 ```go
 type Connector interface {
-	Describe(ctx context.Context) (*connectorv1.Descriptor, error)
+	Describe(ctx context.Context) (*connectorv1.ConnectorDescriptor, error)
 	Browse(ctx context.Context, req *connectorv1.BrowseRequest) (*connectorv1.BrowseResponse, error)
 	Execute(stream connectorv1.ConnectorService_ExecuteServer) error
 	Test(ctx context.Context, req *connectorv1.TestRequest) (*connectorv1.TestResponse, error)
@@ -39,7 +39,7 @@ listener closes.
 
 ### Describe
 
-Return a `Descriptor`: `Id`, `Version` (SemVer), `Host` (`HOST_GO_NATIVE` for Go connectors),
+Return a `ConnectorDescriptor`: `Id`, `Version` (SemVer), `Host` (`HOST_GO_NATIVE` for Go connectors),
 `DisplayName`, an optional `ConnectionSchema` (JSON Schema as a protobuf `Struct`; secrets are
 references, never values), the `Operations` (`Type`, plus `CustomType` only for `EXECUTE`),
 `TrackedProperties` and `Capabilities` (`Streaming`, `MaxBatchSize`, `Transactional`). Keep it
@@ -83,8 +83,8 @@ return, as the native connectors do.
 `examples/connector-minimal/connector.go` upper-cases payloads. The core:
 
 ```go
-func (*Connector) Describe(context.Context) (*connectorv1.Descriptor, error) {
-	return &connectorv1.Descriptor{
+func (*Connector) Describe(context.Context) (*connectorv1.ConnectorDescriptor, error) {
+	return &connectorv1.ConnectorDescriptor{
 		Id: "uppercase", Version: Version, Host: connectorv1.Host_HOST_GO_NATIVE,
 		DisplayName: "Uppercase (example)",
 		Operations: []*connectorv1.OperationDescriptor{

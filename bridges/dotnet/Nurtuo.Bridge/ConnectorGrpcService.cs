@@ -14,7 +14,7 @@ public sealed class ConnectorGrpcService(ConnectorBase connector, BridgeOptions 
 
     public override Task<DescribeResponse> Describe(DescribeRequest request, ServerCallContext context)
     {
-        Descriptor d;
+        ConnectorDescriptor d;
         try
         {
             d = connector.Describe().Clone();

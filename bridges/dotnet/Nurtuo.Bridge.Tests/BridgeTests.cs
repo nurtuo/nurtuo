@@ -45,6 +45,26 @@ public sealed class BridgeTests : IAsyncLifetime
     private async Task<Output> RunAsync(string custom, ConnectionConfig conn, params (string Id, byte[] Data)[] docs)
     {
         using var call = _client.Execute();
+        // Execute is full duplex: the server streams output while it still reads input. Drain the response
+        // concurrently, otherwise both sides fill the HTTP/2 flow-control windows and deadlock on large payloads.
+        var results = new Dictionary<string, DocumentResult>();
+        var chunks = new Dictionary<string, List<DocumentChunk>>();
+        var reading = Task.Run(async () =>
+        {
+            await foreach (var r in call.ResponseStream.ReadAllAsync())
+            {
+                if (r.MsgCase == ExecuteResponse.MsgOneofCase.Result)
+                {
+                    Assert.True(results.TryAdd(r.Result.DocumentId, r.Result), "duplicate result");
+                }
+                else if (r.MsgCase == ExecuteResponse.MsgOneofCase.Output)
+                {
+                    if (!chunks.TryGetValue(r.Output.DocumentId, out var l)) chunks[r.Output.DocumentId] = l = new();
+                    l.Add(r.Output);
+                }
+            }
+        });
+
         await call.RequestStream.WriteAsync(new ExecuteRequest
         {
             Start = new ExecuteStart { ExecutionId = "e", StepId = "s", Connection = conn, OperationType = OperationType.Execute, CustomType = custom },
@@ -65,20 +85,7 @@ public sealed class BridgeTests : IAsyncLifetime
         await call.RequestStream.WriteAsync(new ExecuteRequest { End = new ExecuteEnd() });
         await call.RequestStream.CompleteAsync();
 
-        var results = new Dictionary<string, DocumentResult>();
-        var chunks = new Dictionary<string, List<DocumentChunk>>();
-        await foreach (var r in call.ResponseStream.ReadAllAsync())
-        {
-            if (r.MsgCase == ExecuteResponse.MsgOneofCase.Result)
-            {
-                Assert.True(results.TryAdd(r.Result.DocumentId, r.Result), "duplicate result");
-            }
-            else if (r.MsgCase == ExecuteResponse.MsgOneofCase.Output)
-            {
-                if (!chunks.TryGetValue(r.Output.DocumentId, out var l)) chunks[r.Output.DocumentId] = l = new();
-                l.Add(r.Output);
-            }
-        }
+        await reading;
         return new Output(results, chunks);
     }
 

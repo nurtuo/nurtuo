@@ -4,7 +4,7 @@ package io.nurtuo.bridge.sdk;
 import java.util.Set;
 import nurtuo.connector.v1.Connector.BrowseRequest;
 import nurtuo.connector.v1.Connector.BrowseResponse;
-import nurtuo.connector.v1.Connector.Descriptor;
+import nurtuo.connector.v1.Connector.ConnectorDescriptor;
 
 /**
  * Base class for connectors hosted by the JVM bridge: describe / test / execute / browse.
@@ -21,7 +21,7 @@ import nurtuo.connector.v1.Connector.Descriptor;
 public abstract class Connector implements AutoCloseable {
 
     /** The descriptor (id, SemVer version, operations, connection schema, capabilities). */
-    public abstract Descriptor describe();
+    public abstract ConnectorDescriptor describe();
 
     /**
      * Verify the connection. Return a diagnostic without secrets (the SDK also redacts known

@@ -38,7 +38,7 @@ type fakeServer struct {
 }
 
 func (fakeServer) Describe(context.Context, *connectorv1.DescribeRequest) (*connectorv1.DescribeResponse, error) {
-	return &connectorv1.DescribeResponse{Descriptor_: &connectorv1.Descriptor{
+	return &connectorv1.DescribeResponse{Descriptor_: &connectorv1.ConnectorDescriptor{
 		Id:          "fake-bridge",
 		Version:     "0.1.0",
 		Host:        connectorv1.Host_HOST_BRIDGE_PYTHON,

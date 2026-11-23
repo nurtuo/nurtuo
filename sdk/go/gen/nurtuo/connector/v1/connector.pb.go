@@ -298,7 +298,7 @@ func (*DescribeRequest) Descriptor() ([]byte, []int) {
 
 type DescribeResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Descriptor_   *Descriptor            `protobuf:"bytes,1,opt,name=descriptor,proto3" json:"descriptor,omitempty"`
+	Descriptor_   *ConnectorDescriptor   `protobuf:"bytes,1,opt,name=descriptor,proto3" json:"descriptor,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -333,14 +333,14 @@ func (*DescribeResponse) Descriptor() ([]byte, []int) {
 	return file_nurtuo_connector_v1_connector_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *DescribeResponse) GetDescriptor_() *Descriptor {
+func (x *DescribeResponse) GetDescriptor_() *ConnectorDescriptor {
 	if x != nil {
 		return x.Descriptor_
 	}
 	return nil
 }
 
-type Descriptor struct {
+type ConnectorDescriptor struct {
 	state       protoimpl.MessageState `protogen:"open.v1"`
 	Id          string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`           // e.g. "sap-idoc"
 	Version     string                 `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"` // SemVer, e.g. "1.4.0"
@@ -355,20 +355,20 @@ type Descriptor struct {
 	sizeCache         protoimpl.SizeCache
 }
 
-func (x *Descriptor) Reset() {
-	*x = Descriptor{}
+func (x *ConnectorDescriptor) Reset() {
+	*x = ConnectorDescriptor{}
 	mi := &file_nurtuo_connector_v1_connector_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *Descriptor) String() string {
+func (x *ConnectorDescriptor) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*Descriptor) ProtoMessage() {}
+func (*ConnectorDescriptor) ProtoMessage() {}
 
-func (x *Descriptor) ProtoReflect() protoreflect.Message {
+func (x *ConnectorDescriptor) ProtoReflect() protoreflect.Message {
 	mi := &file_nurtuo_connector_v1_connector_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -380,61 +380,61 @@ func (x *Descriptor) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use Descriptor.ProtoReflect.Descriptor instead.
-func (*Descriptor) Descriptor() ([]byte, []int) {
+// Deprecated: Use ConnectorDescriptor.ProtoReflect.Descriptor instead.
+func (*ConnectorDescriptor) Descriptor() ([]byte, []int) {
 	return file_nurtuo_connector_v1_connector_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *Descriptor) GetId() string {
+func (x *ConnectorDescriptor) GetId() string {
 	if x != nil {
 		return x.Id
 	}
 	return ""
 }
 
-func (x *Descriptor) GetVersion() string {
+func (x *ConnectorDescriptor) GetVersion() string {
 	if x != nil {
 		return x.Version
 	}
 	return ""
 }
 
-func (x *Descriptor) GetHost() Host {
+func (x *ConnectorDescriptor) GetHost() Host {
 	if x != nil {
 		return x.Host
 	}
 	return Host_HOST_UNSPECIFIED
 }
 
-func (x *Descriptor) GetDisplayName() string {
+func (x *ConnectorDescriptor) GetDisplayName() string {
 	if x != nil {
 		return x.DisplayName
 	}
 	return ""
 }
 
-func (x *Descriptor) GetConnectionSchema() *structpb.Struct {
+func (x *ConnectorDescriptor) GetConnectionSchema() *structpb.Struct {
 	if x != nil {
 		return x.ConnectionSchema
 	}
 	return nil
 }
 
-func (x *Descriptor) GetOperations() []*OperationDescriptor {
+func (x *ConnectorDescriptor) GetOperations() []*OperationDescriptor {
 	if x != nil {
 		return x.Operations
 	}
 	return nil
 }
 
-func (x *Descriptor) GetTrackedProperties() []string {
+func (x *ConnectorDescriptor) GetTrackedProperties() []string {
 	if x != nil {
 		return x.TrackedProperties
 	}
 	return nil
 }
 
-func (x *Descriptor) GetCapabilities() *Capabilities {
+func (x *ConnectorDescriptor) GetCapabilities() *Capabilities {
 	if x != nil {
 		return x.Capabilities
 	}
@@ -1645,13 +1645,12 @@ var File_nurtuo_connector_v1_connector_proto protoreflect.FileDescriptor
 const file_nurtuo_connector_v1_connector_proto_rawDesc = "" +
 	"\n" +
 	"#nurtuo/connector/v1/connector.proto\x12\x13nurtuo.connector.v1\x1a\x1cgoogle/protobuf/struct.proto\"\x11\n" +
-	"\x0fDescribeRequest\"S\n" +
-	"\x10DescribeResponse\x12?\n" +
+	"\x0fDescribeRequest\"\\\n" +
+	"\x10DescribeResponse\x12H\n" +
 	"\n" +
-	"descriptor\x18\x01 \x01(\v2\x1f.nurtuo.connector.v1.DescriptorR\n" +
-	"descriptor\"\x8e\x03\n" +
-	"\n" +
-	"Descriptor\x12\x0e\n" +
+	"descriptor\x18\x01 \x01(\v2(.nurtuo.connector.v1.ConnectorDescriptorR\n" +
+	"descriptor\"\x97\x03\n" +
+	"\x13ConnectorDescriptor\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12-\n" +
 	"\x04host\x18\x03 \x01(\x0e2\x19.nurtuo.connector.v1.HostR\x04host\x12!\n" +
@@ -1821,7 +1820,7 @@ var file_nurtuo_connector_v1_connector_proto_goTypes = []any{
 	(Profile_Format)(0),         // 3: nurtuo.connector.v1.Profile.Format
 	(*DescribeRequest)(nil),     // 4: nurtuo.connector.v1.DescribeRequest
 	(*DescribeResponse)(nil),    // 5: nurtuo.connector.v1.DescribeResponse
-	(*Descriptor)(nil),          // 6: nurtuo.connector.v1.Descriptor
+	(*ConnectorDescriptor)(nil), // 6: nurtuo.connector.v1.ConnectorDescriptor
 	(*OperationDescriptor)(nil), // 7: nurtuo.connector.v1.OperationDescriptor
 	(*Capabilities)(nil),        // 8: nurtuo.connector.v1.Capabilities
 	(*BrowseRequest)(nil),       // 9: nurtuo.connector.v1.BrowseRequest
@@ -1846,11 +1845,11 @@ var file_nurtuo_connector_v1_connector_proto_goTypes = []any{
 	(*structpb.Struct)(nil),     // 28: google.protobuf.Struct
 }
 var file_nurtuo_connector_v1_connector_proto_depIdxs = []int32{
-	6,  // 0: nurtuo.connector.v1.DescribeResponse.descriptor:type_name -> nurtuo.connector.v1.Descriptor
-	0,  // 1: nurtuo.connector.v1.Descriptor.host:type_name -> nurtuo.connector.v1.Host
-	28, // 2: nurtuo.connector.v1.Descriptor.connection_schema:type_name -> google.protobuf.Struct
-	7,  // 3: nurtuo.connector.v1.Descriptor.operations:type_name -> nurtuo.connector.v1.OperationDescriptor
-	8,  // 4: nurtuo.connector.v1.Descriptor.capabilities:type_name -> nurtuo.connector.v1.Capabilities
+	6,  // 0: nurtuo.connector.v1.DescribeResponse.descriptor:type_name -> nurtuo.connector.v1.ConnectorDescriptor
+	0,  // 1: nurtuo.connector.v1.ConnectorDescriptor.host:type_name -> nurtuo.connector.v1.Host
+	28, // 2: nurtuo.connector.v1.ConnectorDescriptor.connection_schema:type_name -> google.protobuf.Struct
+	7,  // 3: nurtuo.connector.v1.ConnectorDescriptor.operations:type_name -> nurtuo.connector.v1.OperationDescriptor
+	8,  // 4: nurtuo.connector.v1.ConnectorDescriptor.capabilities:type_name -> nurtuo.connector.v1.Capabilities
 	1,  // 5: nurtuo.connector.v1.OperationDescriptor.type:type_name -> nurtuo.connector.v1.OperationType
 	28, // 6: nurtuo.connector.v1.OperationDescriptor.options_schema:type_name -> google.protobuf.Struct
 	13, // 7: nurtuo.connector.v1.BrowseRequest.connection:type_name -> nurtuo.connector.v1.ConnectionConfig

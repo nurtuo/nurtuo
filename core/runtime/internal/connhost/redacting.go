@@ -17,7 +17,7 @@ type redacting struct {
 	r *secrets.Redactor
 }
 
-func (w *redacting) Describe(ctx context.Context) (*connectorv1.Descriptor, error) {
+func (w *redacting) Describe(ctx context.Context) (*connectorv1.ConnectorDescriptor, error) {
 	return w.c.Describe(ctx)
 }
 
