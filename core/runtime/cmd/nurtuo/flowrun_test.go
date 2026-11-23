@@ -86,7 +86,7 @@ func TestFlowRunUsage(t *testing.T) {
 	})
 	t.Run("json usage error is json", func(t *testing.T) {
 		code, out, errs := runFlow(t, nil, "--json")
-		if code != 2 || out != "" || !strings.Contains(errs, `{"error":{"code":"usage"`) {
+		if code != 2 || out != "" || !strings.Contains(errs, `{"error":{"code":"usage"`) || !json.Valid([]byte(errs)) {
 			t.Fatalf("code=%d stdout=%q stderr=%q", code, out, errs)
 		}
 	})

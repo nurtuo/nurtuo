@@ -116,8 +116,8 @@ nurtuo flow run examples/flows/sftp-download.flow.json \
 | `--connection <file>` | A `nurtuo.connection/v1` file; repeatable; matched to `connector` steps by connection `id`. Secrets are `secret://<name>` references; a literal password is rejected. |
 | `--set key=value` | Repeatable. Sets a property on the one document injected into `start` (the SFTP `GET` reads `path`). A `listener`/`queue` start is accepted and ignored. |
 | `--secrets-dir <dir>` | Reads secrets from files (dir mode 0700, files 0600) in addition to the environment `NURTUO_SECRET_<NAME>` (checked first). Secrets are never accepted as arguments. |
-| `--known-hosts <file>` | known_hosts file used to verify SFTP host keys; default `~/.ssh/known_hosts`. |
-| `--insecure-host-key` | Skips SFTP host key verification (prints a warning on stderr). The only way to skip it. |
+| `--known-hosts <file>` | known_hosts file used to verify SFTP host keys. For `known_hosts` connections the order is: this flag, then inline `settings.knownHosts` in the connection file, then `~/.ssh/known_hosts`; an empty result is exit 1. `hostKeyPolicy: fingerprint` ignores it. |
+| `--insecure-host-key` | Skips SFTP host key verification (prints a warning on stderr). The only way to skip it: a connection file with `hostKeyPolicy: insecure` and no flag exits 2 without connecting. |
 | `--json` | stdout is `{"status": 200, "documents": [{"id", "properties", "payload"}]}` (`payload` is base64); stderr errors are JSON. |
 | `--timeout <d>` | Bounds the whole run, for example `30s`. |
 
@@ -129,7 +129,7 @@ needs `--json`.
 | --- | --- |
 | 0 | success |
 | 1 | execution error: connector or document failure, step kind with no runner (for example `script`, `queue`, `notify`), missing secret, host key or authentication failure, timeout or interrupt |
-| 2 | usage error, invalid flow or connection file, a connection id missing from the `--connection` files |
+| 2 | usage error, invalid flow or connection file, a connection id missing from the `--connection` files, a literal secret, `hostKeyPolicy: insecure` in a connection file without `--insecure-host-key` |
 | 3 | the flow ended in a Stop step with a status (`flow stopped with status <n>`) |
 
 A flow can contain mutating operations (SFTP `DELETE`/`RENAME`, SQL writes): run only flows you

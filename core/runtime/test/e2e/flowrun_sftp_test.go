@@ -61,7 +61,7 @@ func startSFTPContainer(t *testing.T) *sftpContainer {
 		t.Skipf("set %s=1 to run the container SFTP e2e", gateEnv)
 	}
 	if err := exec.Command("docker", "info").Run(); err != nil {
-		t.Skipf("docker is not available: %v", err)
+		t.Fatalf("%s=1 is set but docker is not available: %v", gateEnv, err)
 	}
 	image := os.Getenv(imageEnv)
 	if image == "" {
@@ -179,7 +179,8 @@ func (c *sftpContainer) checkPresented(t *testing.T) {
 			return
 		}
 	}
-	// Server presents a key not in /etc/ssh: record it so verification still uses what it really offers.
+	// A presented key not among the recorded ones does not fail the test: it is logged (key types
+	// above) and recorded so verification still runs against what the server really offers.
 	t.Logf("presented host key type %s not among recorded types %v; adding it", presented.Type(), types)
 	c.hostKeys = append(c.hostKeys, presented)
 }

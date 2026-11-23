@@ -71,7 +71,7 @@ A connection is opened per Execute batch and closed at the end.
 
 `nurtuo flow run` runs a flow with this connector without a control plane: the path of a `GET` is
 the document property `path`, set with `--set path=/downloads/version.txt`. Host keys are checked
-against `~/.ssh/known_hosts` (`--known-hosts <file>`); `--insecure-host-key` skips the check and warns.
+against `~/.ssh/known_hosts` (`--known-hosts <file>`); `--insecure-host-key` skips the check and warns (it is the only opt-out there: a connection file with `hostKeyPolicy: insecure` and no flag exits 2).
 Put the password or private key in `NURTUO_SECRET_<NAME>` or `--secrets-dir`, never in the connection
 file. See [cli.md](../cli.md#nurtuo-flow-run-run-a-flow-file-locally-go-runtime-binary) and
 `examples/flows/sftp-download.flow.json`.

@@ -58,10 +58,18 @@ test("canvas-built SFTP download flow exports a valid input for `nurtuo flow run
 
   const bin = process.env["NURTUO_FLOW_RUN_BIN"];
   test.skip(!bin, "set NURTUO_FLOW_RUN_BIN (+ _CONN, _KNOWN_HOSTS, _EXPECT) to run the exported flow with the real binary");
+  const need = (name: string) => {
+    const v = process.env[name];
+    if (!v) throw new Error(`NURTUO_FLOW_RUN_BIN is set, so ${name} must be set too (NURTUO_FLOW_RUN_CONN, NURTUO_FLOW_RUN_KNOWN_HOSTS, NURTUO_FLOW_RUN_EXPECT)`);
+    return v;
+  };
+  const conn = need("NURTUO_FLOW_RUN_CONN");
+  const knownHosts = need("NURTUO_FLOW_RUN_KNOWN_HOSTS");
+  const expected = need("NURTUO_FLOW_RUN_EXPECT");
   const file = join(mkdtempSync(join(tmpdir(), "flow-run-export-")), "exported.flow.json");
   writeFileSync(file, JSON.stringify(exported));
-  const r = spawnSync(bin!, ["flow", "run", file, "--connection", process.env["NURTUO_FLOW_RUN_CONN"]!,
-    "--known-hosts", process.env["NURTUO_FLOW_RUN_KNOWN_HOSTS"]!, "--set", "path=/downloads/version.txt"], { encoding: "utf8" });
+  const r = spawnSync(bin!, ["flow", "run", file, "--connection", conn,
+    "--known-hosts", knownHosts, "--set", "path=/downloads/version.txt"], { encoding: "utf8", timeout: 60_000 });
   expect({ code: r.status, stderr: r.stderr }).toEqual({ code: 0, stderr: "" });
-  expect(r.stdout).toBe(process.env["NURTUO_FLOW_RUN_EXPECT"]);
+  expect(r.stdout).toBe(expected);
 });

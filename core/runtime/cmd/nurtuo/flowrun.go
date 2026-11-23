@@ -255,8 +255,10 @@ func reportError(stderr io.Writer, asJSON bool, err error) int {
 
 // applyHostKeys applies the SFTP host-key options to the needed sftp connections in memory (the
 // connection files are never modified). Verification stays on by default: the content of
-// --known-hosts (default ~/.ssh/known_hosts) fills settings.knownHosts. --insecure-host-key, or an
-// insecure policy already in the connection, skips verification and warns on stderr.
+// --known-hosts (default ~/.ssh/known_hosts) fills settings.knownHosts. --insecure-host-key is the
+// only way to skip verification (it warns on stderr); a connection file saying "insecure" without
+// the flag is a usage error. Precedence for known_hosts: --known-hosts, then inline knownHosts,
+// then ~/.ssh/known_hosts. A fingerprint policy is left untouched.
 func applyHostKeys(defs []*connections.Definition, needed []string, o *flowRunOptions, stderr io.Writer) error {
 	byID := map[string]*connections.Definition{}
 	for _, d := range defs {
@@ -276,13 +278,22 @@ func applyHostKeys(defs []*connections.Definition, needed []string, o *flowRunOp
 		if o.insecure {
 			d.Settings["hostKeyPolicy"] = sftpPolicyInsecure
 			policy = sftpPolicyInsecure
+		} else if policy == sftpPolicyInsecure {
+			return validationErr("connection %q sets hostKeyPolicy: insecure; the only way to skip host-key verification is the --insecure-host-key flag", id)
 		}
 		switch policy {
 		case sftpPolicyInsecure:
-			_, _ = fmt.Fprintf(stderr, "nurtuo: warning: host key verification is disabled for connection %q; the server is not authenticated\n", id)
+			if o.json {
+				b, _ := json.Marshal(map[string]any{"warning": map[string]string{"code": "insecure_host_key", "message": fmt.Sprintf("host key verification is disabled for connection %q; the server is not authenticated", id)}})
+				_, _ = fmt.Fprintf(stderr, "%s\n", b)
+			} else {
+				_, _ = fmt.Fprintf(stderr, "nurtuo: warning: host key verification is disabled for connection %q; the server is not authenticated\n", id)
+			}
 		case "", sftpPolicyKnownHosts:
-			if kh, _ := d.Settings["knownHosts"].(string); kh != "" {
-				continue // content given in the connection file
+			if o.knownHosts == "" {
+				if kh, _ := d.Settings["knownHosts"].(string); kh != "" {
+					continue // inline content from the connection file
+				}
 			}
 			if !haveKnown {
 				path := o.knownHosts
@@ -365,11 +376,25 @@ func flowRun(args []string, stdout, stderr io.Writer, reg *connhost.Registry) in
 	asJSON := wantsJSON(args)
 	opts, err := parseFlowRunArgs(args)
 	if err != nil {
+		var fe *flowRunError
+		if errors.As(err, &fe) && asJSON {
+			// stderr must stay one JSON object: the usage text goes into the message.
+			cp := *fe
+			cp.msg += "\n" + flowRunUsage
+			return reportError(stderr, true, &cp)
+		}
 		_, _ = fmt.Fprintln(stderr, flowRunUsage)
 		return reportError(stderr, asJSON, err)
 	}
 	redactor := secrets.NewRedactor()
 	fail := func(err error) int {
+		var fe *flowRunError
+		if errors.As(err, &fe) {
+			// Redact in place: RedactError would drop the chain (and with it the exit code).
+			cp := *fe
+			cp.msg = redactor.Redact(cp.msg)
+			return reportError(stderr, opts.json, &cp)
+		}
 		return reportError(stderr, opts.json, redactor.RedactError(err))
 	}
 	f, err := loadFlow(opts.flowPath)

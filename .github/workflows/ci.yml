@@ -36,6 +36,7 @@ jobs:
   # Gated by NURTUO_TEST_SFTP_E2E like the Postgres tests are gated by NURTUO_TEST_POSTGRES_URL.
   flow-run-sftp-e2e:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
