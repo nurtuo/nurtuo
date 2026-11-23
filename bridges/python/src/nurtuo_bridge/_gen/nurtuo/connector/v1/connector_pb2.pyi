@@ -62,10 +62,10 @@ class DescribeRequest(_message.Message):
 class DescribeResponse(_message.Message):
     __slots__ = ("descriptor",)
     DESCRIPTOR_FIELD_NUMBER: _ClassVar[int]
-    descriptor: Descriptor
-    def __init__(self, descriptor: _Optional[_Union[Descriptor, _Mapping]] = ...) -> None: ...
+    descriptor: ConnectorDescriptor
+    def __init__(self, descriptor: _Optional[_Union[ConnectorDescriptor, _Mapping]] = ...) -> None: ...
 
-class Descriptor(_message.Message):
+class ConnectorDescriptor(_message.Message):
     __slots__ = ("id", "version", "host", "display_name", "connection_schema", "operations", "tracked_properties", "capabilities")
     ID_FIELD_NUMBER: _ClassVar[int]
     VERSION_FIELD_NUMBER: _ClassVar[int]

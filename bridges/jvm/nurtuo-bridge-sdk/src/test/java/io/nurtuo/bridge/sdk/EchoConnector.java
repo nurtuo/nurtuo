@@ -5,15 +5,15 @@ import java.io.InputStream;
 import java.util.List;
 import java.util.Map;
 import nurtuo.connector.v1.Connector.Capabilities;
-import nurtuo.connector.v1.Connector.Descriptor;
+import nurtuo.connector.v1.Connector.ConnectorDescriptor;
 import nurtuo.connector.v1.Connector.OperationDescriptor;
 import nurtuo.connector.v1.Connector.OperationType;
 
 /** Test connector exercising every result path of the default per-document execute loop. */
 class EchoConnector extends Connector {
     @Override
-    public Descriptor describe() {
-        return Descriptor.newBuilder()
+    public ConnectorDescriptor describe() {
+        return ConnectorDescriptor.newBuilder()
                 .setId("test-echo")
                 .setVersion("1.0.0")
                 .setDisplayName("Test echo")

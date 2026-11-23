@@ -25,8 +25,8 @@ import (
 // APPLICATION_ERROR, everything else succeeds. Documents containing "echo" also yield an output.
 type fakeConn struct{}
 
-func (fakeConn) Describe(context.Context) (*connectorv1.Descriptor, error) {
-	return &connectorv1.Descriptor{Id: "fake", Version: "1.0.0", Host: connectorv1.Host_HOST_GO_NATIVE}, nil
+func (fakeConn) Describe(context.Context) (*connectorv1.ConnectorDescriptor, error) {
+	return &connectorv1.ConnectorDescriptor{Id: "fake", Version: "1.0.0", Host: connectorv1.Host_HOST_GO_NATIVE}, nil
 }
 func (fakeConn) Browse(context.Context, *connectorv1.BrowseRequest) (*connectorv1.BrowseResponse, error) {
 	return nil, connector.ErrNotImplemented

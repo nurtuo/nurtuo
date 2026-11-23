@@ -67,7 +67,7 @@ class ConnectorServiceServicer:
     """Missing associated documentation comment in .proto file."""
 
     def Describe(self, request, context):
-        """Descriptor: operations, connection schema, capabilities (mirrors connector.yaml).
+        """ConnectorDescriptor: operations, connection schema, capabilities (mirrors connector.yaml).
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')

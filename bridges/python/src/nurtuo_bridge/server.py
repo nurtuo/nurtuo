@@ -79,7 +79,7 @@ class ConnectorServicer(pb_grpc.ConnectorServiceServicer):
 
     def Describe(self, request: pb.DescribeRequest, context: grpc.ServicerContext) -> pb.DescribeResponse:
         try:
-            d = pb.Descriptor()
+            d = pb.ConnectorDescriptor()
             d.CopyFrom(self._c.describe())
         except Exception as e:
             log.exception("describe failed")
