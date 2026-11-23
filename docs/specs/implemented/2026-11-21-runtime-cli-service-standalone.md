@@ -9,8 +9,8 @@ Status: implemented (`role` is a stub). Date: 2026-11-21 (written as built on 20
 `role` (stub) and `version`. `service` wraps `kardianos/service` (Windows service, systemd,
 launchd); `standalone` bootstraps a local CA and secrets, starts an embedded PostgreSQL, the
 control plane as a supervised Node child and the runtime against it. As built, the standalone
-runtime cannot complete the gateway handshake: it says `runtime_id: standalone` while its
-certificate identity is `nurtuo-runtime`, and it has no `bundle_dir`.
+runtime could not complete the gateway handshake (gap 1, fixed in #56); it still has no
+`bundle_dir` (gap 2).
 
 ## Status and links
 
@@ -121,7 +121,7 @@ control plane binary are not part of the dry-run (`TODO(§7.1)` in both files).
 
 | # | Scenario (concrete) | Severity | Area | Mitigation / follow-up |
 |---|---|---|---|---|
-| 1 | A user runs `nurtuo standalone` and deploys a flow: the runtime sends `Hello.runtime_id = "standalone"` but its certificate CN is `nurtuo-runtime` (`standalone_bootstrap.go`), so `core/control-plane/src/gateway.ts` rejects the session with `PERMISSION_DENIED`; nothing registers a runtime either (`touchRuntime` must find it). The runtime logs `gateway session ended, reconnecting` forever and no deployment ever applies. Found by reading the code, not by running it | critical | standalone | issue the client certificate with URI SAN `spiffe://nurtuo/runtime/standalone` (or use the CN as runtime id), register the runtime in the control plane at bootstrap, and add an end-to-end standalone test that deploys a flow |
+| 1 | **Fixed (#56).** A user runs `nurtuo standalone` and deploys a flow: the runtime sends `Hello.runtime_id = "standalone"` but its certificate CN is `nurtuo-runtime` (`standalone_bootstrap.go`), so `core/control-plane/src/gateway.ts` rejects the session with `PERMISSION_DENIED`; nothing registers a runtime either (`touchRuntime` must find it). The runtime logs `gateway session ended, reconnecting` forever and no deployment ever applies. Found by reading the code, not by running it | critical | standalone | fixed in #56: the client certificate carries the URI SAN `spiffe://nurtuo/runtime/standalone` (`standaloneRuntimeID`, shared with `Hello.runtime_id`; a bootstrap reissues the PKI when an older client certificate lacks it), `Stack.Register` registers runtime `standalone` (environment `standalone`) over the REST API before the runtime starts (skipped when it already exists), and `TestStandaloneE2EHandshakeAndDeploy` deploys a flow end to end (placeholder deployer until gap 2) |
 | 2 | Even with the identity fixed, `runRealRuntime` sets no `BundleDir`, so the runtime uses the placeholder deployer and reports `running` for flows it never starts | high | standalone | set `BundleDir` to `<data-dir>/bundles` (and `TrustedKeys` from a locally generated signing key) until `FetchArtifact` exists |
 | 3 | Under the OS service, `RunWith` returns an error (for example an unreadable client key) inside `program.Start`'s goroutine; the error is logged but `svc.Run` keeps the process alive, so systemd/Windows see a running service and `Restart=on-failure` / `OnFailure=restart` never fire | high | service | exit the process (or call `svc.Stop` with a non-zero exit) when `run` returns an error; add a test with a failing `prg.run` |
 | 4 | `nurtuo service install` on Linux creates a unit running as root (no `UserName` in `serviceConfig`), while the packaged unit runs as `nurtuo`; the same host behaves differently depending on the install path, and the root variant gives every bridge and connector root | medium | service | set `UserName` (configurable) and create the user in deb/rpm post-install scripts |
