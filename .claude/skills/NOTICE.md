@@ -14,12 +14,12 @@ The skill directories in this folder are imported, unmodified, from
 | `git-guardrails-claude-code/` | `skills/misc/git-guardrails-claude-code` |
 | `domain-modeling/` | `skills/engineering/domain-modeling` |
 | `grill-with-docs/` | `skills/engineering/grill-with-docs` |
+| `grilling/` | `skills/productivity/grilling` |
 | `to-tickets/` | `skills/engineering/to-tickets` |
 | `setup-pre-commit/` | `skills/misc/setup-pre-commit` |
 
 ## Not imported (upstream dependencies)
 
-- `grill-with-docs` calls the upstream `grilling` skill (`skills/productivity/grilling`), which is not imported.
 - `to-tickets` refers to `/setup-matt-pocock-skills` for tracker configuration, which is not imported.
 
 ## Local notes
