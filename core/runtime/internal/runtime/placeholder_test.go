@@ -188,5 +188,5 @@ func TestRunWithDeployerOverrideUnchanged(t *testing.T) {
 		t.Fatal("injected deployer not used")
 	}
 	cancel()
-	<-done
+	_ = <-done // RunWith returns the cancellation error; not under test here
 }
