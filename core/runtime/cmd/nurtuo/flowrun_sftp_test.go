@@ -454,7 +454,7 @@ func TestFlowRunHostKeyPrecedence(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer l.Close()
+		defer func() { _ = l.Close() }()
 		accepted := make(chan struct{}, 1)
 		go func() {
 			if c, err := l.Accept(); err == nil {
