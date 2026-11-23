@@ -106,8 +106,15 @@ jobs:
             web-e2e:
               - 'core/web/**'
               - 'core/runtime/**'
-              - 'connectors/sftp/**'
+              - 'sdk/**'
+              - 'connectors/**'
+              - 'core/deploy/bundle/**'
               - 'examples/flows/**'
+              - 'pnpm-lock.yaml'
+              - 'package.json'
+              - 'pnpm-workspace.yaml'
+              - 'go.work'
+              - 'go.work.sum'
               - '.github/workflows/ci.yml'
 
   # Playwright e2e for the canvas (core/web/e2e). The flow-run-export spec also runs its exported flow with
@@ -116,8 +123,8 @@ jobs:
   # on pull_request it runs only when `changes` reports a matching path; on push to main it always runs.
   web-e2e:
     needs: changes
-    # always() so the skipped `changes` job (push) does not skip this one; cancelled/failed `changes` still skips it.
-    if: ${{ always() && (github.event_name == 'push' || needs.changes.outputs.web-e2e == 'true') }}
+    # !cancelled() so the skipped `changes` job (push) does not skip this one; cancelled/failed `changes` still skips it.
+    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.web-e2e == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -142,7 +149,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ env.ImageOS }}-${{ steps.pw.outputs.version }}
       - name: Install Playwright chromium
         if: steps.pw-cache.outputs.cache-hit != 'true'
         run: pnpm --filter @nurtuo/web exec playwright install chromium
@@ -162,7 +169,7 @@ jobs:
           printf '%s' "$expect" > "$d/downloads/version.txt"
           pw="$(openssl rand -hex 16)"
           echo "::add-mask::$pw"
-          id="$(docker run -d -p 127.0.0.1::22 -v "$d/downloads:/home/deploy/downloads:ro" \
+          id="$(docker run -d --name nurtuo-e2e-sftp -p 127.0.0.1::22 -v "$d/downloads:/home/deploy/downloads:ro" \
             atmoz/sftp@sha256:c5fb9e4beb8b7054a4c0b65c5e11df47cc20da95ad6002e88aecff62bab06372 "deploy:$pw:1001")"
           port="$(docker port "$id" 22/tcp | head -n1 | sed 's/.*://')"
           # Wait until sshd answers and has presented its (first-start generated) host keys.
@@ -190,6 +197,9 @@ jobs:
             core/web/test-results
           retention-days: 5
           if-no-files-found: ignore
+      - name: Remove SFTP container
+        if: always()
+        run: docker rm -f nurtuo-e2e-sftp
 
   bridge-python:
     runs-on: ubuntu-latest
