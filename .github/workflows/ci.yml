@@ -88,10 +88,36 @@ jobs:
           node scripts/check-docs-links.mjs
           node scripts/check-example-operations.mjs
 
+  # Path filter for web-e2e. A job-level filter (not on.pull_request.paths) so every other job still runs
+  # on every PR. Only evaluated on pull_request; web-e2e always runs on push to main.
+  changes:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read # paths-filter lists the PR's files through the API
+    outputs:
+      web-e2e: ${{ steps.filter.outputs.web-e2e }}
+    steps:
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            web-e2e:
+              - 'core/web/**'
+              - 'core/runtime/**'
+              - 'connectors/sftp/**'
+              - 'examples/flows/**'
+              - '.github/workflows/ci.yml'
+
   # Playwright e2e for the canvas (core/web/e2e). The flow-run-export spec also runs its exported flow with
   # the real `nurtuo` binary against an atmoz/sftp container (same digest as the Go container e2e), verifying
-  # the host key from a known_hosts file (no --insecure-host-key). Not a required check.
+  # the host key from a known_hosts file (no --insecure-host-key). Not a required check, so it may be skipped:
+  # on pull_request it runs only when `changes` reports a matching path; on push to main it always runs.
   web-e2e:
+    needs: changes
+    # always() so the skipped `changes` job (push) does not skip this one; cancelled/failed `changes` still skips it.
+    if: ${{ always() && (github.event_name == 'push' || needs.changes.outputs.web-e2e == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
