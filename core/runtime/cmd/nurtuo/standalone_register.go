@@ -62,7 +62,7 @@ func mustGetwd() string {
 func runRealRuntime(gatewayAddr string) RuntimeFunc {
 	return func(ctx context.Context, env RuntimeEnv) error {
 		return nrt.Run(ctx, nrt.Config{
-			RuntimeID:       "standalone",
+			RuntimeID:       standaloneRuntimeID, // must equal the client certificate URI SAN id
 			ControlPlaneURL: gatewayAddr,
 			CertFile:        env.Creds.ClientCertFile,
 			KeyFile:         env.Creds.ClientKeyFile,
