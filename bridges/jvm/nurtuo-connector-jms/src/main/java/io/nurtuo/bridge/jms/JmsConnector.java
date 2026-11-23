@@ -38,7 +38,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import nurtuo.connector.v1.Connector.Capabilities;
-import nurtuo.connector.v1.Connector.Descriptor;
+import nurtuo.connector.v1.Connector.ConnectorDescriptor;
 import nurtuo.connector.v1.Connector.Host;
 import nurtuo.connector.v1.Connector.OperationDescriptor;
 import nurtuo.connector.v1.Connector.OperationType;
@@ -59,8 +59,8 @@ public final class JmsConnector extends Connector {
     public static final String VERSION = "0.1.0";
 
     @Override
-    public Descriptor describe() {
-        return Descriptor.newBuilder()
+    public ConnectorDescriptor describe() {
+        return ConnectorDescriptor.newBuilder()
                 .setId(ID)
                 .setVersion(VERSION)
                 .setHost(Host.HOST_BRIDGE_JVM)

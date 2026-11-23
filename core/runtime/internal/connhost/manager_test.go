@@ -31,11 +31,11 @@ type fake struct {
 	lastConf *connectorv1.ConnectionConfig
 }
 
-func (f *fake) Describe(context.Context) (*connectorv1.Descriptor, error) {
+func (f *fake) Describe(context.Context) (*connectorv1.ConnectorDescriptor, error) {
 	schema, _ := structpb.NewStruct(map[string]any{"properties": map[string]any{
 		"auth": map[string]any{"properties": map[string]any{"token": map[string]any{"x-nurtuo-secret": true}}},
 	}})
-	return &connectorv1.Descriptor{Id: "fake", ConnectionSchema: schema}, nil
+	return &connectorv1.ConnectorDescriptor{Id: "fake", ConnectionSchema: schema}, nil
 }
 func (f *fake) Browse(context.Context, *connectorv1.BrowseRequest) (*connectorv1.BrowseResponse, error) {
 	return nil, connector.ErrNotImplemented

@@ -40,7 +40,7 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type ConnectorServiceClient interface {
-	// Descriptor: operations, connection schema, capabilities (mirrors connector.yaml).
+	// ConnectorDescriptor: operations, connection schema, capabilities (mirrors connector.yaml).
 	Describe(ctx context.Context, in *DescribeRequest, opts ...grpc.CallOption) (*DescribeResponse, error)
 	// Browse object types on the target system and return profiles (JSON Schema / XSD).
 	Browse(ctx context.Context, in *BrowseRequest, opts ...grpc.CallOption) (*BrowseResponse, error)
@@ -135,7 +135,7 @@ type ConnectorService_ListenClient = grpc.BidiStreamingClient[ListenRequest, Lis
 // All implementations must embed UnimplementedConnectorServiceServer
 // for forward compatibility.
 type ConnectorServiceServer interface {
-	// Descriptor: operations, connection schema, capabilities (mirrors connector.yaml).
+	// ConnectorDescriptor: operations, connection schema, capabilities (mirrors connector.yaml).
 	Describe(context.Context, *DescribeRequest) (*DescribeResponse, error)
 	// Browse object types on the target system and return profiles (JSON Schema / XSD).
 	Browse(context.Context, *BrowseRequest) (*BrowseResponse, error)
