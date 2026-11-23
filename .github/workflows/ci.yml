@@ -3,6 +3,9 @@ name: ci
 on:
   push: { branches: [main] }
   pull_request:
+    # labeled/unlabeled: the proto job reads the `buf skip breaking` label, and the default types
+    # (opened, synchronize, reopened) never re-run CI when a label is added or removed.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 permissions:
   contents: read
 concurrency:
@@ -112,9 +115,6 @@ jobs:
 
   bridge-dotnet:
     runs-on: ubuntu-latest
-    # Non-blocking until the proto message `Descriptor` is renamed: protoc's C# output gives every
-    # message class a static `Descriptor` property, so a message named Descriptor does not compile (CS0542).
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-dotnet@v6
@@ -130,7 +130,8 @@ jobs:
         with:
           lint: true
           format: true
-          breaking: ${{ github.event_name == 'pull_request' }}
+          # Skipped only for PRs carrying the `buf skip breaking` label (deliberate proto break); lint/format still run.
+          breaking: ${{ github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'buf skip breaking') }}
           breaking_against: "${{ github.event.repository.clone_url }}#branch=main"
           push: false
           # Default posts a PR comment, which contents:read cannot do, and that fails the job.

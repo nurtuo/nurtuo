@@ -192,12 +192,12 @@ func mustStruct(js string) *structpb.Struct {
 }
 
 // Describe returns the descriptor.
-func (*Connector) Describe(context.Context) (*connectorv1.Descriptor, error) {
+func (*Connector) Describe(context.Context) (*connectorv1.ConnectorDescriptor, error) {
 	opts := mustStruct(optionsSchema)
 	op := func(t connectorv1.OperationType, custom string) *connectorv1.OperationDescriptor {
 		return &connectorv1.OperationDescriptor{Type: t, CustomType: custom, OptionsSchema: opts}
 	}
-	return &connectorv1.Descriptor{
+	return &connectorv1.ConnectorDescriptor{
 		Id:               "postgres",
 		Version:          "0.1.0",
 		Host:             connectorv1.Host_HOST_GO_NATIVE,
