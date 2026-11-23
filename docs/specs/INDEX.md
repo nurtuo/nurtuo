@@ -9,4 +9,4 @@ is filled in as their pull requests land.
 
 | Spec | Status | Pull requests | ADRs |
 |---|---|---|---|
-| [nurtuo flow run](2026-11-23-nurtuoctl-run.md): run a canvas-exported flow locally with connection files and the built-in connectors | approved | [#50](https://github.com/nurtuo/nurtuo/pull/50) | [ADR 0010](../adr/0010-connections-and-secrets.md) |
+| [nurtuo flow run](2026-11-23-nurtuoctl-run.md): run a canvas-exported flow locally with connection files and the built-in connectors | approved | [#50](https://github.com/nurtuo/nurtuo/pull/50) | [ADR 0010](../adr/0010-connections-and-secrets.md), [ADR 0005](../adr/0005-set-at-a-time-engine-with-per-document-status.md) |
