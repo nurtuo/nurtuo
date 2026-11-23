@@ -1,12 +1,20 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Pre-implement: Never report a deployment as running without a bundle source
 
-**Readiness:** no-go
+**Readiness:** no-go (superseded: see the update below)
 **Spec:** docs/specs/2026-11-23-runtime-bundle-dir.md
 
 Date: 2026-11-23. Analysis only; the spec's product decisions were not changed. Two purely factual
 corrections (a non-existent test name, an inaccessible test fixture) were applied to the spec before
 this report.
+
+## Update 2026-11-24
+
+Owner decisions D2, D3 and D6 are recorded in the spec and it is `approved`. The questions and blockers
+below are resolved and kept as history. Remaining work is implementing Phase 1 under #58; Phase 2
+(`FetchArtifact`, runtime `BundleDir`/signing key) is tracked in
+https://github.com/nurtuo/nurtuo/issues/64 and is out of scope for the #58 PR. Re-run this check
+before starting Phase 1 code.
 
 ## Blockers
 
