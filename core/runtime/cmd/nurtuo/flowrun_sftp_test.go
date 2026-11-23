@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nurtuo/nurtuo/core/runtime/internal/connections"
 	pkgsftp "github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
@@ -397,4 +398,93 @@ func TestFlowRunExamples(t *testing.T) {
 	if _, err := crossCheck(f, defs, nativeConnectors()); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestFlowRunHostKeyPrecedence(t *testing.T) {
+	const flagKH, inlineKH, homeKH = "flag-known-hosts\n", "inline-known-hosts\n", "home-known-hosts\n"
+	tests := []struct {
+		name     string
+		settings map[string]any
+		useFlag  bool
+		insecure bool
+		wantKH   string // expected settings.knownHosts after applying
+		wantExit int    // 0 = no error
+	}{
+		{name: "flag beats inline", settings: map[string]any{"knownHosts": inlineKH}, useFlag: true, wantKH: flagKH},
+		{name: "flag beats inline with explicit knownHosts policy", settings: map[string]any{"knownHosts": inlineKH, "hostKeyPolicy": sftpPolicyKnownHosts}, useFlag: true, wantKH: flagKH},
+		{name: "inline kept when no flag", settings: map[string]any{"knownHosts": inlineKH}, wantKH: inlineKH},
+		{name: "home known_hosts when neither", settings: map[string]any{}, wantKH: homeKH},
+		{name: "fingerprint ignores flag", settings: map[string]any{"hostKeyPolicy": "fingerprint", "hostKeyFingerprint": "SHA256:abc"}, useFlag: true, wantKH: ""},
+		{name: "file-level insecure without flag is exit 2", settings: map[string]any{"hostKeyPolicy": "insecure"}, useFlag: true, wantExit: exitUsage},
+		{name: "flag overrides file-level insecure", settings: map[string]any{"hostKeyPolicy": "insecure"}, insecure: true, wantKH: ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			if err := os.Mkdir(filepath.Join(home, ".ssh"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			writeTemp(t, filepath.Join(home, ".ssh"), "known_hosts", homeKH)
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			o := &flowRunOptions{insecure: tc.insecure}
+			if tc.useFlag {
+				o.knownHosts = writeTemp(t, t.TempDir(), "kh", flagKH)
+			}
+			def := &connections.Definition{ID: "c", Connector: "sftp", Settings: tc.settings}
+			err := applyHostKeys([]*connections.Definition{def}, []string{"c"}, o, io.Discard)
+			if tc.wantExit != 0 {
+				var fe *flowRunError
+				if !errors.As(err, &fe) || fe.exit != tc.wantExit {
+					t.Fatalf("err = %v, want exit %d", err, tc.wantExit)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, _ := def.Settings["knownHosts"].(string); got != tc.wantKH {
+				t.Fatalf("knownHosts = %q, want %q", got, tc.wantKH)
+			}
+		})
+	}
+
+	t.Run("file-level insecure without flag makes no connection", func(t *testing.T) {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer l.Close()
+		accepted := make(chan struct{}, 1)
+		go func() {
+			if c, err := l.Accept(); err == nil {
+				accepted <- struct{}{}
+				_ = c.Close()
+			}
+		}()
+		host, port, _ := net.SplitHostPort(l.Addr().String())
+		pub, _, _ := ed25519.GenerateKey(rand.Reader)
+		hk, _ := ssh.NewPublicKey(pub)
+		fx := &sftpFixture{host: host, port: port, hostKey: hk}
+		env := newSFTPEnv(t, fx, "password", "hostKeyPolicy", `"insecure"`)
+		code, out, _ := runFlow(t, nil, env.args()...)
+		if code != 2 || out != "" {
+			t.Fatalf("code=%d stdout=%q", code, out)
+		}
+		select {
+		case <-accepted:
+			t.Fatal("a connection was attempted")
+		case <-time.After(200 * time.Millisecond):
+		}
+	})
+
+	t.Run("empty known_hosts content is exit 1", func(t *testing.T) {
+		fx := startSFTPFixture(t)
+		env := newSFTPEnv(t, fx, "password")
+		env.knownHosts = writeTemp(t, t.TempDir(), "known_hosts", "")
+		code, out, _ := runFlow(t, nil, env.args("--set", "path=/downloads/version.txt")...)
+		if code != 1 || out != "" {
+			t.Fatalf("code=%d stdout=%q", code, out)
+		}
+	})
 }
