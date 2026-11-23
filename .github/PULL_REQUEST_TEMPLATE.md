@@ -1,7 +1,7 @@
 ## What and why
 
 ## Source spec
-Source spec: <!-- docs/specs/YYYY-MM-DD-<topic>.md, or "n/a" for small fixes (bug fix, refactor, dependency bump, CI tweak, docs-only) -->
+Source spec: docs/specs/YYYY-MM-DD-<topic>.md <!-- or "n/a" for small fixes (bug fix, refactor, dependency bump, CI tweak, docs-only) -->
 
 ## Linked issue
 Closes #<!-- issue number -->
