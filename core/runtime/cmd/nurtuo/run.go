@@ -33,7 +33,7 @@ func runMain(args []string, _, stderr io.Writer) int {
 	fs.SetOutput(io.Discard)
 	cfgPath := fs.String("config", defaultConfigPath(goos(), os.Getenv), "path to runtime config (YAML or JSON)")
 	if err := fs.Parse(args); err != nil || fs.NArg() > 0 {
-		_, _ = fmt.Fprintf(stderr, "Usage: nurtuo run [--config path]\n")
+		_, _ = fmt.Fprintf(stderr, "Usage: nurtuo run [--config path]\n(to run a single flow file, use: nurtuo flow run <flow.json>)\n")
 		return 2
 	}
 	cfg, err := runtime.LoadConfig(*cfgPath)

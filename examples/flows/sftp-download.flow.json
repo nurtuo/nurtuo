@@ -1,0 +1,16 @@
+{
+  "schema": "nurtuo.flow/v1",
+  "id": "sftp-download",
+  "name": "SFTP download",
+  "description": "Download one file over SFTP. Run locally: nurtuo flow run examples/flows/sftp-download.flow.json --connection examples/connections/sftp.connection.json --set path=/downloads/version.txt",
+  "revision": 1,
+  "steps": [
+    { "id": "start", "kind": "start", "config": { "type": "manual" } },
+    { "id": "download", "kind": "connector", "config": { "connector": "sftp", "operation": "GET", "connection": "private-sftp" } },
+    { "id": "return", "kind": "returnDocuments", "config": {} }
+  ],
+  "edges": {
+    "start:default": "download",
+    "download:default": "return"
+  }
+}

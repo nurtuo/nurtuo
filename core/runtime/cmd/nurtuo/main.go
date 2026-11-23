@@ -17,6 +17,7 @@ const usage = `Usage: nurtuo <command>
 
 Commands:
   run                 run the runtime in the foreground
+  flow run <file>     run a canvas-exported flow in-process (no control plane)
   standalone          run runtime + control plane + embedded Postgres on one host
   service <action>    install | uninstall | start | stop | status | run the OS service
   secret <action>     set | get | list | delete secrets used by bundle connections

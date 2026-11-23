@@ -81,9 +81,15 @@ type session struct {
 	cfg *config
 	ssh *ssh.Client
 	fs  *pkgsftp.Client
+	// stop disarms the ctx-cancellation watcher that closes the connection; it stays armed
+	// for the whole session so a stalled transfer is interrupted by cancellation.
+	stop func() bool
 }
 
 func (s *session) Close() {
+	if s.stop != nil {
+		s.stop()
+	}
 	_ = s.fs.Close()
 	_ = s.ssh.Close()
 }
@@ -110,18 +116,25 @@ func dial(ctx context.Context, cfg *config) (*session, error) {
 		}
 		return nil, fmt.Errorf("ssh connect: %w", err)
 	}
-	if !stop() { // ctx was cancelled and the connection closed under us
+	if ctx.Err() != nil { // ctx was cancelled and the connection closed under us
+		stop()
 		_ = sshConn.Close()
 		return nil, fmt.Errorf("ssh connect: %w", ctx.Err())
 	}
 	_ = nc.SetDeadline(time.Time{})
+	// The AfterFunc stays armed (until session.Close): cancelling ctx closes the connection,
+	// which unblocks any read or write in flight.
 	c := ssh.NewClient(sshConn, chans, reqs)
 	fs, err := pkgsftp.NewClient(c)
 	if err != nil {
+		stop()
 		_ = c.Close()
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, fmt.Errorf("sftp subsystem: %w", cerr)
+		}
 		return nil, fmt.Errorf("sftp subsystem: %w", err)
 	}
-	return &session{cfg: cfg, ssh: c, fs: fs}, nil
+	return &session{cfg: cfg, ssh: c, fs: fs, stop: stop}, nil
 }
 
 func redact(msg string, secrets []string) string {

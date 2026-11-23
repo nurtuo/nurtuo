@@ -35,6 +35,26 @@ jobs:
       - uses: golangci/golangci-lint-action@v9
         with: { args: "./core/runtime/... ./sdk/go/... ./connectors/..." }
 
+  # nurtuo flow run against a real SFTP server in a container (Docker is preinstalled on ubuntu-latest).
+  # Gated by NURTUO_TEST_SFTP_E2E like the Postgres tests are gated by NURTUO_TEST_POSTGRES_URL.
+  flow-run-sftp-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: core/runtime/go.mod
+          # No root go.sum: the workspace has one sum per module (go.work).
+          cache-dependency-path: |
+            core/runtime/go.sum
+            sdk/go/go.sum
+            connectors/go.sum
+      - name: TestFlowRunSFTPContainer
+        working-directory: core/runtime
+        env: { NURTUO_TEST_SFTP_E2E: "1" }
+        run: go test -race -count=1 -v -run TestFlowRunSFTPContainer ./test/e2e/...
+
   # Latency budget: alone on the runner (-p 1, no -race), median p99 of 3 measurements; see docs/perf.md.
   perf:
     runs-on: ubuntu-latest

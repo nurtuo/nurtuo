@@ -1,0 +1,11 @@
+{
+  "schema": "nurtuo.connection/v1",
+  "id": "private-sftp",
+  "connector": "sftp",
+  "settings": {
+    "host": "sftp.example.com",
+    "port": 22,
+    "user": "deploy",
+    "password": "secret://sftp_password"
+  }
+}
