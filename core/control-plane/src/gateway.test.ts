@@ -89,6 +89,17 @@ test("runtimeIdFromCert prefers URI SAN over CN", () => {
   assert.equal(runtimeIdFromCert(undefined), undefined);
 });
 
+test("runtimeIdFromCert: standalone client cert (CN nurtuo-runtime + URI SAN) is runtime 'standalone' (#56)", () => {
+  // Shape node reports for the cert issued by `nurtuo standalone` (standalone_bootstrap.go).
+  const standalone = {
+    subject: { CN: "nurtuo-runtime" },
+    subjectaltname: "DNS:localhost, IP Address:127.0.0.1, IP Address:0:0:0:0:0:0:0:1, URI:spiffe://nurtuo/runtime/standalone",
+  };
+  assert.equal(runtimeIdFromCert(standalone), "standalone");
+  // Without the SAN (installs from before #56) the identity stays the CN, so Hello "standalone" is refused.
+  assert.equal(runtimeIdFromCert({ subject: { CN: "nurtuo-runtime" }, subjectaltname: "DNS:localhost" }), "nurtuo-runtime");
+});
+
 test("happy path: Hello reconciles, status persisted, heartbeat tracked", async () => {
   const { c, r } = await seed("happy");
   const { deployment } = await repo.deploy({ componentId: c.id, revisionId: r.id, runtimeId: "rt-1" });

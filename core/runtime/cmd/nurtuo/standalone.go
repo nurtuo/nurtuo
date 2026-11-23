@@ -35,17 +35,20 @@ type RuntimeEnv struct {
 	Dirs            DataDirs
 }
 
-// Stack orders startup (bootstrap, DB, control plane, runtime) and reverse shutdown
+// Stack orders startup (bootstrap, DB, control plane, runtime registration, runtime) and reverse shutdown
 // (runtime, control plane, DB).
 type Stack struct {
 	Dirs         DataDirs
 	Bootstrap    Bootstrapper
 	DB           Database
 	ControlPlane func(dsn string, creds *Credentials) Service
-	Runtime      RuntimeFunc
-	CPURL        string
-	Log          io.Writer
-	HealthWait   time.Duration
+	// Register, when set, runs once the control plane is healthy and before the runtime starts,
+	// so the gateway knows the runtime when it says Hello. It must be idempotent across restarts.
+	Register   func(ctx context.Context, env RuntimeEnv) error
+	Runtime    RuntimeFunc
+	CPURL      string
+	Log        io.Writer
+	HealthWait time.Duration
 }
 
 // Run blocks until ctx is cancelled or a component fails, then shuts down in order.
@@ -84,11 +87,17 @@ func (s *Stack) Run(ctx context.Context) (err error) {
 	if herr != nil {
 		return fmt.Errorf("control plane: %w", herr)
 	}
+	env := RuntimeEnv{ControlPlaneURL: s.CPURL, Creds: creds, Dirs: s.Dirs}
+	if s.Register != nil {
+		if err := s.Register(ctx, env); err != nil {
+			return fmt.Errorf("register runtime: %w", err)
+		}
+	}
 
 	rtCtx, rtCancel := context.WithCancel(ctx)
 	defer rtCancel()
 	rtDone := make(chan error, 1)
-	go func() { rtDone <- s.Runtime(rtCtx, RuntimeEnv{ControlPlaneURL: s.CPURL, Creds: creds, Dirs: s.Dirs}) }()
+	go func() { rtDone <- s.Runtime(rtCtx, env) }()
 	select {
 	case err = <-rtDone: // runtime exited on its own
 	case err = <-cpDone: // control plane gave up (restart budget exhausted)
@@ -188,7 +197,8 @@ func runStandalone(args []string) int {
 				probe: HTTPProbe(url),
 			}
 		},
-		Runtime: runRealRuntime(*gatewayAddr),
+		Register: registerRealRuntime,
+		Runtime:  runRealRuntime(*gatewayAddr),
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -215,7 +225,7 @@ func controlPlaneEnv(dsn string, c *Credentials, port int, gatewayAddr string) [
 	env = append(env,
 		"GATEWAY_CERT="+c.ServerCertFile, "GATEWAY_KEY="+c.ServerKeyFile, "GATEWAY_CA="+c.CAFile,
 		"NURTUO_AUTH_SECRET="+c.AdminToken,
-		"NURTUO_BOOTSTRAP_EMAIL=admin@nurtuo.local", "NURTUO_BOOTSTRAP_PASSWORD="+c.AdminToken,
+		"NURTUO_BOOTSTRAP_EMAIL="+standaloneAdminEmail, "NURTUO_BOOTSTRAP_PASSWORD="+c.AdminToken,
 	)
 	return env
 }
