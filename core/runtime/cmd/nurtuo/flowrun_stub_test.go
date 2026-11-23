@@ -30,7 +30,7 @@ func stubRegistry() (*connhost.Registry, *stubConnector) {
 	return reg, st
 }
 
-func (s *stubConnector) Describe(context.Context) (*connectorv1.Descriptor, error) {
+func (s *stubConnector) Describe(context.Context) (*connectorv1.ConnectorDescriptor, error) {
 	schema, _ := structpb.NewStruct(map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -39,7 +39,7 @@ func (s *stubConnector) Describe(context.Context) (*connectorv1.Descriptor, erro
 			"payload":  map[string]any{"type": "string"},
 		},
 	})
-	return &connectorv1.Descriptor{ConnectionSchema: schema}, nil
+	return &connectorv1.ConnectorDescriptor{ConnectionSchema: schema}, nil
 }
 
 func (s *stubConnector) Browse(context.Context, *connectorv1.BrowseRequest) (*connectorv1.BrowseResponse, error) {
