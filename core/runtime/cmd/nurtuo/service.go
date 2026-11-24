@@ -82,6 +82,10 @@ func parseServiceArgs(args []string, defaultConfig string) (serviceArgs, error) 
 type program struct {
 	run func(ctx context.Context) error // blocks until ctx is cancelled
 	log func(error)                     // reports a fatal run error
+	// exit terminates the process with a non-zero code when run fails on its own (not because of
+	// Stop). The service manager then sees a failed process and applies Restart=on-failure /
+	// OnFailure=restart. Nil is a no-op (tests).
+	exit func(code int)
 
 	mu     sync.Mutex
 	cancel context.CancelFunc
@@ -95,8 +99,16 @@ func (p *program) Start(service.Service) error {
 	p.cancel, p.done = cancel, make(chan struct{})
 	go func(done chan struct{}) {
 		defer close(done)
-		if err := p.run(ctx); err != nil && p.log != nil {
+		err := p.run(ctx)
+		if err == nil {
+			return
+		}
+		if p.log != nil {
 			p.log(err)
+		}
+		// A failure after Stop cancelled ctx is part of shutdown; Stop reports it.
+		if ctx.Err() == nil && p.exit != nil {
+			p.exit(1)
 		}
 	}(p.done)
 	return nil
@@ -230,5 +242,6 @@ func runService(svc service.Service, prg *program, cfgPath string) error {
 		return runtime.RunWith(ctx, *cfg, runOptions(logger))
 	}
 	prg.log = func(err error) { logger.Error("runtime failed", "err", err) }
+	prg.exit = os.Exit
 	return svc.Run()
 }
