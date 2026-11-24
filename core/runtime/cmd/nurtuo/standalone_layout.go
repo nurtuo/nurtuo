@@ -4,9 +4,12 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
+
+	"github.com/nurtuo/nurtuo/core/runtime/internal/secrets"
 )
 
 // DataDirs is the on-disk layout of a standalone install.
@@ -16,7 +19,7 @@ type DataDirs struct {
 	PGRun    string // postgres runtime/extracted binaries
 	PGCache  string // downloaded binary cache
 	Logs     string
-	Secrets  string // CA, certs, tokens (0700)
+	Secrets  string // CA, certs, tokens (0700 / private DACL on Windows)
 }
 
 // DefaultDataRoot returns the per-OS default data directory. env supplies lookups
@@ -61,14 +64,32 @@ func NewDataDirs(root string) DataDirs {
 	}
 }
 
-// Ensure creates all directories; Secrets is private.
+// Ensure creates all directories; Secrets is private (see EnsureReport).
 func (d DataDirs) Ensure() error {
+	_, err := d.EnsureReport()
+	return err
+}
+
+// EnsureReport creates all directories and makes Secrets private: 0700 on Unix; on Windows a
+// protected DACL for this account, SYSTEM and Administrators, repairing an existing too-open
+// secrets tree and failing closed on a foreign owner (secrets.EnsurePrivateDir). It returns the
+// paths whose permissions were tightened (always none on Unix).
+func (d DataDirs) EnsureReport() ([]string, error) {
 	for _, p := range []string{d.Postgres, d.PGRun, d.PGCache, d.Logs} {
 		if err := os.MkdirAll(p, 0o755); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return os.MkdirAll(d.Secrets, 0o700)
+	return secrets.EnsurePrivateDir(d.Secrets)
+}
+
+// ensureDataDirs runs EnsureReport and prints every path whose permissions were tightened.
+func ensureDataDirs(d DataDirs, stderr io.Writer) error {
+	repaired, err := d.EnsureReport()
+	for _, p := range repaired {
+		_, _ = fmt.Fprintln(stderr, "standalone: tightened permissions on", p)
+	}
+	return err
 }
 
 func defaultDataRoot() (string, error) { return DefaultDataRoot(runtime.GOOS, os.Getenv) }
