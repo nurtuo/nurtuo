@@ -387,7 +387,9 @@ func startSlowApplyClient(t *testing.T) (*fakeServer, *blockingDeployer, *superv
 	t.Cleanup(func() {
 		cancel()
 		bd.unblock()
-		<-runDone
+		if err := <-runDone; err != nil {
+			t.Logf("client run: %v", err)
+		}
 	})
 	within(t, fs.hellos, "hello")
 	return fs, bd, h
