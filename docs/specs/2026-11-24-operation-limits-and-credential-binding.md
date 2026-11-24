@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Spec: Operation-aware limits and stored-credential binding
 
-Status: draft (needs owner decision). Date: 2026-11-24.
+Status: approved (D1-D14 approved by Łukasz on 2026-11-24; PR not yet merged). Date: 2026-11-24.
 
 ## TLDR
 
@@ -21,17 +21,22 @@ review"). Łukasz then asked to align the spec with Dell Boomi ("Spoko zrób tak
 A second council of the same two experts researched the public Boomi docs over five rounds (see
 "Boomi alignment"). Both experts keep every D1-D14 recommended default. They record the Boomi
 equivalents, flag the rules where Nurtuo is stronger than Boomi, and close the historical D2, D4
-and D12 divergences on the recommended defaults. Three mechanics are still open between them
-(Q-threshold, Q-D7, Q-labels, under "Open questions"). Łukasz must decide D1-D14 and the three
-open questions before any code is written, including the PR #90 rework.
+and D12 divergences on the recommended defaults. Three mechanics were left open between them
+(Q-threshold, Q-D7, Q-labels). **Łukasz approved D1-D14 on 2026-11-24.** He had already approved
+the Boomi direction and every other recommendation. At 21:06 Europe/Warsaw he decided the three
+open questions: an operator may raise the isolation threshold up to the coded maximum set after
+benchmarks; an operator may raise the D7 ingress, queue and rate settings (including the
+failed-authentication rate) with evidence; and D4 and D14 are clarifications, not formal changes
+(see "Open questions (closed)").
 
 ## Status and links
 
 | | |
 |---|---|
-| Pull requests | this spec (draft). Affects [PR #90](https://github.com/nurtuo/nurtuo/pull/90) (canvas Run implementation, head `aa02133`) |
+| Pull requests | this spec (approved by Łukasz 2026-11-24, not yet merged). Affects [PR #90](https://github.com/nurtuo/nurtuo/pull/90) (canvas Run implementation, head `aa02133`) |
 | Owner direction | "Spoko zrób tak jak jest na boomi" (Łukasz, 2026-11-24 19:52, see "Owner requirement"); answered by the Boomi alignment council (see "Boomi alignment") |
-| Reviews it answers | Codex review https://github.com/nurtuo/nurtuo/pull/90#issuecomment-7134020883, Astra review https://github.com/nurtuo/nurtuo/pull/90#issuecomment-7134187185, owner decision https://github.com/nurtuo/nurtuo/pull/90#issuecomment-7134459612, cross-provider review of this spec https://github.com/nurtuo/nurtuo/pull/92#issuecomment-7140661227 |
+| Owner approval | D1-D14 approved by Łukasz on 2026-11-24: the Boomi direction and every recommendation other than the three open questions earlier that day; Q-threshold, Q-D7 and Q-labels at 21:06 Europe/Warsaw (see "Owner requirement", "Open questions (closed)") |
+| Reviews it answers | Codex review https://github.com/nurtuo/nurtuo/pull/90#issuecomment-7134020883, Astra review https://github.com/nurtuo/nurtuo/pull/90#issuecomment-7134187185, owner decision https://github.com/nurtuo/nurtuo/pull/90#issuecomment-7134459612, cross-provider reviews of this spec https://github.com/nurtuo/nurtuo/pull/92#issuecomment-7140661227 and https://github.com/nurtuo/nurtuo/pull/92#issuecomment-7142837972 |
 | Amends | [canvas Run](2026-11-23-canvas-run.md): D2 scope, D4 (`known_hosts` paste), D11 egress (check at the actual dial), Phase 2 body limit, D3/D6 secret workflow, Gaps #3, #7, #9, #19; [backward compatibility contract](2026-11-22-backward-compatibility-contract.md): classification rows for the D4 surface and `nurtuo flow` (D4) |
 | ADRs | [ADR 0010](../adr/0010-connections-and-secrets.md) (connections and secrets), [ADR 0009](../adr/0009-outbound-only-runtime-gateway.md) (gateway), [ADR 0005](../adr/0005-set-at-a-time-engine-with-per-document-status.md) (engine) |
 | Related specs | [backward compatibility contract](2026-11-22-backward-compatibility-contract.md), [auth rate limiting and lockout](2026-11-22-auth-rate-limiting-and-lockout.md), [bundle artifact delivery](2026-11-22-bundle-artifact-delivery.md), [HTTP listener routing](2026-11-22-http-listener-routing.md) |
@@ -54,10 +59,23 @@ brief):
 > Spoko zrób tak jak jest na boomi
 
 ("OK, do it the way Boomi does it.") The council read this as approval of the direction, with the
-instruction to align each decision with Dell Boomi where that is sensible. It is not approval of
-D1-D14. It does not weaken security, and it does not start PR #90. Where Boomi is weaker on
+instruction to align each decision with Dell Boomi where that is sensible. On its own it was not
+approval of D1-D14 (that followed later the same day, below). It does not weaken security, and it does not start PR #90. Where Boomi is weaker on
 security, Nurtuo keeps its rule only if both experts agree (see "Stronger than Boomi"). The 15:29
-compatibility requirement above still applies. D1-D14 still need Łukasz's approval.
+compatibility requirement above still applies.
+
+Łukasz, 2026-11-24, on the Boomi-aligned draft: he approved the direction ("zrób tak jak jest na
+boomi") and every D recommendation except the three open questions. At 21:06 Europe/Warsaw he
+decided those three (summary of his decision as relayed in the task brief, not a verbatim quote):
+
+- **Q-threshold:** the operator **may raise** the 8 MiB isolation threshold, up to the **coded
+  maximum set after benchmarks**.
+- **Q-D7:** the ingress, queue and rate limits, including the failed-authentication rate, **may be
+  raised with evidence**.
+- **Q-labels:** D4 and D14 are a **clarification** ("doprecyzowanie") of the approved decisions, not
+  a formal change.
+
+With this, D1-D14 are approved by Łukasz on 2026-11-24.
 
 ## Problem and goals
 
@@ -119,35 +137,40 @@ reference and drop hidden settings (Codex major).
   - Mutating SFTP operations, other connectors in Run (canvas D11 unchanged except as amended).
   - Reopening canvas Run decisions other than those named under "Amends".
 
-## Decisions (pending)
+## Decisions (approved)
 
-Nothing below is approved. Each item names the recommended default. Letters in brackets map to the
-council ledgers (`D-Lx` limits, `D-Sx` secrets). The "Council" column gives the outcome of the
+**All items below are approved by Łukasz on 2026-11-24** as the recommended default, with the
+Q-threshold, Q-D7 and Q-labels answers of 21:06 Europe/Warsaw written into D4, D7 and D14. The
+"Alternative" column is kept as record and is not approved. Each item names the recommended
+default. Letters in brackets map to the council ledgers (`D-Lx` limits, `D-Sx` secrets).
+The "Council" column gives the outcome of the
 first council, after Round 3: **agreed**, **agreed with qualification** (the qualification is part of
-the recommended default), or **divergent** (both positions given; Łukasz decides). It also gives the
+the recommended default), or **divergent** (both positions given; Łukasz decided). It also gives the
 Boomi alignment outcome. See the Council section for each V-item and "Boomi alignment" for the Boomi
 equivalent of each D, with doc URLs. Changes made after the cross-provider review are part of the
 recommended default and are listed under "Cross-provider review"; they do not change any council
 outcome. The Boomi alignment council kept every recommended default. It closed the historical D2,
-D4 and D12 divergences on those defaults; the earlier votes are kept in the Council table. Three
-mechanics stay open (Q-threshold, Q-D7, Q-labels) and are marked in the D4, D7 and D14 rows.
+D4 and D12 divergences on those defaults; the earlier votes are kept in the Council table. The
+three mechanics it left open (Q-threshold, Q-D7, Q-labels) were decided by Łukasz and are written
+into the D4, D7 and D14 rows. D4 and D14 are clarifications of the approved decisions, not formal
+changes (Q-labels).
 
 | # | Question | Council | Recommended default | Alternative |
 |---|---|---|---|---|
 | D1 [D-L1] | Global 1 MiB cap | agreed (V1); Boomi: agreed, unchanged | Supersede the global Phase 2 cap and its test. D2's values (1 MiB request input; **returned-result bounds**: 20 returned documents and 1 MiB total decoded returned output; 30/120 s, 2/workspace, 4/instance shared slots) apply to `POST …/test-runs` only. Overflow is atomic: `output_too_large` with zero returned documents. Scan has its own small profile (body size from the formula in "Operation classes", 10 s, shares the run limiter). Boomi references only, not mirrored: Test Mode counts **work done** (100 documents per inbound connector step, 10 MB aggregate across the test execution), and the Web Services Server returns at most 100 documents for another operation. Nurtuo counts the result returned to the control plane. A larger default needs T23 producer bounds (or tested isolation) plus concurrent end-to-end measurement from parent and child through slow response drain, with the gateway responsive | keep global cap (rejected by owner); 100 documents / 10 MiB as in Boomi Test Mode (Opus Boomi R1, withdrawn in R2) |
 | D2 [D-L2] | Default body ceiling on revision routes | **divergent** (V2), closed on the recommended default by the Boomi alignment council; Boomi: agreed, unchanged | **No default byte ceiling** on `POST /v1/components/{id}/revisions`. Never a 413 on GET or list. Revision upload and full-content readback are preserved by default. An operator may configure a documented finite ingress ceiling. Making one an upgrade default would need a separate compatibility decision. Memory is bounded by the L1a memory budget (D14), which reserves before materializing and isolates the largest operations; it never rejects a request for its own size alone (owner decision prevails over a size cutoff). Position of Astra (R1, R3), adopted by the drafter. **Deliberate compatibility difference from Boomi:** the Boomi Component API accepts one component per create or update, with at most 10 MB of XML. Nurtuo keeps uncapped revision writes because of the owner's compatibility requirement. Runtime-listener size controls are not cited as support for D2. Metadata-only listing and per-version reads remain a separate opportunity | explicit 256 MiB 413 on revision POST (Opus R2, which also named the matching response paths; the drafter withdraws it, see V2); Boomi's 10 MB write cap (not proposed by either expert) |
 | D3 [D-L3] | Bounded parser on body-authenticated routes | agreed (V1); Boomi: agreed, unchanged (no Boomi login body limit verified) | Approve in principle a bounded, memory-only parser for `POST /v1/auth/login` (and any other route whose authentication needs body fields). 64 KiB is a candidate, final value after field/encoding/client evidence. No blanket cap on public routes. **Rollout: the pre-1.0 deprecation protocol** (spec, OpenAPI `413` on login, `docs/upgrade.md` entry, bridge "documented in the same release"). The emergency security exception is not used unless the SECURITY.md process rates Gaps #1 high or critical and issues an advisory | no change (unauthenticated body stays unbounded on login) |
-| D4 [D-L4] | Configuration surface | agreed with qualification; **divergent** on the override rule (V3), closed on the recommended default by the Boomi alignment council; Boomi: agreed on the tunable list below; **open**: Q-threshold, Q-D7, Q-labels | Operation-specific defaults in code, keyed by policy action, method/template coverage tested against OpenAPI, server-selected profiles enforced. Operator overrides **per class** via one surface (name chosen by Łukasz, e.g. `NURTUO_LIMITS_FILE`), with units, scope and defaults documented and validated at startup against a resource budget. Overrides may tighten any dimension (explicit operator restrictions) and may raise only the dimensions listed as tunable, when evidence supports it, within the instance's physical capacity (Astra R3). **Tunable dimensions (agreed):** Run returned documents (20), Run total decoded returned bytes (1 MiB), Run slots per workspace (2) and per instance (4). A raise must be finite and evidence-backed, and startup validation must show it fits the physical budget with gateway headroom reserved, counting concurrent parent and child costs. Whether the D14 isolation threshold may be raised is open (Q-threshold). Whether D7 ingress, queue and rate settings may be raised is open (Q-D7). The operator-set revision write ceiling (D2, no default) is a separate setting, not a raise of a default. Startup rejects negative, zero-as-unlimited, unbounded and out-of-range values for every dimension (stronger than Boomi, see "Stronger than Boomi"). `k` and the budget fractions are code values and are not operator-settable. Safety ceilings (`preauth`, `secret-bearing`, `scan` bodies) are raised only by a code change. **The entire connection PUT** uses the bounded, memory-only `secret-bearing` profile. Classification: the surface and its variable are **EXPERIMENTAL**, recorded in the compatibility contract's table (amendment). Boomi equivalent: runtime `container.properties` and per-attachment quotas, with both lower-only limits (`maxTestMessages`) and raisable ones (`TEST_MODE_MAX_DOCS`, `TEST_MODE_MAX_BYTES`, HTTP Request Rate, API Request Input Size) | tighten-only, except a bounded raise of the revision ceiling (Opus R2, withdrawn in Boomi R1) |
-| D5 [D-L5] | Child output bound | agreed with qualification (Astra ledger); Boomi: agreed, unchanged | Add `nurtuo flow run --max-output-bytes` and `--max-documents`, applied in the child before a whole payload is read or a result set accumulated, and counting metadata, encoded output and temporary disk. Overflow keeps the D2 failed result (`output_too_large`) with no documents. **Run is enabled only with these producer bounds or equivalent tested isolation.** Because Run is never served in auth-disabled mode (canvas D9), every instance that serves Run counts as shared, so the condition applies everywhere: P90-9 is required for #90, not optional. The flags are EXPERIMENTAL like `nurtuo flow` (compatibility table amendment, D4) | ship #90 with the residual risk documented (canvas Gaps #7); not recommended |
+| D4 [D-L4] | Configuration surface | agreed with qualification; **divergent** on the override rule (V3), closed on the recommended default by the Boomi alignment council; Boomi: agreed on the Run tunables; Q-threshold, Q-D7 and Q-labels **decided by Łukasz** (21:06); **clarification** of the approved decision, not a formal change (Q-labels) | Operation-specific defaults in code, keyed by policy action, method/template coverage tested against OpenAPI, server-selected profiles enforced. Operator overrides **per class** via one surface (name chosen by Łukasz, e.g. `NURTUO_LIMITS_FILE`), with units, scope and defaults documented and validated at startup against a resource budget. Overrides may tighten any dimension (explicit operator restrictions) and may raise the **raisable dimensions** below, when evidence supports it, within the instance's physical capacity (Astra R3). **Raisable dimensions (complete list; three groups, each approved by Łukasz):** (a) **Run**: returned documents (20), total decoded returned bytes (1 MiB), slots per workspace (2) and per instance (4); (b) **D14 isolation threshold** (initial 8 MiB), raisable up to the coded maximum set after benchmarks (Q-threshold, see D14); (c) **D7 ingress, queue and rate settings**: ingress budget, wait queue, per-peer in-flight limit, key table, failed-authentication bucket, scan/run dial buckets (Q-D7, see D7). Groups (b) and (c) are raisable, not tighten-only; the Run group (a) is not the whole list. A raise in any group must be finite and evidence-backed, and startup validation must show it fits the physical budget with gateway headroom reserved, counting concurrent parent and child costs; group (b) is also capped by the coded maximum. Every dimension not in (a)-(c) is tighten-only for operators. The operator-set revision write ceiling (D2, no default) is a separate setting, not a raise of a default. Startup rejects negative, zero-as-unlimited, unbounded and out-of-range values for every dimension (stronger than Boomi, see "Stronger than Boomi"). `k` and the budget fractions are code values and are not operator-settable. Safety ceilings (`preauth`, `secret-bearing`, `scan` bodies) are raised only by a code change. **The entire connection PUT** uses the bounded, memory-only `secret-bearing` profile. Classification: the surface and its variable are **EXPERIMENTAL**, recorded in the compatibility contract's table (amendment). Boomi equivalent: runtime `container.properties` and per-attachment quotas, with both lower-only limits (`maxTestMessages`) and raisable ones (`TEST_MODE_MAX_DOCS`, `TEST_MODE_MAX_BYTES`, HTTP Request Rate, API Request Input Size) | tighten-only, except a bounded raise of the revision ceiling (Opus R2, withdrawn in Boomi R1) |
+| D5 [D-L5] | Child output bound | agreed with qualification (Astra ledger); Boomi: agreed, unchanged | Add `nurtuo flow run --max-output-bytes` and `--max-documents`, applied in the child before a whole payload is read or a result set accumulated, and counting metadata, encoded output and temporary disk. Boomi comparison: Test Mode has a document count per inbound connector step and a separate execution-wide byte quota; the docs present the byte quota as an observable quota and do not say it is enforced before data is allocated. D5's requirement (producer bound or tested isolation) therefore does not rest on Boomi. Overflow keeps the D2 failed result (`output_too_large`) with no documents. **Run is enabled only with these producer bounds or equivalent tested isolation.** Because Run is never served in auth-disabled mode (canvas D9), every instance that serves Run counts as shared, so the condition applies everywhere: P90-9 is required for #90, not optional. The flags are EXPERIMENTAL like `nurtuo flow` (compatibility table amendment, D4) | ship #90 with the residual risk documented (canvas Gaps #7); not recommended |
 | D6 [D-L6] | Revision storage redesign (L2) | agreed with qualification (Astra ledger); Boomi: agreed, unchanged | Separate spec, triggered by measured demand or by failure to meet the working-set budget. Before switching it must prove digest parity against `canonicalJson` (duplicate and prototype-named keys, UTF-16 ordering, UTF-8 replacements, lone surrogates, negative zero, overflowing numbers), bounded sorting, old-row readback, atomic publication and cleanup | include in first delivery |
-| D7 [D-L7] | Rate limiting and quotas in M1 | agreed with qualification (V3, Astra ledger); Boomi: agreed, unchanged; **open**: raise rule (Q-D7) | Operators may tighten every setting below; whether they may raise them is open (Q-D7). Ingress waiter count and wait time are both bounded (stronger than Boomi's Shared Web Server queue). 429 for caller limits (Boomi answers rate excess with 503; Nurtuo keeps its existing codes for compatibility), 503 + `Retry-After` for transient capacity. No general per-principal rate setting in M1 (Boomi's Platform API 10 requests/s is a multi-tenant SaaS rule). Listener size, rate and burst figures (Boomi WSS input size and HTTP Request Rate) belong to the runtime follow-up (V10). Instance-local admission and one volatile-secret owner. Keep login throttle/lockout. Add a bounded per-peer pre-auth in-flight limit (trusted-proxy identity, bounded key cardinality), an **instance-wide ingress budget** (requests holding a body or reservation, bounded wait queue), and **targeted local rate budgets** for work that concurrency does not bound: failed authentications per peer and scan/run dials per workspace and instance. Keep D2 concurrency. Reserve capacity for reads, writes and teardown, and test recovery after disconnects and timeouts. Metrics by operation (bytes, rates, CPU, RSS, spool, wait, rejection) with no bodies or identifiers. No byte-rate or workspace quotas; a later HA spec owns cross-replica fairness. Webhook bursts belong to the runtime follow-up | add workspace/byte-rate quotas now |
+| D7 [D-L7] | Rate limiting and quotas in M1 | agreed with qualification (V3, Astra ledger); Boomi: agreed, unchanged; raise rule **decided by Łukasz** (Q-D7, 21:06) | Operators may tighten every setting below and **may raise them with evidence** (Q-D7): the ingress budget, wait queue, per-peer in-flight limit, key table, failed-authentication bucket and scan/run dial buckets. A raise must be finite, evidence-backed and validated at startup against physical capacity with gateway headroom reserved (D4 group (c)). This includes the failed-authentication rate; the login throttle and lockout still apply unchanged. Ingress waiter count and wait time are both bounded (stronger than Boomi's Shared Web Server queue). 429 for caller limits (Boomi's Web Services Server answers HTTP Request Rate excess with 503; Nurtuo keeps its existing 429 codes for compatibility), 503 + `Retry-After` for transient capacity. The new 429 triggers on STABLE routes (per-peer in-flight limit, failed-authentication bucket) follow the pre-1.0 deprecation protocol with OpenAPI and upgrade-note entries (see "Rate limiting and ingress budgets" and "Compatibility"). No general per-principal rate setting in M1 (Boomi's Platform API 10 requests/s is a multi-tenant SaaS rule). Listener size, rate and burst figures (Boomi WSS input size and HTTP Request Rate) belong to the runtime follow-up (V10). Instance-local admission and one volatile-secret owner. Keep login throttle/lockout. Add a bounded per-peer pre-auth in-flight limit (trusted-proxy identity, bounded key cardinality), an **instance-wide ingress budget** (requests holding a body or reservation, bounded wait queue), and **targeted local rate budgets** for work that concurrency does not bound: failed authentications per peer and scan/run dials per workspace and instance. Keep D2 concurrency. Reserve capacity for reads, writes and teardown, and test recovery after disconnects and timeouts. Metrics by operation (bytes, rates, CPU, RSS, spool, wait, rejection) with no bodies or identifiers. No byte-rate or workspace quotas; a later HA spec owns cross-replica fairness. Webhook bursts belong to the runtime follow-up | add workspace/byte-rate quotas now |
 | D8 [D-S1] | Credential write API | agreed (V5, V7); agreed with qualification on the publication rule (V6); Boomi: agreed, unchanged, **stronger than Boomi** (S1, S2) | Boomi equivalent: Environment Extensions (write-only encrypted fields, `encryptedValueSet` status, per-field partial update). Boomi documents no destination binding. Both experts keep the binding and the extra checks below (S1, S2). Optional write-only `credentials: {password?, privateKey?, passphrase?}` member on the pending `PUT /v1/workspaces/{ws}/connections/{id}`. Per field: **omitted = keep** (only when the binding is unchanged), **string = new version**, **`null` = remove**; empty string is 400. The effective set must be a valid SFTP combination (see "Credential lifecycle"). A PUT that sets or removes a credential needs `connection:write` plus `secret:write` (set) or `secret:delete` (remove), a user session, CSRF and trusted TLS (proxy-asserted under `NURTUO_TRUST_PROXY=1`, or a loopback peer). An unchanged-binding edit needs `connection:write` only. Hidden settings and server-owned references are preserved; client-selected substitutes are rejected. A binding change with retained credentials returns **409 `credential_rebind_required` before any mutation**. Publication follows the V6 rule. An uncertain commit is reconciled before the outcome is reported | dedicated credential-save operation; staged two-call handle (Astra R1, superseded by Astra R3) |
 | D9 [D-S2] | Free-standing `/secrets` routes | agreed (V5); Boomi: agreed, unchanged | Remove `GET …/secrets`, `PUT|DELETE …/secrets/{name}` from the pending API. Connections report `secrets: {field: set|missing}`. Intentional removal is `null` in `credentials` on the connection PUT, with `secret:delete`. `null` **deletes the credential, with no fallback**. That differs from Boomi's `useDefault="true"`, which reverts an extension to the component value and can restore a usable credential. Nurtuo has no default layer under a connection credential. Omission keeps the credential; an empty string is 400. Deleting a connection (`connection:delete`) or a workspace purges its credentials without a separate secret permission, because the connection owns them | keep them as storage that the runner never releases |
 | D10 [D-S3] | `secret://` placement | agreed (Astra ledger); Boomi: agreed, unchanged, **stronger than Boomi** (S5) | Allowed only in schema credential slots (`writeOnly` / `x-nurtuo-secret`), server-assigned for this connection and field. Elsewhere 400 `secret_ref_not_allowed` on save, and refusal at snapshot time for a malformed stored row. All connections are validated before any child input is released. Applies to control-plane-managed Run connections only. Standalone providers, bundle syntax and `secret://` stay unchanged | none proposed |
 | D11 [D-S4] | `rootPath` in the binding | agreed (V8); Boomi: agreed, unchanged | Not bound; editors can change it. Documented as a flow-path convenience on an already authorized account, not an authorization boundary. The remote account's permissions govern path access (as with Boomi's overridable SFTP Remote Directory). A future subtree-authorization promise needs a separate decision | bind it |
 | D12 [D-S5] | DNS rebinding / dial address | **divergent** on `known_hosts` (V9), closed on the recommended default (fail closed) by the Boomi alignment council; Boomi: agreed, unchanged, **stronger than Boomi** (S3, S4) | Boomi equivalent: an optional single-line SFTP Known Host Entry, where a blank entry skips host-key validation. Boomi documents no per-dial egress control. Both experts keep the rules below (S3, S4). Pin a vetted dial address for `fingerprint` connections and scans, keeping the logical SSH identity for the binding, with the egress check at every actual dial (scan, retries, both address families). **Fail closed wherever actual-dial enforcement is unavailable**: on every installation, a control-plane Run or scan of a `known_hosts` connection is refused before any network contact (409 `dial_enforcement_unavailable`) until an approved dial-address mechanism (connector and child flag, Ask First) verifies the logical host while dialing the pinned address. Canvas D4 is amended: a pasted `known_hosts` entry is converted at save to `hostKeyPolicy: fingerprint` when it has exactly one key for the logical host and port; otherwise 400 asks the user to pick a fingerprint (Astra R3) | `known_hosts` enabled as best effort and documented until a dial flag is approved (Opus R2, withdrawn in Boomi R1) |
 | D13 [D-S6] | Revocation | agreed (Astra ledger); Boomi: agreed, unchanged (no Boomi guarantee for this race verified) | Delete or rebind revokes future acquisitions. An admitted run finishes under its D2 deadline plus bounded teardown grace (initial 5 s). Current permission is checked and the full snapshot is acquired at admission, atomically with respect to workspace and connection deletion. UI logout revocation and failure reporting stay on #90 | kill in-flight runs |
-| D14 | Memory budget, reservation and capacity error | agreed (V4); Boomi: agreed on the mechanism; **open**: threshold raise (Q-threshold), label (Q-labels) | One byte-weighted process memory budget. A body, single row or list is reserved **before it is materialized** (declared length, counted chunks, stored size). Operations above the in-memory threshold (initial 8 MiB, benchmark-gated) also run isolated (worker with heap limits). Operators may lower the threshold to isolate earlier (agreed). Whether they may raise it is open (Q-threshold). `k` and the budget fractions are code values; a change in either direction needs benchmark evidence, a reviewed code or spec change and a changelog entry (agreed). If isolation cannot pass T24 for a single operation, D6 is triggered. Boomi references for the mechanism, not its numbers: runtime heap setting, forked-JVM isolation, low-memory spill to disk, overflow sizes, 503 when busy. A reservation larger than the whole large-operation budget is admitted **exclusively**, never rejected for its size. **503 `capacity_unavailable` + `Retry-After`** only when other reservations hold the budget until the wait deadline. Rollout of the new 503 on STABLE routes follows the pre-1.0 deprecation protocol (same as D3). 413 = applicable size limit, 429 = caller quota or rate (D2 `too_many_runs` stays 429), 503 = instance capacity. Release gated on load tests that show the co-hosted gateway survives | single large-body token only (does not bound process memory; Astra R3, cross-provider review) |
+| D14 | Memory budget, reservation and capacity error | agreed (V4); Boomi: agreed on the mechanism; threshold raise **decided by Łukasz** (Q-threshold, 21:06); **clarification** of the approved decision, not a formal change (Q-labels) | One byte-weighted process memory budget. A body, single row or list is reserved **before it is materialized** (declared length, counted chunks, stored size). Operations above the in-memory threshold (initial 8 MiB, benchmark-gated) also run isolated (worker with heap limits). Operators may lower the threshold to isolate earlier, and **may raise it up to the coded maximum set after benchmarks** (Q-threshold; D4 group (b)). The coded maximum is a code value recorded after benchmarks with tested isolation and gateway headroom under concurrent parent and child load; until benchmarks set a higher value it equals the initial 8 MiB, so startup rejects a value above it. Changing the coded maximum is a reviewed code or spec change with a changelog entry. `k` and the budget fractions are code values; a change in either direction needs benchmark evidence, a reviewed code or spec change and a changelog entry (agreed). If isolation cannot pass T24 for a single operation, D6 is triggered. Boomi references for the mechanism, not its numbers: runtime heap setting, forked-JVM isolation, low-memory spill to disk, overflow sizes, 503 when busy. A reservation larger than the whole large-operation budget is admitted **exclusively**, never rejected for its size. **503 `capacity_unavailable` + `Retry-After`** only when other reservations hold the budget until the wait deadline. Rollout of the new 503 on STABLE routes follows the pre-1.0 deprecation protocol (same as D3). 413 = applicable size limit, 429 = caller quota or rate (D2 `too_many_runs` stays 429), 503 = instance capacity. Release gated on load tests that show the co-hosted gateway survives | single large-body token only (does not bound process memory; Astra R3, cross-provider review) |
 
 ## Design
 
@@ -220,9 +243,10 @@ L1a: the gate is a test in which the largest valid escaped request succeeds and 
 The 8 MiB threshold, the budget fractions and the expansion factor below are placeholders. L1a
 benchmarks replace them, and each change is recorded in the changelog. `k` and the budget fractions
 are code values. Operators cannot set them, and a change in either direction needs benchmark
-evidence, a reviewed code or spec change and a changelog entry. Operators may lower the threshold
-through D4 to isolate earlier. Whether an operator may raise it is open (Q-threshold under "Open
-questions").
+evidence, a reviewed code or spec change and a changelog entry. Through D4 (group (b)) operators
+may lower the threshold to isolate earlier, or raise it up to the coded maximum set after
+benchmarks (Q-threshold, decided by Łukasz; see D14). Until benchmarks set a higher coded maximum,
+it equals the initial threshold.
 
 ### Memory budget for the first release (L1a, D2, D14)
 
@@ -284,10 +308,14 @@ copies. L1a therefore uses a **byte-weighted budget**, reserved before allocatio
   `Expect: 100-continue` the final status is sent instead of `100 Continue`. Application-level body
   consumption is zero; kernel and Node socket buffering is bounded by the socket high-water mark.
 - **Error precedence (changed, documented).** Today a malformed body gets 400 `invalid JSON` on every
-  path first. After L1a the order is: 404/405 (route), 401 (authentication), 403 (CSRF, permission),
-  413 (declared size over a class limit), 503 (capacity), then 400 `invalid JSON` and validation.
-  Clients that send malformed bodies to unknown or unauthorized routes see the more specific status.
-  This is a change of a STABLE route's error semantics and is part of the D3/D14 upgrade note.
+  path first. After L1a the order is: 404/405 (route), 429 `rate_limited` (per-peer in-flight limit
+  reached, D7), 429 `rate_limited` (the peer's failed-authentication bucket is empty, checked before
+  credential verification, D7), 401 (authentication), 403 (CSRF, permission), 413 (declared size
+  over a class limit), 503 (capacity), then 400 `invalid JSON` and validation. On `POST
+  /v1/auth/login` the existing login throttle and lockout 429s (`rate_limited`, `account_locked`)
+  keep their current position and codes. Clients that send malformed bodies to unknown or
+  unauthorized routes see the more specific status. This is a change of a STABLE route's error
+  semantics and is part of the D3/D7/D14 upgrade note.
 - **Auth-disabled mode.** With `NURTUO_INSECURE_NO_AUTH=1` the core routes keep reading and parsing
   their bodies as on `main` (behind the D14 reservation). Pending workspace routes still answer 404
   without reading the body (canvas D9).
@@ -303,12 +331,17 @@ benchmark-gated:
 - **Instance-wide ingress budget.** Maximum requests that hold an unread or partly read body or a
   D14 reservation (placeholder 256), plus a bounded wait queue (placeholder 64 waiters). When the
   queue is full, new work gets 503 `capacity_unavailable` immediately. Per-peer pre-auth in-flight
-  limit (placeholder 8) keyed by the trusted transport identity. The key table is bounded
+  limit (placeholder 8) keyed by the trusted transport identity; a request over it gets 429
+  `rate_limited` with `Retry-After` (initial 1 s, a code value) and `Connection: close`, before
+  authentication and without reading the body. The key table is bounded
   (placeholder 10,000 entries); when full, unknown peers share one overflow key, so the table cannot
   grow and the overflow key is limited like a single peer.
 - **Targeted rate budgets.** A token bucket for failed authentications per peer (placeholder 10/s,
-  burst 20; exceeding it returns the existing 429 `rate_limited` with `Retry-After`; the login
-  throttle and lockout stay as they are). A token bucket for scan and run dials per workspace and
+  burst 20). A failed session-cookie or bearer verification (a 401) and a failed login consume a
+  token. While the bucket is empty, the peer's requests to any operation that accepts credentials
+  get the existing 429 `rate_limited` with `Retry-After` (integer seconds until the next token)
+  before credential verification and without reading the body; the login throttle and lockout stay
+  as they are. A token bucket for scan and run dials per workspace and
   per instance (placeholder 30/min per workspace), because a scan holds a slot for milliseconds and
   the D2 slots alone do not bound dial rate; exceeding it returns 429 `too_many_runs` with
   `Retry-After` (existing D2 code). Successful authenticated requests have no rate budget in M1: their
@@ -317,10 +350,12 @@ benchmark-gated:
 - **Recovery.** Timeouts, disconnects and aborts release the ingress slot, the per-peer count, the
   reservation and the run slot exactly once. Teardown has its own bounded grace (D13) and is not
   counted against new admissions after it ends.
-- **Operator overrides.** Operators may tighten the ingress budget, wait queue, per-peer in-flight
-  limit, key table, failed-authentication bucket and scan/run dial buckets (D4). Whether they may
-  raise them is open (Q-D7). Both the waiter count and the wait time stay finite. Startup rejects
-  unbounded values. The login throttle and lockout apply in either case.
+- **Operator overrides.** Operators may tighten **and raise** the ingress budget, wait queue,
+  per-peer in-flight limit, key table, failed-authentication bucket and scan/run dial buckets (D4
+  group (c); Q-D7, decided by Łukasz). A raise must be finite and evidence-backed, and startup
+  validates it against physical capacity with gateway headroom reserved. Both the waiter count and
+  the wait time stay finite. Startup rejects unbounded values. The login throttle and lockout apply
+  unchanged whatever these settings are.
 
 ### Streaming
 
@@ -457,7 +492,8 @@ benchmark-gated:
 | reservation not available before the wait deadline, or ingress queue full | 503 `capacity_unavailable`, `Retry-After` (D14, D7) |
 | isolated worker exceeds its heap | 500 `resource_exhausted`, process and gateway unaffected (D14) |
 | run/scan concurrency or dial rate exhausted | 429 `too_many_runs`, `Retry-After` (D2, D7) |
-| failed-authentication rate exceeded | 429 `rate_limited`, `Retry-After` (existing code) |
+| failed-authentication rate exceeded | 429 `rate_limited`, `Retry-After` (existing code; new trigger on STABLE routes, D7) |
+| per-peer pre-auth in-flight limit reached | 429 `rate_limited`, `Retry-After`, `Connection: close`, body not read (existing code; new trigger on STABLE routes, D7) |
 | binding changed without fresh credentials on PUT | 409 `credential_rebind_required`, nothing mutated |
 | invalid credential combination or empty value | 400 `invalid_credential_set` / `invalid_credential`, nothing mutated |
 | credential PUT without trusted TLS | 403 `tls_required`, nothing mutated |
@@ -472,7 +508,7 @@ benchmark-gated:
 
 | Contract | Change | Stability |
 |---|---|---|
-| STABLE control-plane routes | body read after auth; changed error precedence; no new default 413; possible 503 `capacity_unavailable` and 500 `resource_exhausted` (D14); login bounded (D3) | STABLE; rollout by the pre-1.0 deprecation protocol (D3, D14 need approval) |
+| STABLE control-plane routes | body read after auth; changed error precedence; no new default 413; possible 503 `capacity_unavailable` and 500 `resource_exhausted` (D14); login bounded (D3); new 429 `rate_limited` triggers with `Retry-After` from the per-peer in-flight limit and the failed-authentication bucket (D7) | STABLE; rollout by the pre-1.0 deprecation protocol (D3, D7, D14, approved by Łukasz 2026-11-24) |
 | `POST …/test-runs`, host-key scan | D2 values scoped to these routes; dial rate budget; `dial_enforcement_unavailable` | experimental (pending, #90) |
 | `PUT …/connections/{id}` | bounded `secret-bearing` profile for the whole route; optional write-only `credentials` member with keep/set/remove; 409 `credential_rebind_required`; 400 `invalid_credential_set`, `known_hosts_ambiguous`, `host_key_policy_not_supported`; 403 `tls_required`; 503 `save_outcome_unknown`; read-only server-assigned refs (D8, D12) | experimental (pending, #90) |
 | `…/secrets` routes | removed from pending API (D9) | experimental (pending, #90) |
@@ -483,21 +519,45 @@ benchmark-gated:
 
 The compatibility contract lists control-plane environment variables and `nurtuo` flags as STABLE,
 with named EXPERIMENTAL exceptions. D4 and D5 add explicit exceptions there in the same PR as the
-code; that is a public contract change and is covered by Łukasz's approval of D4 and D5.
+code; that is a public contract change and is covered by Łukasz's approval of D4 and D5
+(2026-11-24).
 
 ## Compatibility
 
 - Revision create, get and list keep today's accepted sizes and full content (D2). The canvas Run
   spec's test "body over 1 MiB is 413" on all routes is replaced by per-route tests.
-- **One rollout path for D3 and D14**: the pre-1.0 deprecation protocol of the compatibility
+- **One rollout path for D3, D7 and D14**: the pre-1.0 deprecation protocol of the compatibility
   contract, with the bridge "documented in the same release". The release that ships L1a adds to
   `openapi.yaml`: `413` on `POST /v1/auth/login`, `503` with `Retry-After` and `500
-  resource_exhausted` on the affected STABLE operations, and the changed error precedence. A
-  `docs/upgrade.md` entry names each change, who is affected (clients sending login bodies above
-  the D3 value; clients that do not retry 503; clients relying on 400 before 401/404) and the
-  migration (retry 503 after `Retry-After`). `nurtuoctl` honors `Retry-After` with bounded retries in
-  the same release. The `oasdiff breaking` check is expected to flag the login 413; the PR links
-  this spec. The emergency security exception is not used unless an advisory is issued.
+  resource_exhausted` on the affected STABLE operations, the D7 `429` below, and the changed error
+  precedence. A `docs/upgrade.md` entry names each change, who is affected (clients sending login
+  bodies above the D3 value; clients that do not retry 503 or 429; clients that open many parallel
+  requests from one address or retry failed credentials quickly; clients relying on 400 before
+  401/404) and the migration (retry 503 and 429 after `Retry-After`; fix credentials instead of
+  retrying a 401). `nurtuoctl` honors `Retry-After` with bounded retries in the same release; the
+  TypeScript `NurtuoClient` already retries 429 for idempotent methods and honors `Retry-After`. The
+  `oasdiff breaking` check is expected to flag the login 413 and the added 429 responses; the PR
+  links this spec. The emergency security exception is not used unless an advisory is issued.
+- **D7 429 on STABLE operations.** Today `openapi.yaml` declares 429 only on `POST /v1/auth/login`
+  (login throttle and lockout). L1a adds two triggers that reuse the existing `rate_limited` code
+  (not `too_many_runs`, which stays with the pending Run and scan routes):
+  - **Per-peer in-flight limit:** every STABLE operation in `openapi.yaml`, including the
+    `security: []` operations, because the limit applies before authentication.
+  - **Failed-authentication bucket:** every STABLE operation that accepts a session cookie or bearer
+    token (all operations without `security: []`), the SCIM routes (route-local bearer), and `POST
+    /v1/auth/login`, where it adds to the existing throttle and lockout and leaves their codes
+    (`rate_limited`, `account_locked`) and `Retry-After` unchanged.
+  - **OpenAPI:** each affected operation declares `429` with the shared `Error` response and a
+    `Retry-After` header (integer seconds). Login keeps its existing description and gains the D7
+    trigger in it.
+  - **Precedence and headers:** as in "Admission, unread bodies and error precedence": the D7 429s
+    come after 404/405 and before 401, 403, 413, 503 and 400. Every D7 429 carries `Retry-After`;
+    the in-flight 429 also carries `Connection: close` and the body is not read. The per-peer
+    check runs before the instance-wide ingress check, so a peer over its own limit gets 429 even
+    when the instance is also full, and a peer within its limit gets 503 `capacity_unavailable`
+    when the instance budget or queue is full.
+  - Operator raises of these settings (D4 group (c)) change only the thresholds, never the codes or
+    the precedence.
 - D14's 503 appears only under concurrent load (other reservations hold the budget); on an idle
   instance every request that succeeds on `main` succeeds (load-test gate).
 - Connection and secret routes are unmerged, so D8/D9/D12 do not affect released clients. They do
@@ -527,7 +587,8 @@ code; that is a public contract change and is covered by Łukasz's approval of D
 
 ## Implementation plan
 
-No phase starts before Łukasz approves this spec. Each phase is a separate PR with its tests.
+Łukasz approved this spec's decisions (D1-D14) on 2026-11-24. Each phase is a separate PR with its
+tests.
 
 ### Phase P90: PR #90 rework (must land in #90)
 
@@ -593,6 +654,12 @@ per-row reservation, backpressure, abort on mid-stream failure.
 - WHEN many peers, rapid scans, stalled uploads and repeated timeouts or disconnects hit the instance
   THEN admission stays within the ingress budget and key table bound, and capacity returns to idle
   within the teardown grace.
+- WHEN a peer exceeds its pre-auth in-flight limit or has an empty failed-authentication bucket
+  THEN a STABLE operation answers 429 `rate_limited` with `Retry-After` in the documented precedence,
+  without reading the body, and the operation's OpenAPI entry declares that 429.
+- WHEN an operator raises a D4 group (a), (b) or (c) dimension with a finite value that fits the
+  startup budget (and, for the threshold, the coded maximum) THEN startup accepts it; WHEN the value
+  is unbounded, out of range or above the coded maximum THEN startup fails.
 - WHEN `POST …/test-runs` exceeds 1 MiB THEN 413; other D2 limits behave as in the canvas Run spec.
 - WHEN the largest valid escaped connection PUT or scan request is sent THEN it succeeds; one byte
   more gets 413.
@@ -652,10 +719,11 @@ messages; a file check alone does not satisfy these tests.
 | T18 | keep/set/remove per field; every valid and invalid SFTP combination; empty string; after 409 `credential_rebind_required`, re-entry succeeds and the run authenticates once at the new destination | `connections/routes.test.ts`, `runner.test.ts` | SFTP for the run |
 | T19 | workspace deletion and connection deletion racing acquisition: either the admitted run finishes or the run is 404, never a reveal after purge | `connections/*.test.ts`, `runner.test.ts` | memory and Pg |
 | T20 | uncertain commit (connection dropped after `COMMIT`): outcome reconciled before the response; unreadable generation -> 503 `save_outcome_unknown`, reconciled on next access; restart: Pg row kept, volatile versions `missing`, run refused without network contact, re-entry restores | `connections/pg-*.test.ts`, `runner.test.ts` | Pg needs a database |
-| T21 | invalid D4 overrides (unknown key, bad unit, negative, raise of a safety ceiling, budget sum above `heap_size_limit` minus headroom) fail startup with a clear error | `limits.test.ts` | L1a |
+| T21 | invalid D4 overrides (unknown key, bad unit, negative, zero-as-unlimited, raise of a safety ceiling or of a tighten-only dimension, isolation threshold above the coded maximum, budget sum above `heap_size_limit` minus headroom) fail startup with a clear error; valid finite raises of each group (a) Run, (b) threshold up to the coded maximum, (c) every D7 setting including the failed-authentication bucket are accepted | `limits.test.ts` | L1a |
 | T22 | rebinding: DNS answer changes between preflight and dial; connector retry; A+AAAA with IPv4 and IPv6 listeners; one disallowed answer -> no connection; host-key mismatch -> 0 auth; stored `known_hosts` -> 409, 0 connections; pasted `known_hosts` with one / several keys -> fingerprint / 400 | `runner.test.ts`, `egress.test.ts`, `flowrun_sftp_test.go` | socket level, Run and scan |
 | T23 | large SFTP download and metadata-heavy listing above D2 limits: child RSS and temp-dir high-water bounded, `output_too_large`, no documents, temp dir removed, child reaped | `flowrun_sftp_test.go`, `runner.test.ts` | SFTP |
 | T24 | D14 load tests: `S_main` regression, high-expansion JSON, concurrent large and small reads and writes, slow readers, disconnects, uploads above `S_main`; gateway heartbeat answered; reservations return to zero; many peers, rapid scans, stalled uploads, repeated timeouts and disconnects with capacity recovery | `bench/` (new, `make bench`-style job) | L1a release gate |
+| T25 | D7 429 on STABLE routes: per-peer in-flight limit exceeded -> 429 `rate_limited` with `Retry-After` and `Connection: close`, body not read, before 401; empty failed-authentication bucket -> 429 before credential verification on a protected route and on login; login throttle/lockout codes unchanged; precedence against 404/405, 401, 413, 503 and 400; every affected OpenAPI operation declares 429 | `api.test.ts`, `limits.test.ts` | L1a |
 
 ## Gaps and risks
 
@@ -732,13 +800,16 @@ How the rounds went:
   lower-only and D7 settings raisable. Opus lists them with the threshold raisable within a measured
   range and D7 tighten-only, and labels D4 and D14 as `change`.
 - **Rounds 4 and 5.** Each expert accepted the other's previous text, twice, so the positions crossed
-  each time. After Round 5 they still hold opposite rules on three mechanics. These are recorded as
-  **open questions for Łukasz** (Q-threshold, Q-D7, Q-labels under "Open questions"). This spec
-  does not pick a side.
+  each time. After Round 5 they still held opposite rules on three mechanics. These were put to
+  Łukasz as open questions (Q-threshold, Q-D7, Q-labels). The council did not pick a side;
+  **Łukasz decided all three on 2026-11-24 at 21:06 Europe/Warsaw** (see "Open questions (closed)").
+  On Q-threshold he chose Opus's Round 5 option, on Q-D7 Astra's, and on Q-labels Astra's.
 
-Agreed outcome: every D1-D14 recommended default stays. The Boomi equivalents and the stronger-than-
-Boomi flags are recorded under "Boomi alignment". The historical D2, D4 and D12 divergences are
-closed. D1-D14 and the three open questions still need Łukasz's approval.
+Agreed outcome: every D1-D14 recommended default stays; D4 and D14 additionally carry the
+clarifications of their mechanics decided by Łukasz (raisable dimension groups, coded threshold
+maximum), recorded as clarifications, not formal changes. The Boomi equivalents and the
+stronger-than-Boomi flags are recorded under "Boomi alignment". The historical D2, D4 and D12
+divergences are closed. **Łukasz approved D1-D14 on 2026-11-24.**
 
 ## Cross-provider review
 
@@ -758,6 +829,20 @@ nothing.
 | 7 (major) | D8/D9/D13 lifecycle | "Credential lifecycle": keep/set/remove, valid SFTP combinations, authorization per action, trusted TLS behind a proxy, uncertain-commit reconciliation before reporting, restart, deletion races; T17-T20 |
 | 8 (nit) | Council provenance | V2 records Opus R2's response-path wording and the later withdrawal; review status updated |
 
+### Second cross-provider review (Boomi-aligned revision)
+
+Reviewer: Codex (gpt-6.2-sol, OpenAI), https://github.com/nurtuo/nurtuo/pull/92#issuecomment-7142837972,
+on head `dbc579d`. Verdict: request changes (0 blockers, 2 majors, 2 nits). Claude Opus answered it in
+the same edit that records Łukasz's 21:06 decisions. The fixes change no product decision; the
+review's two majors are written to match those decisions.
+
+| Item | Finding | Change in this spec |
+|---|---|---|
+| 1 (major) | D4's allowlist (four Run settings only) could close Q-threshold and Q-D7 by implication | D4 lists three raisable groups as the complete list: (a) Run, (b) isolation threshold up to the coded maximum (Q-threshold), (c) D7 ingress, queue and rate settings with evidence (Q-D7). Every other dimension is tighten-only. D7, D14, "Operation classes" and "Rate limiting" use the same rule. D4 and D14 are recorded as clarifications (Q-labels), and the "every default stays" wording names those clarifications |
+| 2 (major) | D7's new 429 triggers on STABLE routes are missing from the rollout | "Compatibility": affected operations for the per-peer in-flight limit and the failed-authentication bucket, reuse of `rate_limited` (not `too_many_runs`), OpenAPI `429` with `Retry-After`, error precedence (after 404/405, before 401), interaction with the 503 ingress budget and with the login throttle, upgrade note, `nurtuoctl`; Contracts, Failure modes, acceptance criteria, T25 |
+| 3 (nit) | D5 overstates where Boomi enforces the Test Mode byte quota | D5 row and Boomi table: the byte quota is an observable, execution-wide quota; no pre-allocation enforcement is claimed; listed under "Not verified" |
+| 4 (nit) | D7's Boomi row: 503 belongs to rate excess; the 5 MB figure is Low Latency | Boomi D7 row: 503 for HTTP Request Rate excess, input-size rejection without a documented status, public-cloud 5 MB labelled Low Latency |
+
 ## Boomi alignment
 
 Outcome of the Boomi alignment council (see Council). Sources are public Boomi docs that the experts
@@ -773,17 +858,17 @@ not rely on it.
 | D1 | No global request cap. Test Mode: at most 100 documents per inbound connector step and 10 MB aggregate across the test execution; `TEST_MODE_MAX_DOCS` / `TEST_MODE_MAX_BYTES` with Enhanced Test Mode [process testing]. Web Services Server: at most 100 returned documents [WSS operation]. A Boomi test sends no request payload; it runs the saved process | unchanged. Boomi counts work done; Nurtuo bounds the result returned to the control plane. Boomi's numbers are references only |
 | D2 | Component API: one component per create or update, at most 10 MB of XML; versioned GET; at most 5 BULK GET requests [Component object], [Component API] | unchanged. Uncapped revision writes are a deliberate compatibility difference (owner requirement) |
 | D3 | No login body limit documented. Account lockout after six failed sign-ins, indefinite, not configurable [password policy]. Gateway Request Content Limit policy is opt-in, 413 on excess [request content limit] | unchanged. No Boomi equivalent verified. Nurtuo's throttle and lockout stay; Boomi's indefinite lockout is not imported |
-| D4 | Limits in `container.properties` and per-attachment quotas, validated in the UI, mostly applied on restart. Some limits are lower-only (`maxTestMessages`), others raisable (Test Mode quotas, HTTP Request Rate, API Request Input Size); negative means unlimited for Test Mode [process testing], [attachment quotas], [advanced properties] | recommended default kept; tunable list added; **open**: Q-threshold, Q-D7, Q-labels |
-| D5 | Test Mode limits enforced in the runtime at the inbound step; error on excess; "Retry just the 100 documents" at the Start step; forked JVM per execution [process testing], [forked execution] | unchanged. A "first N documents" retry is a possible later UX decision |
+| D4 | Limits in `container.properties` and per-attachment quotas, validated in the UI, mostly applied on restart. Some limits are lower-only (`maxTestMessages`), others raisable (Test Mode quotas, HTTP Request Rate, API Request Input Size); negative means unlimited for Test Mode [process testing], [attachment quotas], [advanced properties] | recommended default kept; raisable dimension groups (a)-(c) listed; Q-threshold, Q-D7 decided by Łukasz; clarification, not a formal change (Q-labels) |
+| D5 | Test Mode: a document count limit per inbound connector step and a separate execution-wide byte quota (10 MB), with an error on excess; "Retry just the 100 documents" at the Start step; forked JVM per execution [process testing], [forked execution]. The docs describe the byte quota as an observable quota; they do not say where it is enforced or that it is checked before data is allocated | unchanged. D5 keeps the producer bound or tested isolation; Boomi's byte quota is not cited as a pre-allocation guarantee. A "first N documents" retry is a possible later UX decision |
 | D6 | Immutable component versions read one at a time; paged metadata queries; runtime documents spill to disk [Component API], [query paging], [Document Cache], [attachment quotas] | unchanged. Boomi's per-version reads are a reference shape for L2. Runtime disk overflow says nothing about digest parity |
-| D7 | Platform API: about 10 requests/s, 503 on excess [Platform API], [API errors]. Web Services Server HTTP Request Rate and input size, unlimited by default on private runtimes, 503 on excess; 5 MB / 5-20 requests/s per node on public clouds [attachment quotas], [public clouds]. Shared Web Server queues requests in heap with no queue limit [Shared Web Server] | unchanged; **open**: Q-D7. Listener figures go to the runtime follow-up (V10) |
+| D7 | Platform API: about 10 requests/s, 503 on excess [Platform API], [API errors]. Web Services Server quotas, unlimited by default on private runtimes [attachment quotas]: **HTTP Request Rate**, with 503 on rate excess; **input size**, where an oversized request is rejected and no status code is specified. Public clouds: 5 MB input size for **Low Latency** mode, 5-20 requests/s per node [attachment quotas], [public clouds]. Shared Web Server queues requests in heap with no queue limit [Shared Web Server] | unchanged; raise with evidence decided by Łukasz (Q-D7). Listener figures go to the runtime follow-up (V10) |
 | D8 | Environment Extensions: write-only encrypted fields (`encryptedValueSet`), per-field partial update (omit keeps), environment-management privileges, encryption at entry, optional KMS and external secrets [environment extensions object], [environment extensions API], [setting extensions], [password encryption], [KMS], [secrets management]. No destination binding documented | unchanged; **stronger than Boomi** (S1, S2) |
 | D9 | Passwords are fields of the connection or its extension. `useDefault="true"` reverts to the component value [environment extensions object] | unchanged. `null` deletes with no fallback, unlike Boomi's revert |
 | D10 | Encrypted values only in password-typed fields, plus user-markable "Encrypt" custom properties; no placement check documented [environment extensions object], [SFTP connection] | unchanged; **stronger than Boomi** (S5) |
 | D11 | SFTP Remote Directory is optional and overridable by a document property; it is a working directory, not a boundary [SFTP connection], [SFTP V2 migration] | unchanged |
 | D12 | SFTP Known Host Entry is one pasted line; a blank entry skips host-key validation; no `known_hosts` file, no scan; no per-dial egress or rebinding control documented [SFTP connection] | unchanged; **stronger than Boomi** (S3, S4) |
 | D13 | Listeners restart after an extension update; secret cache invalidation for rotation [process extension values], [secrets management]. Nothing documented about an execution already running | unchanged. No Boomi guarantee for the deletion race verified |
-| D14 | 512 MB default heap, up to 80% of RAM; forked JVMs contain an OOM; low-memory mode flushes documents to disk; overflow sizes; 503 when busy [heap], [forked execution], [advanced properties], [resource considerations], [attachment quotas], [API errors] | mechanism kept. Boomi's quantities measure JVM pressure and cannot size a Nurtuo JSON upload; **open**: Q-threshold, Q-labels |
+| D14 | 512 MB default heap, up to 80% of RAM; forked JVMs contain an OOM; low-memory mode flushes documents to disk; overflow sizes; 503 when busy [heap], [forked execution], [advanced properties], [resource considerations], [attachment quotas], [API errors] | mechanism kept. Boomi's quantities measure JVM pressure and cannot size a Nurtuo JSON upload; threshold raisable up to the coded maximum (Q-threshold, decided by Łukasz); clarification, not a formal change (Q-labels) |
 
 ### Stronger than Boomi's documented guarantees, kept by agreement of both experts
 
@@ -814,7 +899,8 @@ robustness rows at the end.
 
 No public Boomi equivalent was verified for: a login parser body limit (D3), a pre-child credential
 placement check (D10), atomic admission versus deletion (D13), the pre-allocation reservation
-algorithm (D14), or a requirement to re-enter a password after a host change (D8; the experts
+algorithm (D14), pre-allocation enforcement of the Test Mode byte quota (D5), a status code for an
+oversized Web Services Server request (D7), or a requirement to re-enter a password after a host change (D8; the experts
 inferred from the per-field partial-update rule that the password is kept).
 
 [process testing]: https://help.boomi.com/docs/Atomsphere/Integration/Process%20building/c-atm-Process_testing_d7682d9d-8515-4069-a6da-132880d29755
@@ -844,11 +930,24 @@ inferred from the per-field partial-update rule that the password is kept).
 [heap]: https://help.boomi.com/docs/Atomsphere/Integration/Integration%20management/t-atm-Increasing_memory_available_to_Atom_or_Molecule_ccb54dde-49f1-4c9f-b1d6-1b0305c2a7ef
 [resource considerations]: https://help.boomi.com/docs/Atomsphere/Integration/Integration%20management/Performance_and_resource_considerations
 
-## Open questions
+## Open questions (closed)
 
 Owner decisions left open by the Boomi alignment council. After Rounds 4 and 5 each expert had
-accepted the other's previous text, so their final rules point in opposite directions. Both options
-are given; this spec does not choose.
+accepted the other's previous text, so their final rules pointed in opposite directions. **Łukasz
+decided all three on 2026-11-24 at 21:06 Europe/Warsaw.** The decisions are written into D4, D7 and
+D14 and the Design sections; the options are kept below as record.
+
+- **Decided:**
+  - **Q-threshold:** operators **may raise** the isolation threshold, up to the coded maximum set
+    after benchmarks (Option A). Lowering stays allowed. Until benchmarks set a higher coded maximum
+    it equals the initial 8 MiB.
+  - **Q-D7:** the ingress, queue and rate settings, including the failed-authentication rate,
+    **may be raised with evidence** (Option A): finite values, validated at startup against
+    physical capacity with gateway headroom reserved. The login throttle and lockout still apply.
+  - **Q-labels:** D4 and D14 are a **clarification** ("doprecyzowanie") of the approved decisions,
+    not a formal change (Option B).
+
+Options as presented to Łukasz:
 
 - **Q-threshold (D4, D14): may operators raise the 8 MiB isolation threshold?**
   - Option A (Opus, Round 5): yes, but only up to a validated maximum recorded in code after
@@ -875,7 +974,7 @@ are given; this spec does not choose.
   - Option B (Astra, Round 5): `unchanged` for both. D4 already allows evidence-backed raises of
     listed dimensions, and the edits name them and the review needed for a threshold raise.
   - Either way the D4 and D14 rows above carry the agreed text, and Łukasz approves them like every
-    D item.
+    D item (approved 2026-11-24).
 
 Earlier open questions:
 
@@ -903,7 +1002,7 @@ Earlier open questions:
 - Council statements: Astra Round 1, Opus Round 2, Astra Round 3 (PR comments on this spec's pull
   request).
 - Codex review and Astra review of PR #90, owner decision comment (links in Status).
-- Cross-provider review of this spec (Status, "Cross-provider review").
+- Cross-provider reviews of this spec (Status, "Cross-provider review").
 - Boomi alignment council: Opus and Astra, Rounds 1-5 (council working files, not committed). Boomi
   doc URLs are listed under "Boomi alignment".
 
@@ -934,3 +1033,17 @@ Earlier open questions:
   revert. The historical D2, D4 and D12 divergences are closed on the recommended defaults, and the
   earlier votes are kept. Q-threshold, Q-D7 and Q-labels are open questions for Łukasz. Status still
   draft, needs owner decision.
+- 2026-11-24: Claude Opus's spec-only edit recording Łukasz's decisions and answering the Codex
+  (gpt-6.2-sol) review https://github.com/nurtuo/nurtuo/pull/92#issuecomment-7142837972 (0 blockers,
+  2 majors, 2 nits). **D1-D14 approved by Łukasz on 2026-11-24**: the Boomi direction and every other
+  recommendation earlier that day, and at 21:06 Europe/Warsaw Q-threshold (operator may raise the
+  isolation threshold up to the coded maximum set after benchmarks), Q-D7 (ingress, queue and rate
+  settings, including the failed-authentication rate, may be raised with evidence) and Q-labels (D4
+  and D14 are clarifications, not formal changes). Review fixes: D4 now lists three raisable groups,
+  (a) Run, (b) isolation threshold, (c) D7 settings, as the complete list, so the Run settings no
+  longer read as the only raisable ones and groups (b) and (c) are not tighten-only (major 1); the D7
+  429 triggers on STABLE routes (per-peer in-flight limit, failed-authentication bucket) get affected
+  operations, error precedence, `Retry-After`, OpenAPI and upgrade-note rollout, and test T25
+  (major 2); D5's Boomi comparison treats the Test Mode byte quota as observable only (nit 1); D7's
+  Boomi row ties 503 to HTTP Request Rate excess and labels the public-cloud 5 MB figure Low Latency
+  (nit 2). Open questions closed. Status approved; the PR is not merged.
