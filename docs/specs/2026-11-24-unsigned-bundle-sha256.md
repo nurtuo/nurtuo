@@ -13,7 +13,7 @@ With `bundle_dir` set and `trusted_keys` empty, `DirBundleSource` reads `<bundle
 
 | | |
 |---|---|
-| Pull requests | this spec (docs only). Implementation will use `Closes #61` on a later `feat/` or `fix/` PR after approval |
+| Pull requests | https://github.com/nurtuo/nurtuo/pull/76 (this spec; docs only). Implementation will use `Closes #61` on a later `feat/` or `fix/` PR after approval |
 | ADRs | [ADR 0006](../adr/0006-bundle-format-and-domain-separated-signature.md) (signed bundles, hash pinning), [ADR 0009](../adr/0009-outbound-only-runtime-gateway.md) (the digest arrives over the authenticated gateway) |
 | Issues | https://github.com/nurtuo/nurtuo/issues/61. Boundaries: #64 (`FetchArtifact`, standalone `BundleDir`, signing key), #59 and #60 (parallel work), #62 (follows this one, same parent spec), #67 (tracker) |
 | Code | `core/runtime/internal/runtime/deployer.go` (`BundleSource`, `DirBundleSource`, `SignedBundleSource`, `EngineDeployer.Apply`), `core/runtime/internal/runtime/run.go` (`RunWith`, `unconfiguredDeployer`), `core/runtime/internal/runtime/config.go` (`Config.BundleDir`, `Config.TrustedKeys`, `Validate`, `trustedKeys`), `core/runtime/cmd/nurtuo/service.go` (`runServiceAction`, case `"install"`), `core/control-plane/src/api.ts` (`digestOf`, `canonicalJson`, `POST /v1/components/{id}/revisions` with optional `digest`) |
