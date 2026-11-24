@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import assert from "node:assert/strict";
-import { createHash, generateKeyPairSync } from "node:crypto";
+import { createHash, generateKeyPairSync, verify } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { createServer } from "node:http2";
 import type { AddressInfo } from "node:net";
-import { after, before, test } from "node:test";
+import { after, before, test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { create } from "@bufbuild/protobuf";
 import { Code, ConnectError, createClient } from "@connectrpc/connect";
-import { createGrpcTransport } from "@connectrpc/connect-node";
+import { connectNodeAdapter, createGrpcTransport } from "@connectrpc/connect-node";
 import { runtimev1 as pb } from "@nurtuo/proto";
 import { digestOf } from "./api.js";
 import { packBundle } from "./bundle.js";
@@ -30,16 +31,20 @@ server.on("session", (s) => { h2sessions.add(s); });
 after(async () => { gw.closeAll(); for (const s of h2sessions) s.destroy(); await new Promise((r) => server.close(r)); });
 
 /** A runtime-side client: real generated stub over mTLS. */
+function runtimeClient(port: number, certName: string, keyName = certName.replace(".pem", ".key"), ca = "ca.pem") {
+  return createClient(pb.RuntimeGatewayService, createGrpcTransport({
+    baseUrl: `https://localhost:${port}`,
+    nodeOptions: { cert: cert(certName), key: cert(keyName), ca: cert(ca) },
+  }));
+}
+
 class Rt {
   private q: pb.ConnectRequest[] = [];
   private wake?: () => void;
   private done = false;
   private it: AsyncIterator<pb.ConnectResponse>;
   constructor(certName: string, keyName = certName.replace(".pem", ".key"), ca = "ca.pem") {
-    const client = createClient(pb.RuntimeGatewayService, createGrpcTransport({
-      baseUrl: `https://localhost:${port}`,
-      nodeOptions: { cert: cert(certName), key: cert(keyName), ca: cert(ca) },
-    }));
+    const client = runtimeClient(port, certName, keyName, ca);
     const self = this;
     this.it = client.connect((async function* () {
       for (;;) {
@@ -129,6 +134,123 @@ test("optional bundle signing advertises stable archive digests for derived revi
   // The invalid revision is retried, the derived revision is cached, and the external one is skipped.
   assert.equal(lookup.mock.callCount(), 3);
   assert.deepEqual(await digests(new Gateway(repo, { signingKey })), signed);
+});
+
+async function listen(t: TestContext, server: ReturnType<typeof createGatewayServer> | ReturnType<typeof createServer>) {
+  const sessions = new Set<{ destroy(): void }>();
+  server.on("session", (session) => {
+    sessions.add(session);
+    session.once("close", () => sessions.delete(session));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(async () => {
+    for (const session of sessions) session.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+  return (server.address() as AddressInfo).port;
+}
+
+const fetchClient = (client: ReturnType<typeof runtimeClient>) => async (digest: string) => {
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of client.fetchArtifact({ digest }, { timeoutMs: 5000 })) chunks.push(chunk.data);
+  return chunks;
+};
+
+test("FetchArtifact serves signed, bounded chunks only to a runtime that currently needs the digest", async (t) => {
+  const repo = new MemoryRepository();
+  for (const id of ["rt-1", "rt-2"]) await repo.upsertRuntime({ id, name: id, environment: "dev" });
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const publicKeyBytes = publicKey.export({ type: "spki", format: "der" }).subarray(-32);
+  const keyId = createHash("sha256").update(publicKeyBytes).digest("hex").slice(0, 16);
+  async function deploy(name: string, content: unknown, digest = digestOf(content)) {
+    const component = await repo.createComponent({ name, kind: "flow", description: "" });
+    const revision = (await repo.createRevision(component.id, content, digest))!;
+    await repo.deploy({ componentId: component.id, revisionId: revision.id, runtimeId: "rt-1" });
+    return component.id;
+  }
+  const content = { large: "x".repeat(1024 * 1024) };
+  const componentId = await deploy("derived", content);
+  const external = `sha256:${"a".repeat(64)}`;
+  await deploy("external", {}, external);
+  await deploy("invalid", []);
+
+  const opts = { signingKey: { privateKey, keyId } };
+  const state = await new Gateway(repo, opts).desiredStateMessage("rt-1");
+  const digest = state!.deployments.find((d) => d.deploymentId === componentId)!.bundleDigest;
+  assert.notEqual(digest, digestOf(content));
+
+  // Fetch against a fresh gateway so the archive must first be reconstructed from desired state.
+  const address = await listen(t, createGatewayServer(new Gateway(repo, opts), {
+    cert: cert("server.pem"), key: cert("server.key"), ca: cert("ca.pem"),
+  }));
+  const owner = runtimeClient(address, "rt-1.pem");
+  const fetch = fetchClient(owner);
+  const chunks = await fetch(digest.slice("sha256:".length));
+  assert.ok(chunks.length > 1);
+  assert.ok(chunks.every((chunk) => chunk.length > 0 && chunk.length <= 1024 * 1024));
+  const archive = Buffer.concat(chunks);
+  assert.equal(`sha256:${createHash("sha256").update(archive).digest("hex")}`, digest);
+  const entries = new Map<string, Buffer>();
+  for (let offset = 0; archive[offset] !== 0;) {
+    const name = archive.toString("ascii", offset, offset + 100).split("\0")[0]!;
+    const size = parseInt(archive.toString("ascii", offset + 124, offset + 136), 8);
+    entries.set(name, archive.subarray(offset + 512, offset + 512 + size));
+    offset += 512 + Math.ceil(size / 512) * 512;
+  }
+  const manifest = entries.get("manifest.json")!;
+  const signature = JSON.parse(entries.get("manifest.sig")!.toString());
+  assert.equal(signature.keyId, keyId);
+  assert.equal(signature.alg, "ed25519");
+  assert.ok(verify(null, Buffer.concat([Buffer.from("nurtuo-bundle-v1\n"), manifest]), publicKey, Buffer.from(signature.sig, "base64")));
+
+  const notFound = { code: Code.NotFound, rawMessage: "artifact not found for this runtime" };
+  const fetchOther = fetchClient(runtimeClient(address, "rt-2.pem"));
+  await assert.rejects(fetchOther(digest), notFound);
+  await assert.rejects(fetchOther(`sha256:${"b".repeat(64)}`), notFound);
+  await assert.rejects(fetch(digestOf(content)), notFound);
+  for (const malformed of ["sha256:bad", digest.toUpperCase(), `${digest}\n`]) {
+    await assert.rejects(fetch(malformed), { code: Code.InvalidArgument });
+  }
+  await assert.rejects(fetch(external), {
+    code: Code.NotFound, rawMessage: "artifact is not stored by the control plane; place it in bundle_dir",
+  });
+  await assert.rejects(fetch(digestOf([])), {
+    code: Code.FailedPrecondition, rawMessage: "bundle: component document must be a JSON object",
+  });
+  await assert.rejects(fetchClient(runtimeClient(address, "rogue.pem"))(digest),
+    (error) => error instanceof ConnectError && [Code.Canceled, Code.Unavailable].includes(error.code));
+  const cancel = new AbortController();
+  const stream = owner.fetchArtifact({ digest }, { signal: cancel.signal, timeoutMs: 5000 })[Symbol.asyncIterator]();
+  assert.equal((await stream.next()).done, false);
+  cancel.abort();
+  await assert.rejects(stream.next(), { code: Code.Canceled });
+
+  const revised = (await repo.createRevision(componentId, {}, digestOf({})))!;
+  await repo.deploy({ componentId, revisionId: revised.id, runtimeId: "rt-1" });
+  await assert.rejects(fetch(digest), notFound);
+});
+
+test("FetchArtifact fails closed without a signing key or without a certificate identity", async (t) => {
+  const digest = digestOf({});
+  const repo = new MemoryRepository();
+  await repo.upsertRuntime({ id: "rt-1", name: "rt-1", environment: "dev" });
+  const component = await repo.createComponent({ name: "unsigned", kind: "flow", description: "" });
+  const revision = (await repo.createRevision(component.id, {}, digest))!;
+  await repo.deploy({ componentId: component.id, revisionId: revision.id, runtimeId: "rt-1" });
+  const gateway = new Gateway(repo);
+  const secureAddress = await listen(t, createGatewayServer(gateway, {
+    cert: cert("server.pem"), key: cert("server.key"), ca: cert("ca.pem"),
+  }));
+  await assert.rejects(fetchClient(runtimeClient(secureAddress, "rt-1.pem"))(digest), {
+    code: Code.FailedPrecondition,
+    rawMessage: "control plane has no bundle signing key configured (NURTUO_BUNDLE_SIGNING_KEY_FILE)",
+  });
+
+  const address = await listen(t, createServer(connectNodeAdapter({ routes: (router) => gateway.register(router) })));
+  const anonymous = createClient(pb.RuntimeGatewayService, createGrpcTransport({ baseUrl: `http://127.0.0.1:${address}` }));
+  await assert.rejects(fetchClient(anonymous)(digest), {
+    code: Code.Unauthenticated, rawMessage: "client certificate carries no runtime identity",
+  });
 });
 
 test("runtimeIdFromCert prefers URI SAN over CN", () => {
