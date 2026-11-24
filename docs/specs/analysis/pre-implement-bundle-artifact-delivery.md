@@ -153,6 +153,9 @@ Applies once the owner has answered the blockers. These items make the verdict `
 1. Add the non-ASCII / number-heavy cross-language fixture (TS writes, Go `Verify` accepts).
 2. Add a CI step that builds the control plane and runs the interop and standalone e2e tests, or
    restate the CI acceptance criterion as locally verified.
+
+   **2026-11-24 update.** The approved spec now requires local verification until
+   [#89](https://github.com/nurtuo/nurtuo/issues/89) adds CI coverage. Both suites still ship with #64.
 3. Rebase Phase 2 on PR #75 (now merged); keep the `Client` conn-field change minimal.
 4. `loadOrGenSigningKey`: on `EEXIST`, re-read instead of failing.
 5. Re-check #61's merged design before Phase 2; reuse its digest helper if present.

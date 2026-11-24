@@ -467,8 +467,8 @@ the matching key, reaches `running` with an empty `bundle_dir`.
    Verified by `fetch_test.go` and `TestRunWithFetchesSignedBundle`, run with
    `cd core/runtime && go test -race ./internal/runtime/... ./internal/gateway/...`.
 8. Interop: `TestFetchArtifactSignedByControlPlane` and the failure cases against the real TS
-   gateway. Verified by `go test -race ./internal/interop/...` (needs Node 20+ and the built
-   control plane, as today).
+   gateway. Verify locally with `go test -race ./internal/interop/...` (needs Node 20+ and the built
+   control plane). The tests ship with #64. CI execution is tracked in [#89](https://github.com/nurtuo/nurtuo/issues/89).
 9. Docs: `interop.md#artifacts`, the `operations.md` `trusted_keys` row and the distributed
    "enable signing" procedure. Verified by `node scripts/check-docs-links.mjs`.
 
@@ -486,9 +486,10 @@ Exit: `nurtuo standalone` deploys reach `running` with no manual step; key and d
 13. Flip `TestStandaloneE2EHandshakeAndDeploy` to expect `running` with a real flow and the
     archive cached in `bundles/`, and add a restart leg (same key, same digest, cache hit).
     Remove `TODO(#64)`. Update `operations.md` (standalone limitation removed, data-dir table)
-    and the release note. Verified by
+    and the release note. Verify locally with
     `cd core/runtime && go test -race ./cmd/nurtuo -run TestStandaloneE2E` and
-    `node scripts/check-docs-links.mjs`.
+    `node scripts/check-docs-links.mjs`. The test changes ship with #64. CI execution is tracked in
+    [#89](https://github.com/nurtuo/nurtuo/issues/89).
 14. Windows (D11): if #57 has landed, `Ensure` calls `secrets.EnsurePrivateDir(d.Bundles)`.
     Otherwise this step is a follow-up note on #57, and `operations.md` keeps the multi-user
     Windows warning. Verified by #57's Windows test once available. Per D11 (decided), this step does not block shipping.
@@ -498,8 +499,10 @@ Exit: `nurtuo standalone` deploys reach `running` with no manual step; key and d
 - WHEN a user deploys a flow revision in `nurtuo standalone` on a fresh data dir THEN the
   deployment reaches `running` without anything being copied into `bundle_dir`, and
   `<data-dir>/bundles/<hex>.bundle` exists, where `<hex>` is the digest sent in `DesiredState`.
-- WHEN a CI job runs the standalone or interop stack against an empty `bundle_dir` THEN deployments
-  reach `running` (no out-of-band copy step in the test).
+- WHEN the standalone and interop tests run against an empty `bundle_dir` THEN deployments
+  reach `running` without an out-of-band copy step. Verify both suites locally with a built
+  control plane until the CI job in [#89](https://github.com/nurtuo/nurtuo/issues/89) lands.
+  The tests ship with #64 and may skip in the current `go` job.
 - WHEN `nurtuo standalone` starts on a data dir THEN `bundles/` exists with mode `0700` and
   `secrets/bundle-signing.key` exists with mode `0600` (Unix); WHEN it starts again THEN the key
   file content and the runtime's `TrustedKeys` are unchanged and no second key is created.
@@ -543,13 +546,13 @@ No key material is committed or printed.
 | `core/runtime/internal/runtime/fetch_test.go` | `FetchingBundleSource` with a fake `FetchFunc` and a real `bundle.Pack` archive (key from `bundle.GenerateKey` in-test): cache hit makes no fetch; miss → fetch, rename, `<hex>.bundle` mode `0600`; digest mismatch → error, no file, no temp left; bad signature → error, file removed; existing file with bad signature replaced only by a verified fetch; oversize → error; invalid digest rejected before any fetch; `.fetch-*` leftovers cleaned | `cd core/runtime && go test -race ./internal/runtime -run Fetch` | self-contained |
 | `TestSignedSourceMissingFileError` → `TestRunWithFetchesSignedBundle` in `internal/runtime/fetch_test.go` | characterization (step 5), then `RunWith` with `BundleDir` + `TrustedKeys` and an `Options.Gateway` bufconn fake that serves the archive: status `applying` → `running`; without `TrustedKeys` the fake's `FetchArtifact` is never called | same package | ctx cancel for cleanup |
 | existing `TestNoBundleDirNeverRunning`, `TestRunWithoutBundleDirReportsError` (`placeholder_test.go`) | #71 unchanged | `go test -race ./internal/runtime/...` | regression |
-| `TestFetchArtifactSignedByControlPlane` in `internal/interop/interop_test.go` | real TS gateway (`startControlPlane` with `extraEnv` `NURTUO_BUNDLE_SIGNING_KEY_FILE=<tempdir file>`), runtime trusting the matching public key, empty `bundle_dir`: deployment `running`, flow serving, archive cached; second deployment of a new revision fetched too | `cd core/runtime && go test -race ./internal/interop/...` | needs Node 20+ and built control plane; skips otherwise, as today |
+| `TestFetchArtifactSignedByControlPlane` in `internal/interop/interop_test.go` | real TS gateway (`startControlPlane` with `extraEnv` `NURTUO_BUNDLE_SIGNING_KEY_FILE=<tempdir file>`), runtime trusting the matching public key, empty `bundle_dir`: deployment `running`, flow serving, archive cached; second deployment of a new revision fetched too | `cd core/runtime && go test -race ./internal/interop/...` | verify locally with Node 20+ and a built control plane. May skip in the current `go` job until [#89](https://github.com/nurtuo/nurtuo/issues/89) |
 | `TestFetchArtifactWrongKeyRejected`, `TestFetchArtifactForeignDigestNotFound`, `TestFetchArtifactNoSigningKey` (interop) | runtime trusts another key → `failed` with "signature verification failed"; rt-2 fetching rt-1's digest → `NOT_FOUND`; control plane without key → `failed` with "no bundle signing key" | same | |
 | `TestSignedBundleArtifactPath` (existing, message assertion updated) | externally supplied digest still works from `bundle_dir`; the missing case now carries the `NOT_FOUND` text | same | |
 | `TestDataDirsEnsureBundles` in `cmd/nurtuo/standalone_test.go` | `bundles/` created `0700`; a pre-existing `0755` dir tightened to `0700` (Unix; skipped on Windows until #57) | `cd core/runtime && go test -race ./cmd/nurtuo -run TestDataDirs` | `t.TempDir()` |
 | `TestBundleSigningKeyStableAndPrivate` (new) and `TestLocalBootstrapIdempotentAndUsableForMTLS` (extended) | key created `0600`; second `Bootstrap` returns the same public key and file bytes; corrupt file → error, file untouched; `bundle.DecodePrivateKey` accepts it; no key bytes in the error | `go test -race ./cmd/nurtuo -run 'Bootstrap|SigningKey'` | |
 | `TestControlPlaneEnvWiresGatewayAndAuth` (extended), `TestStandaloneRuntimeConfig` (new) | env contains `NURTUO_BUNDLE_SIGNING_KEY_FILE=<secrets>/bundle-signing.key`; config has `BundleDir = <root>/bundles` and `TrustedKeys = [pub]` | `go test ./cmd/nurtuo -run 'ControlPlaneEnv|StandaloneRuntimeConfig'` | |
-| `TestStandaloneE2EHandshakeAndDeploy` (modified) | full stack: a valid flow revision deploys to `running`; `bundles/<hex>.bundle` exists; restart the stack on the same data dir → same key, deployment `running` again, no second download (the file mtime is unchanged) | `cd core/runtime && go test -race ./cmd/nurtuo -run TestStandaloneE2E` | skipped with `-short`, without `node` or without the control-plane `dist`, as today |
+| `TestStandaloneE2EHandshakeAndDeploy` (modified) | full stack: a valid flow revision deploys to `running`; `bundles/<hex>.bundle` exists; restart the stack on the same data dir → same key, deployment `running` again, no second download (the file mtime is unchanged) | `cd core/runtime && go test -race ./cmd/nurtuo -run TestStandaloneE2E` | verify locally until [#89](https://github.com/nurtuo/nurtuo/issues/89). Skips with `-short`, without `node` or without the control-plane `dist`, including in the current `go` job if the build is absent |
 
 ## Decisions
 
@@ -579,7 +582,7 @@ approval.
 
 | # | Scenario (concrete) | Severity | Area | Mitigation / follow-up |
 |---|---|---|---|---|
-| 1 | TS writer differs from Go `Pack` in an edge case (non-ASCII key order: JS sorts UTF-16 units, Go sorts bytes; number literals normalised by `JSON.parse`; U+2028 escaping) → bytes differ from Go, though `Verify` still accepts because it checks hashes, not canonical form | medium | control plane / format | golden test on ASCII input; interop test is the real gate; document that TS output is self-deterministic, not byte-equal to Go for every input |
+| 1 | TS writer differs from Go `Pack` in an edge case (non-ASCII key order: JS sorts UTF-16 units, Go sorts bytes; number literals normalised by `JSON.parse`; U+2028 escaping) → bytes differ from Go, though `Verify` still accepts because it checks hashes, not canonical form | medium | control plane / format | golden test on ASCII input; verify compatibility with the interop test locally until [#89](https://github.com/nurtuo/nurtuo/issues/89) adds CI coverage; document that TS output is self-deterministic, not byte-equal to Go for every input |
 | 2 | (D11, accepted) On Windows before #57, another local user reads `secrets\bundle-signing.key` and forges bundles | high (multi-user Windows only) | security | D11; #57; documented warning |
 | 3 | A 200 MiB bundle downloads inside `Apply`. With #75 (merged) this no longer runs on the receive goroutine; a long download only delays that deployment's apply | low | runtime | Phase 2 is built on #75; chunked stream keeps memory flat; check apply behaviour while a fetch is running |
 | 4 | Transient fetch failure while connected leaves the deployment `failed` until the next desired state or reconnect (no retry timer) | medium | runtime / supervisor | existing supervisor behaviour; out of scope; candidate follow-up |
@@ -620,3 +623,4 @@ approval.
 - 2026-11-24: created as draft.
 - 2026-11-24: approved; Łukasz accepted D5, D7, D9, D11 (TS packer, opt-in NURTUO_BUNDLE_SIGNING_KEY_FILE, signed-only FetchArtifact, do not block Windows on #57). D2, D3, D6 unchanged. Merged `main` (#75 landed; #57 spec approved in #73).
 - 2026-11-24: merged `main` after #85; retargeted the #57 spec link to `docs/specs/implemented/`.
+- 2026-11-24: after Recenzent's major on #79, moved CI coverage to [#89](https://github.com/nurtuo/nurtuo/issues/89) and specified local verification in the interim.
