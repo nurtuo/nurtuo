@@ -83,6 +83,11 @@ func RunWith(ctx context.Context, cfg Config, o Options) error {
 		if err != nil {
 			return err
 		}
+		unlock, err := lockStateDir(d)
+		if err != nil {
+			return err
+		}
+		defer unlock()
 		stateDir = d
 	}
 	dep := o.Deployer

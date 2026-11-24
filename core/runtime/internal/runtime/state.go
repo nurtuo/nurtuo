@@ -49,16 +49,11 @@ func lockStateDir(stateDir string) (func(), error) {
 // openPersistentQueues opens the embedded JetStream backend with its data under
 // <stateDir>/jetstream. The returned close function stops the backend.
 func openPersistentQueues(stateDir string) (queue.QueueBackend, func(), error) {
-	unlock, err := lockStateDir(stateDir)
-	if err != nil {
-		return nil, nil, err
-	}
 	qb, err := natsjs.New(natsjs.Options{StoreDir: filepath.Join(stateDir, "jetstream")})
 	if err != nil {
-		unlock()
 		return nil, nil, fmt.Errorf("state_dir %s: open queue backend: %w", stateDir, err)
 	}
-	return qb, func() { _ = qb.Close(); unlock() }, nil
+	return qb, func() { _ = qb.Close() }, nil
 }
 
 // newSupervisor returns a supervisor whose applied revision is persisted in <stateDir>/revision

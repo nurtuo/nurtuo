@@ -205,3 +205,41 @@ func TestEnsureStateDirConfigured(t *testing.T) {
 		t.Fatalf("json reload: %+v %v", c, err)
 	}
 }
+
+func TestEnsureStateDirConfiguredYAMLDocuments(t *testing.T) {
+	for name, body := range map[string]string{
+		"flow mapping":    `{runtime_id: r, control_plane_url: "cp:1", cert_file: c, key_file: k, ca_file: ca}`,
+		"empty state dir": `{runtime_id: r, control_plane_url: "cp:1", cert_file: c, key_file: k, ca_file: ca, state_dir: ""}`,
+		"document end":    "---\nruntime_id: r\ncontrol_plane_url: cp:1\ncert_file: c\nkey_file: k\nca_file: ca\n...\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "runtime.yaml")
+			want := filepath.Join(dir, "state #1")
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if added, err := ensureStateDirConfigured(path, want, false); err != nil || !added {
+				t.Fatalf("added=%v err=%v", added, err)
+			}
+			if c, err := runtime.LoadConfig(path); err != nil || c.StateDir != want || c.CertFile != filepath.Join(dir, "c") {
+				t.Fatalf("reload: %+v %v", c, err)
+			}
+		})
+	}
+}
+
+func TestEnsureStateDirConfiguredPreservesInvalidOriginal(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "runtime.yaml")
+	original := "runtime_id: r\n"
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if added, err := ensureStateDirConfigured(path, filepath.Join(dir, "state"), false); err == nil || added {
+		t.Fatalf("added=%v err=%v, want validation failure", added, err)
+	}
+	if content, err := os.ReadFile(path); err != nil || string(content) != original {
+		t.Fatalf("original config changed: %q, %v", content, err)
+	}
+}

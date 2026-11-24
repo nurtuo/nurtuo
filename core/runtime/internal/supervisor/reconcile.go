@@ -41,11 +41,12 @@ type Reporter func(Status)
 type Supervisor struct {
 	d Deployer
 
-	applyMu  sync.Mutex // serialises Reconcile; held for the whole (possibly slow) apply
-	mu       sync.Mutex // guards revision and last; held only briefly, never across deployer calls
-	revision uint64
-	revPath  string            // when set, the applied revision is persisted here
-	last     map[string]string // deployment -> last reported state
+	applyMu    sync.Mutex // serialises Reconcile; held for the whole (possibly slow) apply
+	mu         sync.Mutex // guards revision, reconciled and last; held only briefly, never across deployer calls
+	revision   uint64
+	reconciled bool
+	revPath    string            // when set, the applied revision is persisted here
+	last       map[string]string // deployment -> last reported state
 }
 
 func New(d Deployer) *Supervisor { return &Supervisor{d: d, last: map[string]string{}} }
@@ -87,10 +88,20 @@ func (s *Supervisor) ReportChanges(ctx context.Context, report Reporter) {
 	}
 }
 
-// Revision is the last fully applied desired-state revision (sent in Hello).
+// Revision is the last fully applied desired-state revision.
 func (s *Supervisor) Revision() uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.revision
+}
+
+// liveRevision requests a replay until this process has applied desired state.
+func (s *Supervisor) liveRevision() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.reconciled {
+		return 0
+	}
 	return s.revision
 }
 
@@ -152,6 +163,7 @@ func (s *Supervisor) Reconcile(ctx context.Context, revision uint64, desired []D
 	if len(errs) > 0 {
 		return errors.Join(errs...)
 	}
+	s.reconciled = true
 	s.revision = revision
 	if s.revPath != "" {
 		if err := saveRevision(s.revPath, revision); err != nil {

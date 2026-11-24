@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,10 +16,15 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/test/bufconn"
 
+	"github.com/nurtuo/nurtuo/core/runtime/internal/engine"
+	"github.com/nurtuo/nurtuo/core/runtime/internal/engine/docs"
 	"github.com/nurtuo/nurtuo/core/runtime/internal/gateway"
 	"github.com/nurtuo/nurtuo/core/runtime/internal/queue"
 	"github.com/nurtuo/nurtuo/core/runtime/internal/supervisor"
+	"github.com/nurtuo/nurtuo/sdk/go/flow"
+	gatewayv1 "github.com/nurtuo/nurtuo/sdk/go/gen/nurtuo/runtime/v1"
 )
 
 func unreachableGateway(Config) (gateway.Config, error) {
@@ -97,23 +103,44 @@ func TestRunFailsWhenStateDirUnusable(t *testing.T) {
 			t.Fatalf("err = %v, want state_dir error", err)
 		}
 	})
-	t.Run("jetstream dir locked by another backend", func(t *testing.T) {
-		state := t.TempDir()
-		st, err := prepareStateDir(state)
-		if err != nil {
-			t.Fatal(err)
+	for _, persistentQueues := range []bool{true, false} {
+		name := "revision-only runtime holds lock"
+		if persistentQueues {
+			name = "JetStream runtime holds lock"
 		}
-		_, closeQ, err := openPersistentQueues(st)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer closeQ()
-		cfg := baseCfg()
-		cfg.StateDir, cfg.BundleDir = state, t.TempDir()
-		if err := runBriefly(t, cfg, Options{Gateway: unreachableGateway}); err == nil {
-			t.Fatal("want error: second backend on the same state_dir must not start (no memory fallback)")
-		}
-	})
+		t.Run(name, func(t *testing.T) {
+			cfg := baseCfg()
+			cfg.StateDir = t.TempDir()
+			if persistentQueues {
+				cfg.BundleDir = t.TempDir()
+			}
+			ready := make(chan struct{})
+			build := func(cfg Config) (gateway.Config, error) {
+				close(ready)
+				return unreachableGateway(cfg)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- RunWith(ctx, cfg, Options{Gateway: build}) }()
+			select {
+			case <-ready:
+			case err := <-done:
+				t.Fatalf("first runtime stopped: %v", err)
+			case <-time.After(10 * time.Second):
+				t.Fatal("first runtime did not start")
+			}
+			t.Cleanup(func() {
+				cancel()
+				if err := <-done; err != nil {
+					t.Errorf("first runtime: %v", err)
+				}
+			})
+			if err := runBriefly(t, cfg, Options{Gateway: unreachableGateway}); err == nil || !strings.Contains(err.Error(), "is in use") {
+				t.Fatalf("second runtime: got %v, want state_dir lock contention", err)
+			}
+		})
+	}
 	t.Run("corrupt revision file", func(t *testing.T) {
 		state := t.TempDir()
 		if err := os.WriteFile(filepath.Join(state, supervisor.RevisionFile), []byte("junk"), 0o600); err != nil {
@@ -162,47 +189,115 @@ func TestRunWithoutStateDirWarns(t *testing.T) {
 }
 
 func TestQueueMessagesSurviveRuntimeRestart(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	state, err := prepareStateDir(filepath.Join(t.TempDir(), "state"))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// First run: a message is accepted by the queue but no listener consumes it before the stop.
-	qb, closeQ, err := openPersistentQueues(state)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := qb.Ensure(ctx, queue.QueueDef{Name: "jobs"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := qb.Publish(ctx, "jobs", queue.Message{ID: "j1", Data: []byte("x")}); err != nil {
-		t.Fatal(err)
-	}
-	closeQ()
-
-	// Second run on the same state dir: the flow's queue listener receives the stored message.
-	qb2, closeQ2, err := openPersistentQueues(state)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer closeQ2()
+	cfg := baseCfg()
+	cfg.StateDir, cfg.BundleDir = t.TempDir(), t.TempDir()
 	bundle := `{"flows":[` + flowJSON("jobs", `{"type":"queue","queue":"jobs"}`) + `]}`
-	d := NewEngineDeployer(nil, qb2, func(context.Context, string) ([]byte, error) { return []byte(bundle), nil })
-	defer func() { _ = d.Shutdown(ctx) }()
-	if err := d.Apply(ctx, supervisor.Deployment{ID: "dep1", BundleDigest: "sha256:abc"}); err != nil {
+	bundle = strings.Replace(bundle, `"edges":{"s:default":"r"}`, `"edges":{"s:default":"m","m:default":"r"}`, 1)
+	bundle = strings.Replace(bundle, `{"id":"r"`, `{"id":"m","kind":"message","config":{"template":"seen"}},{"id":"r"`, 1)
+	if err := os.WriteFile(filepath.Join(cfg.BundleDir, "abc.json"), []byte(bundle), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	jobs, ok := d.Manager().Get("dep1/jobs")
-	if !ok {
-		t.Fatal("queue listener not started")
+
+	g := &placeholderGateway{
+		statuses: make(chan *gatewayv1.DeploymentStatus, 8),
+		desired: &gatewayv1.DesiredState{
+			Revision:    7,
+			Deployments: []*gatewayv1.Deployment{{DeploymentId: "dep1", BundleDigest: "sha256:abc"}},
+		},
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for jobs.Status().Received < 1 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
+	lis := bufconn.Listen(1 << 20)
+	gs := grpc.NewServer()
+	gatewayv1.RegisterRuntimeGatewayServiceServer(gs, g)
+	go func() { _ = gs.Serve(lis) }()
+	t.Cleanup(gs.Stop)
+	build := func(Config) (gateway.Config, error) {
+		return gateway.Config{
+			Target:    "passthrough:///bufnet",
+			RuntimeID: cfg.RuntimeID,
+			DialOpts: []grpc.DialOption{
+				grpc.WithTransportCredentials(insecure.NewCredentials()),
+				grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
+			},
+		}, nil
 	}
-	if st := jobs.Status(); st.Received != 1 || st.Failed != 0 {
-		t.Fatalf("queue status after restart = %+v, want the pre-restart message delivered", st)
+
+	run := func(eng *engine.Engine, verify func()) {
+		t.Helper()
+		runCtx, stop := context.WithCancel(ctx)
+		done := make(chan error, 1)
+		go func() { done <- RunWith(runCtx, cfg, Options{Gateway: build, Engine: eng}) }()
+		defer func() {
+			stop()
+			if err := <-done; err != nil {
+				t.Errorf("RunWith: %v", err)
+			}
+		}()
+		for {
+			select {
+			case st := <-g.statuses:
+				switch st.GetState() {
+				case supervisor.StateError:
+					t.Fatalf("deployment error: %v", st)
+				case supervisor.StateRunning:
+					verify()
+					return
+				}
+			case <-ctx.Done():
+				t.Fatal("gateway did not report a running deployment")
+			}
+		}
 	}
+
+	revisionPath := filepath.Join(cfg.StateDir, supervisor.RevisionFile)
+	run(nil, func() {
+		// The status may reach the gateway before the revision file is committed.
+		for {
+			rev, err := supervisor.LoadRevision(revisionPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if rev == g.desired.GetRevision() {
+				return
+			}
+			select {
+			case <-ctx.Done():
+				t.Fatalf("saved revision = %d, want %d", rev, g.desired.GetRevision())
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+	})
+
+	// Seed a queued message with no active listener, then reopen the same state directory.
+	func() {
+		qb, closeQ, err := openPersistentQueues(cfg.StateDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer closeQ()
+		if err := qb.Ensure(ctx, queue.QueueDef{Name: "jobs"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := qb.Publish(ctx, "jobs", queue.Message{ID: "j1", Data: []byte("x")}); err != nil {
+			t.Fatal(err)
+		}
+	}()
+
+	eng := engine.New()
+	delivered := make(chan string, 1)
+	eng.Registry.Register(flow.KindMessage, engine.PerDocument(func(_ context.Context, _ *engine.StepContext, d *docs.Document) (*docs.Document, error) {
+		delivered <- d.ID
+		return d, nil
+	}))
+	run(eng, func() {
+		select {
+		case id := <-delivered:
+			if id != "j1" {
+				t.Fatalf("delivered message = %q, want j1", id)
+			}
+		case <-ctx.Done():
+			t.Fatal("restarted listener did not process the queued message")
+		}
+	})
 }

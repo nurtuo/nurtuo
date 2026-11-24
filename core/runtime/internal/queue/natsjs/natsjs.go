@@ -282,9 +282,6 @@ func (b *Backend) Subscribe(_ context.Context, name string, opts queue.SubOpts, 
 	if err := s.attach(); err != nil {
 		return nil, err
 	}
-	b.mu.Lock()
-	b.subs[s] = struct{}{}
-	b.mu.Unlock()
 	return s, nil
 }
 
@@ -298,35 +295,76 @@ type subscription struct {
 	conc    int
 	h       queue.Handler
 
-	mu     sync.Mutex
-	sub    *nats.Subscription
-	closed bool
+	sub    *nats.Subscription // guarded by b.mu
+	closed bool               // guarded by b.mu
+	mu     sync.Mutex         // guards keys
 	keys   map[string]*keyLane
 }
 
 func (s *subscription) attach() error {
 	cb := func(m *nats.Msg) { s.dispatch(m) }
-	opts := []nats.SubOpt{
-		nats.ManualAck(),
-		nats.AckExplicit(),
-		nats.AckWait(s.b.ackWait),
-		nats.MaxDeliver(maxDeliveries(s.def)),
-		nats.MaxAckPending(s.conc),
-		nats.DeliverAll(),
+	stream := streamName(s.name)
+	// Serialize consumer setup when listeners start concurrently. Explicit creation
+	// keeps the durable alive when any one subscriber pauses or closes.
+	s.b.mu.Lock()
+	defer s.b.mu.Unlock()
+	if s.closed || s.sub != nil {
+		return nil
 	}
-	if _, err := s.b.js.ConsumerInfo(streamName(s.name), s.durable); err == nil {
-		opts = []nats.SubOpt{nats.Bind(streamName(s.name), s.durable), nats.ManualAck()}
-	} else {
-		opts = append(opts, nats.Durable(s.durable), nats.BindStream(streamName(s.name)))
+	info, err := s.b.js.ConsumerInfo(stream, s.durable)
+	switch {
+	case errors.Is(err, nats.ErrConsumerNotFound):
+		info, err = s.b.js.AddConsumer(stream, &nats.ConsumerConfig{
+			Durable: s.durable, DeliverSubject: nats.NewInbox(), DeliverGroup: s.durable,
+			FilterSubject: subject(s.name), AckPolicy: nats.AckExplicitPolicy,
+			AckWait: s.b.ackWait, MaxDeliver: maxDeliveries(s.def), MaxAckPending: s.conc,
+		})
+	case err == nil && info.Config.DeliverGroup == "":
+		// Upgrade the durable in place to preserve pending messages and ack state.
+		cfg := info.Config
+		cfg.DeliverGroup = s.durable
+		if _, err = s.b.js.UpdateConsumer(stream, &cfg); err == nil {
+			// Changing the subject refreshes JetStream's interest registration with the new group.
+			cfg.DeliverSubject = nats.NewInbox()
+			info, err = s.b.js.UpdateConsumer(stream, &cfg)
+		}
 	}
-	sub, err := s.b.js.Subscribe(subject(s.name), cb, opts...)
+	if err != nil {
+		return fmt.Errorf("natsjs: configure consumer: %w", err)
+	}
+	sub, err := s.b.js.QueueSubscribe(subject(s.name), info.Config.DeliverGroup, cb,
+		nats.Bind(stream, s.durable), nats.ManualAck())
 	if err != nil {
 		return fmt.Errorf("natsjs: subscribe: %w", err)
 	}
-	s.mu.Lock()
+	if err := s.waitPushBound(true); err != nil {
+		_ = sub.Unsubscribe()
+		return err
+	}
 	s.sub = sub
-	s.mu.Unlock()
+	s.b.subs[s] = struct{}{}
 	return nil
+}
+
+func (s *subscription) waitPushBound(want bool) error {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for {
+		info, err := s.b.js.ConsumerInfo(streamName(s.name), s.durable, nats.Context(ctx))
+		if err != nil {
+			return err
+		}
+		if info.PushBound == want {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("natsjs: wait for consumer %s binding: %w", s.durable, ctx.Err())
+		case <-tick.C:
+		}
+	}
 }
 
 // dispatch runs on the nats callback goroutine (in stream order). It enforces per-key
@@ -374,9 +412,8 @@ func (s *subscription) dispatch(m *nats.Msg) {
 	}()
 }
 
+// stop is called with the backend lock held when shutting down or deleting a queue.
 func (s *subscription) stop() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.closed = true
 	if s.sub != nil {
 		_ = s.sub.Unsubscribe() // durable consumer is kept on the server
@@ -386,34 +423,42 @@ func (s *subscription) stop() {
 
 // Pause detaches from the durable consumer; messages stay queued server-side.
 func (s *subscription) Pause() error {
-	s.mu.Lock()
+	s.b.mu.Lock()
+	defer s.b.mu.Unlock()
+	return s.detach()
+}
+
+// detach is called with the backend lock held.
+func (s *subscription) detach() error {
 	sub := s.sub
 	s.sub = nil
-	s.mu.Unlock()
-	if sub != nil {
-		return sub.Unsubscribe()
+	if sub == nil {
+		return nil
 	}
-	return nil
+	if err := sub.Unsubscribe(); err != nil {
+		return err
+	}
+	for other := range s.b.subs {
+		if other != s && other.name == s.name && other.durable == s.durable && other.sub != nil {
+			return nil
+		}
+	}
+	// Wait until JetStream sees the last subscriber leave. Otherwise a publish
+	// immediately after Pause can race with interest removal and miss delivery.
+	return s.waitPushBound(false)
 }
 
 // Resume re-attaches to the durable consumer.
-func (s *subscription) Resume() error {
-	s.mu.Lock()
-	if s.closed || s.sub != nil {
-		s.mu.Unlock()
-		return nil
-	}
-	s.mu.Unlock()
-	return s.attach()
-}
+func (s *subscription) Resume() error { return s.attach() }
 
 // Close detaches permanently (the durable consumer remains).
 func (s *subscription) Close() error {
-	s.stop()
 	s.b.mu.Lock()
+	defer s.b.mu.Unlock()
+	err := s.detach()
+	s.closed = true
 	delete(s.b.subs, s)
-	s.b.mu.Unlock()
-	return nil
+	return err
 }
 
 type delivery struct {
