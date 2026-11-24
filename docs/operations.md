@@ -87,6 +87,7 @@ YAML, or JSON when the file extension is `.json`. Loaded by `LoadConfig`; relati
 | `server_name` | no | TLS server name override (SNI and verification name) |
 | `log_level` | no | parsed, but **not used** by the code today: the logger does not read it |
 | `bundle_dir` | no | directory of bundle files; when empty the runtime still connects but cannot run anything: it logs a warning and reports every deployment as `error` ("no bundle_dir configured"), never `running` |
+| `state_dir` | no | private directory for runtime state: embedded JetStream queue data (`jetstream/`), the applied revision (`revision`) and a process lock (`lock`). With it set, queued messages and the applied revision survive a restart. Unset: queues are in memory, the revision restarts at 0 and the runtime logs a startup warning. If the directory or the queue backend cannot be opened, or `revision` is corrupt, the runtime refuses to start (no fallback to memory). `nurtuo service install` adds it (`/var/lib/nurtuo`, `/Library/Application Support/Nurtuo`, `%ProgramData%\Nurtuo`) when missing; standalone uses `<data-dir>/runtime`. One process per directory. Queued payloads are not encrypted at rest |
 | `trusted_keys` | no | list of hex Ed25519 public keys. When set, `bundle_dir` holds signed `<sha256>.bundle` archives that are digest-checked and signature-verified before use, and plain `.json` bundles are **not** accepted |
 | `http_addr` | no | listen address of HTTP-trigger listeners; default `127.0.0.1:0` (random loopback port). On a non-loopback address a listener starts only if its `start` step sets `auth` (or `insecure: true`); see [connectors/http.md](connectors/http.md#http-listener-start-step) |
 | `secrets` | no | `{provider: env\|dir\|encrypted-file, path, key_file}`: where `secret://name` references in bundle connections are resolved. Default `env` (`NURTUO_SECRET_<NAME>`). Manage values with `nurtuo secret`. Windows (upgrade step for service installs): an existing `path` or `key_file` must have a private DACL, or the runtime refuses to start with `icacls` fix guidance; Nurtuo does not change it ([security.md](security.md#windows-private-secrets-directory)) |
@@ -181,6 +182,7 @@ Default data directory (`NURTUO_DATA_DIR` overrides everything):
   postgres/data/       PostgreSQL cluster
   postgres/runtime/    extracted PostgreSQL binaries
   postgres/cache/      downloaded binary cache
+  runtime/             mode 0700: queue data (jetstream/), applied revision, lock
   logs/control-plane.log   control plane output (also echoed to stderr)
   secrets/             mode 0700 (Windows: private DACL, see below)
     ca.pem             local CA (ECDSA P-256, valid 10 years)
@@ -235,7 +237,7 @@ minor versions against each other; this is not yet enforced or tested.
 ## Backup
 
 - Runtime-only install: back up `runtime.yaml`, the certificate and key files and `bundle_dir`.
-  There is no other persistent runtime state yet (queues are in memory in the runtime process); if you use the `dir` or `encrypted-file` secrets provider, also back up its `path` (and `key_file`).
+  The runtime state lives in `state_dir` (queued messages and the applied revision); stop the runtime before copying it. If you use the `dir` or `encrypted-file` secrets provider, also back up its `path` (and `key_file`).
 - Standalone: stop `nurtuo standalone` and copy the whole data directory, including `secrets/`
   (without it the CA and database password are lost). A running-database backup with `pg_dump`
   against the embedded instance was not tried.

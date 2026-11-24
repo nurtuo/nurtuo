@@ -6,9 +6,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nurtuo/nurtuo/core/runtime/internal/runtime"
 )
 
 func TestDefaultConfigPath(t *testing.T) {
@@ -150,5 +154,53 @@ func TestProgramNoExitOnCleanStopOrStopError(t *testing.T) {
 	case c := <-exited:
 		t.Fatalf("unexpected exit(%d) during graceful stop", c)
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestDefaultServiceStateDir(t *testing.T) {
+	env := func(k string) string {
+		if k == "ProgramData" {
+			return `D:\PD`
+		}
+		return ""
+	}
+	for goos, want := range map[string]string{
+		"windows": `D:\PD\Nurtuo`,
+		"darwin":  "/Library/Application Support/Nurtuo",
+		"linux":   "/var/lib/nurtuo",
+	} {
+		if got := defaultServiceStateDir(goos, env); got != want {
+			t.Errorf("%s: %q, want %q", goos, got, want)
+		}
+	}
+}
+
+func TestEnsureStateDirConfigured(t *testing.T) {
+	dir := t.TempDir()
+	y := filepath.Join(dir, "runtime.yaml")
+	base := "runtime_id: r\ncontrol_plane_url: cp:1\ncert_file: /c\nkey_file: /k\nca_file: /ca"
+	if err := os.WriteFile(y, []byte(base), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if added, err := ensureStateDirConfigured(y, "/var/lib/nurtuo", false); err != nil || !added {
+		t.Fatalf("yaml: added=%v err=%v", added, err)
+	}
+	if c, err := runtime.LoadConfig(y); err != nil || c.StateDir != "/var/lib/nurtuo" {
+		t.Fatalf("yaml reload: %+v %v", c, err)
+	}
+	if added, err := ensureStateDirConfigured(y, "/other", true); err != nil || added {
+		t.Fatalf("already set: added=%v err=%v", added, err)
+	}
+
+	j := filepath.Join(dir, "runtime.json")
+	js := `{"runtime_id":"r","control_plane_url":"cp:1","cert_file":"/c","key_file":"/k","ca_file":"/ca"}`
+	if err := os.WriteFile(j, []byte(js), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if added, err := ensureStateDirConfigured(j, "/var/lib/nurtuo", false); err != nil || !added {
+		t.Fatalf("json: added=%v err=%v", added, err)
+	}
+	if c, err := runtime.LoadConfig(j); err != nil || c.StateDir != "/var/lib/nurtuo" {
+		t.Fatalf("json reload: %+v %v", c, err)
 	}
 }

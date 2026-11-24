@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Spec: Persist runtime queues and applied revision
 
-Status: approved. Date: 2026-11-24.
+Status: in progress. Date: 2026-11-24.
 
 ## TLDR
 
@@ -58,10 +58,10 @@ Existing `runtime.yaml` files without `state_dir` keep working (D2): they stay o
 
 ## Security
 
-- The state directory holds queued payloads (may include customer data) and must be private: 0700 / 0600 on Unix. On Windows the DACL helpers from [Windows secrets DACL](2026-11-24-windows-secrets-dacl.md) apply once they are shared; until then the Windows limitation of that spec's gap list applies (#78 covers the data root).
+- The state directory holds queued payloads (may include customer data) and must be private: 0700 / 0600 on Unix. On Windows the DACL helpers from [Windows secrets DACL](implemented/2026-11-24-windows-secrets-dacl.md) apply once they are shared; until then the Windows limitation of that spec's gap list applies (#78 covers the data root).
 - JetStream has no network listener (`DontListen: true`), so no new port or credential.
 - Queued messages are not encrypted at rest (same as the engine's other local state). Out of scope; recorded as a risk.
-- One runtime process owns one state directory. Two processes on the same directory must fail: JetStream takes a file lock; the runtime reports the error (fail closed).
+- One runtime process owns one state directory. Two processes on the same directory must fail. The embedded JetStream server does not lock its store itself, so the runtime takes an exclusive lock on `<state_dir>/lock` (flock / LockFileEx) before opening the backend and reports the error (fail closed).
 
 ## Testing
 
@@ -86,7 +86,16 @@ Fixtures use `t.TempDir()`.
 | 1 | Fail-closed start (D3) turns a full or read-only disk into a runtime that never starts, so HTTP flows without queues also stop | medium | runtime | clear error message naming the directory; the service restarts and the operator fixes the disk (D3 accepts this trade-off) |
 | 2 | Queued payloads sit unencrypted on disk | medium | security | file permissions now; encryption at rest is a separate spec |
 | 3 | Crash between apply and revision write: control plane resends the revision | low | supervisor | reconcile is idempotent; test it |
-| 4 | Several runtimes on one host share a default state directory and collide | medium | runtime | standalone uses `<data-dir>/runtime`; `service install` uses one OS data root per service (D1); a second process on the same directory fails on the JetStream lock |
+| 4 | Several runtimes on one host share a default state directory and collide | medium | runtime | standalone uses `<data-dir>/runtime`; `service install` uses one OS data root per service (D1); a second process on the same directory fails on the `lock` file |
+
+## Implementation Status
+
+| Phase | Status | Date | Notes |
+|-------|--------|------|-------|
+| `state_dir` config key, state directory, `lock` file | Done | 2026-11-24 | `runtime/config.go`, `runtime/state.go` |
+| natsjs wiring in `RunWith`, fail closed, warning when unset | Done | 2026-11-24 | `runtime/run.go` |
+| Applied revision file (atomic, corrupt fails start) | Done | 2026-11-24 | `supervisor/revision.go` |
+| Standalone and `service install` set `state_dir`; docs | Done | 2026-11-24 | `<data-dir>/runtime`; OS data root; `docs/operations.md` |
 
 ## Open questions
 
@@ -106,3 +115,4 @@ None blocking. All owner decisions are resolved (see Decisions).
 
 - 2026-11-24: created (draft) for issue #63.
 - 2026-11-24: approved; decisions D1–D4 recorded (Łukasz accepted all recommendations).
+- 2026-11-24: implementation (issue #63). Deviation from the design text: JetStream does not lock its store directory, so the runtime adds its own `<state_dir>/lock`.
