@@ -4,8 +4,12 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 import { DND_MIME, STEP_CATALOG, emptyFlow } from "../model/catalog";
 import { parseLoaded, serializeFlow, serializeLayout } from "../model/flowAdapter";
 import { FlowStore } from "../model/flowStore";
+import { ApiError, ControlPlane, OfflineError, describeApiError } from "../api/controlPlane";
 import { Canvas } from "./Canvas";
 import { ConfigDialog } from "./ConfigDialog";
+import { LoginBar, type Session } from "./LoginBar";
+
+const SESSION_HINT = "nurtuo.cp.session"; // "a session cookie probably exists"; avoids probing the control plane when offline
 
 function download(name: string, text: string) {
   const a = document.createElement("a");
@@ -22,6 +26,59 @@ export function App() {
   const [editing, setEditing] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  const cp = useMemo(() => new ControlPlane(), []);
+  const [online, setOnline] = useState(true);
+  const [session, setSession] = useState<Session | null>(null);
+  const [workspaceId, setWorkspaceId] = useState<string | null>(null);
+  const currentWorkspace = useRef<string | null>(null);
+
+  const enter = (me: { user: { email?: string } | null; workspaces: Session["workspaces"] }) => {
+    setSession({ email: me.user?.email ?? "", workspaces: me.workspaces });
+    currentWorkspace.current ??= me.workspaces[0]?.id ?? null;
+    setWorkspaceId(currentWorkspace.current);
+    localStorage.setItem(SESSION_HINT, "1");
+  };
+  const leave = () => {
+    currentWorkspace.current = null;
+    setSession(null); setWorkspaceId(null);
+    localStorage.removeItem(SESSION_HINT);
+  };
+
+  // Restore the session (and the CSRF token) after a reload.
+  useEffect(() => {
+    if (!localStorage.getItem(SESSION_HINT)) return;
+    cp.me().then((me) => (me ? enter(me) : leave()), (e) => { if (e instanceof OfflineError) setOnline(false); });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cp]);
+
+  const onLogin = async (email: string, password: string): Promise<string | null> => {
+    try {
+      const me = await cp.login(email, password);
+      if (!me) return "Sign-in failed";
+      setOnline(true);
+      enter(me);
+      return null;
+    } catch (e) {
+      if (e instanceof OfflineError) setOnline(false);
+      return e instanceof ApiError ? e.message : describeApiError(e);
+    }
+  };
+  const onLogout = async () => {
+    try {
+      await cp.logout();
+      leave();
+      return null;
+    } catch {
+      return "Could not revoke the session. Try logging out again.";
+    }
+  };
+
+  const changeWorkspace = (id: string) => {
+    currentWorkspace.current = id;
+    setWorkspaceId(id);
+  };
+
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -66,6 +123,10 @@ export function App() {
         <button onClick={() => fileRef.current?.click()}>Load JSON</button>
         <button onClick={() => download(`${state.flow.id}.flow.json`, serializeFlow(state.flow))}>Save flow</button>
         <button onClick={() => download(`${state.flow.id}.layout.json`, serializeLayout(state.flow.id, state.positions))}>Save layout</button>
+        <span className="sep" />
+        <span className="sep" />
+        <LoginBar session={session} workspaceId={workspaceId} online={online} onLogin={onLogin} onLogout={onLogout}
+          onWorkspace={changeWorkspace} />
         <input ref={fileRef} type="file" accept="application/json,.json" hidden
           onChange={(e) => { const f = e.target.files?.[0]; if (f) void onLoad(f); e.target.value = ""; }} />
         {loadError && <span className="err">{loadError}</span>}

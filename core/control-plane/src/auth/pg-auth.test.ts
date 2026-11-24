@@ -23,7 +23,7 @@ test("postgres auth: migrations, seed matches code, constraints, audit immutabil
   try {
     await pool.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public");
     const applied = await migrate(pool, fileURLToPath(new URL("../../migrations", import.meta.url)));
-    for (const m of ["0100_auth_identity.sql", "0101_auth_tokens_sessions.sql", "0102_audit_log.sql", "0103_auth_seed_roles.sql"]) assert.ok(applied.includes(m), m);
+    for (const m of ["0100_auth_identity.sql", "0101_auth_tokens_sessions.sql", "0102_audit_log.sql", "0103_auth_seed_roles.sql", "0104_auth_seed_connection_permissions.sql"]) assert.ok(applied.includes(m), m);
 
     // seeded matrix == code matrix
     const rows = (await pool.query("SELECT role, permission FROM role_permissions")).rows.map((r) => `${r.role}=${r.permission}`).sort();
