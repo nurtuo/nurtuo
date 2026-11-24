@@ -116,3 +116,39 @@ func TestProgramStopWithoutStartAndRunError(t *testing.T) {
 	}
 	_ = p.Stop(nil)
 }
+
+// A run error that is not caused by Stop must terminate the process non-zero (gap 3, #59),
+// otherwise systemd/Windows keep seeing a running service and never restart it.
+func TestProgramExitsOnRunFailure(t *testing.T) {
+	codes := make(chan int, 1)
+	p := &program{
+		run:  func(context.Context) error { return errors.New("unreadable client key") },
+		exit: func(c int) { codes <- c },
+	}
+	_ = p.Start(nil)
+	select {
+	case c := <-codes:
+		if c == 0 {
+			t.Fatal("exit code 0")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("process not exited after run failure")
+	}
+	_ = p.Stop(nil)
+}
+
+func TestProgramNoExitOnCleanStopOrStopError(t *testing.T) {
+	exited := make(chan int, 2)
+	exit := func(c int) { exited <- c }
+	p := &program{run: func(ctx context.Context) error { <-ctx.Done(); return nil }, exit: exit}
+	_ = p.Start(nil)
+	_ = p.Stop(nil)
+	q := &program{run: func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }, exit: exit}
+	_ = q.Start(nil)
+	_ = q.Stop(nil)
+	select {
+	case c := <-exited:
+		t.Fatalf("unexpected exit(%d) during graceful stop", c)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
