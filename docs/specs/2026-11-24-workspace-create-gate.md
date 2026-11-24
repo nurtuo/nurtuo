@@ -21,7 +21,7 @@ are **pending owner confirmation** (see [Decisions](#decisions)).
 
 | | |
 |---|---|
-| Pull requests | this spec (docs only); implementation will use `Closes #54` on a later `feat/` PR after approval |
+| Pull requests | https://github.com/nurtuo/nurtuo/pull/72 (this spec, docs only); implementation will use `Closes #54` on a later `feat/` PR after approval |
 | ADRs | none for phase 1 (decision D1: no ADR until a DB-backed instance role model is designed); the parent's planned ADR "workspace is the tenant boundary" belongs to phase 2 |
 | Issues | https://github.com/nurtuo/nurtuo/issues/54 (this spec), epic https://github.com/nurtuo/nurtuo/issues/66, follow-up https://github.com/nurtuo/nurtuo/issues/55 (phase 2) |
 | Code | `core/control-plane/src/auth/{policy,middleware,endpoints,service,permissions,authz,test-util}.ts`, new `core/control-plane/src/auth/instance.ts`, `core/control-plane/src/main.ts`, `core/control-plane/openapi.yaml` (description only) |
