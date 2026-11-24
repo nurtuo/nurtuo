@@ -15,12 +15,15 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/test/bufconn"
 
@@ -311,5 +314,134 @@ func TestMTLSRejectsClientWithoutCert(t *testing.T) {
 	}
 	if err == nil {
 		t.Fatal("expected failure without a client certificate")
+	}
+}
+
+// ---- apply runs off the receive loop ----
+
+// blockingDeployer blocks in Apply of the first deployment until release is closed.
+type blockingDeployer struct {
+	fakeDeployer
+	started chan string   // deployment digest, sent when Apply is entered
+	release chan struct{} // closed to let blocked Applies finish
+	paused  atomic.Bool
+	once    sync.Once
+	applied []string // digests, in order
+}
+
+func (b *blockingDeployer) Apply(ctx context.Context, d supervisor.Deployment) error {
+	b.started <- d.BundleDigest
+	select {
+	case <-b.release:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	b.mu.Lock()
+	b.applied = append(b.applied, d.BundleDigest)
+	b.mu.Unlock()
+	return b.fakeDeployer.Apply(ctx, d)
+}
+
+func (b *blockingDeployer) unblock() { b.once.Do(func() { close(b.release) }) }
+
+func (b *blockingDeployer) State(string) (string, string) {
+	if b.paused.Load() {
+		return supervisor.StatePaused, ""
+	}
+	return supervisor.StateRunning, ""
+}
+
+func startSlowApplyClient(t *testing.T) (*fakeServer, *blockingDeployer, *supervisor.Handler) {
+	t.Helper()
+	lis := bufconn.Listen(1 << 20)
+	fs := newFakeServer()
+	gs := grpc.NewServer()
+	gatewayv1.RegisterRuntimeGatewayServiceServer(gs, fs)
+	go func() { _ = gs.Serve(lis) }()
+	t.Cleanup(gs.Stop)
+
+	bd := &blockingDeployer{
+		fakeDeployer: fakeDeployer{running: map[string]supervisor.Deployment{}},
+		started:      make(chan string, 8), release: make(chan struct{}),
+	}
+	t.Cleanup(bd.unblock)
+	h := &supervisor.Handler{
+		S: supervisor.New(bd),
+		Commands: map[string]supervisor.CommandFunc{
+			"pause_listener": func(context.Context, map[string]string) error { bd.paused.Store(true); return nil },
+		},
+		Report: func(*gatewayv1.DeploymentStatus) {},
+	}
+	c := gateway.NewClient(gateway.Config{
+		Target: "passthrough:///bufnet", RuntimeID: "rt-1", Version: "test", Handler: h,
+		Heartbeat: time.Hour,
+		Backoff:   gateway.Backoff{Initial: 10 * time.Millisecond, Max: 50 * time.Millisecond, Factor: 2},
+		DialOpts: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
+		},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan error, 1)
+	go func() { runDone <- c.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		bd.unblock()
+		<-runDone
+	})
+	within(t, fs.hellos, "hello")
+	return fs, bd, h
+}
+
+func desired(rev uint64, digest string) *gatewayv1.ConnectResponse {
+	return &gatewayv1.ConnectResponse{Msg: &gatewayv1.ConnectResponse_DesiredState{DesiredState: &gatewayv1.DesiredState{
+		Revision: rev, Deployments: []*gatewayv1.Deployment{{DeploymentId: "d1", BundleDigest: digest}},
+	}}}
+}
+
+func TestCommandHandledDuringSlowApply(t *testing.T) {
+	fs, bd, _ := startSlowApplyClient(t)
+
+	fs.push <- desired(1, "sha256:aa")
+	if d := within(t, bd.started, "apply start"); d != "sha256:aa" {
+		t.Fatalf("applying %q", d)
+	}
+	// The apply is now blocked in the deployer. The command must still be read and answered.
+	fs.push <- &gatewayv1.ConnectResponse{Msg: &gatewayv1.ConnectResponse_Command{Command: &gatewayv1.Command{CommandId: "c1", Name: "pause_listener"}}}
+	if r := within(t, fs.results, "command result during slow apply"); r.CommandId != "c1" || !r.Ok {
+		t.Fatalf("result = %v", r)
+	}
+	if !bd.paused.Load() {
+		t.Fatal("pause_listener did not run")
+	}
+}
+
+func TestLatestDesiredStateWins(t *testing.T) {
+	fs, bd, h := startSlowApplyClient(t)
+
+	fs.push <- desired(1, "sha256:r1")
+	within(t, bd.started, "apply start")
+	// While revision 1 is blocked, 2 and 3 arrive. A command round trip afterwards proves the
+	// receive loop has consumed them (messages are handled in order).
+	fs.push <- desired(2, "sha256:r2")
+	fs.push <- desired(3, "sha256:r3")
+	fs.push <- &gatewayv1.ConnectResponse{Msg: &gatewayv1.ConnectResponse_Command{Command: &gatewayv1.Command{CommandId: "c1", Name: "pause_listener"}}}
+	within(t, fs.results, "command result")
+
+	bd.unblock()
+	if d := within(t, bd.started, "apply of latest"); d != "sha256:r3" {
+		t.Fatalf("second apply = %q, want sha256:r3 (revision 2 must be superseded)", d)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for h.Revision() != 3 {
+		if time.Now().After(deadline) {
+			t.Fatalf("revision = %d, want 3", h.Revision())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	bd.mu.Lock()
+	defer bd.mu.Unlock()
+	if want := []string{"sha256:r1", "sha256:r3"}; !slices.Equal(bd.applied, want) {
+		t.Fatalf("applied = %v, want %v", bd.applied, want)
 	}
 }

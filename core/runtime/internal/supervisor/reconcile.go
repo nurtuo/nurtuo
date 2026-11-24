@@ -41,7 +41,8 @@ type Reporter func(Status)
 type Supervisor struct {
 	d Deployer
 
-	mu       sync.Mutex
+	applyMu  sync.Mutex // serialises Reconcile; held for the whole (possibly slow) apply
+	mu       sync.Mutex // guards revision and last; held only briefly, never across deployer calls
 	revision uint64
 	last     map[string]string // deployment -> last reported state
 }
@@ -99,8 +100,8 @@ func (s *Supervisor) Reconcile(ctx context.Context, revision uint64, desired []D
 	if report == nil {
 		report = func(Status) {}
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
 
 	actual, err := s.d.Actual(ctx)
 	if err != nil {
@@ -137,9 +138,13 @@ func (s *Supervisor) Reconcile(ctx context.Context, revision uint64, desired []D
 			continue
 		}
 		state, msg := s.liveState(d.ID)
+		s.mu.Lock()
 		s.last[d.ID] = state
+		s.mu.Unlock()
 		report(Status{revision, d.ID, state, msg})
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for _, id := range stale {
 		delete(s.last, id)
 	}

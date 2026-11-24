@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"runtime"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc"
@@ -177,6 +178,41 @@ func (c *Client) session(ctx context.Context, api gatewayv1.RuntimeGatewayServic
 	}()
 
 	report := func(s *gatewayv1.DeploymentStatus) { c.ReportStatus(s) }
+
+	// Applies run in a worker so a slow one (for example strict connection tests) never blocks
+	// the receive loop, which must keep reading commands. Single "latest wins" slot: a newer
+	// desired state replaces one that has not started yet; there is no backlog.
+	var (
+		slotMu sync.Mutex
+		slot   *gatewayv1.DesiredState
+	)
+	wake := make(chan struct{}, 1)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-wake:
+			}
+			slotMu.Lock()
+			ds := slot
+			slot = nil
+			slotMu.Unlock()
+			if ds == nil {
+				continue
+			}
+			if err := c.cfg.Handler.ApplyDesiredState(ctx, ds, report); err != nil {
+				c.log.Error("apply desired state", "revision", ds.GetRevision(), "err", err)
+			}
+		}
+	}()
+	// Cancel and wait so applies of consecutive sessions never overlap. Runs before the
+	// deferred cancel registered above, hence the explicit cancel.
+	defer func() { cancel(); wg.Wait() }()
+
 	for {
 		resp, err := stream.Recv()
 		if err != nil {
@@ -192,8 +228,12 @@ func (c *Client) session(ctx context.Context, api gatewayv1.RuntimeGatewayServic
 		}
 		switch m := resp.GetMsg().(type) {
 		case *gatewayv1.ConnectResponse_DesiredState:
-			if err := c.cfg.Handler.ApplyDesiredState(ctx, m.DesiredState, report); err != nil {
-				c.log.Error("apply desired state", "revision", m.DesiredState.GetRevision(), "err", err)
+			slotMu.Lock()
+			slot = m.DesiredState
+			slotMu.Unlock()
+			select {
+			case wake <- struct{}{}:
+			default:
 			}
 		case *gatewayv1.ConnectResponse_Command:
 			res := c.cfg.Handler.HandleCommand(ctx, m.Command)
