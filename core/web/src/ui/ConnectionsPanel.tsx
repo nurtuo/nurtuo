@@ -113,7 +113,7 @@ export function ConnectionsPanel({ api, workspaceId, items, onChanged, onClose }
   const save = async () => {
     setError(null);
     if (!ID_RE.test(id)) return setError("Connection id must match ^[a-z][a-z0-9_-]*$");
-    if (connector === "sftp" && !hostKey.trim()) return setError("Paste the server's SHA256 fingerprint or known_hosts content.");
+    if (connector === "sftp" && !hostKey.trim()) return setError("A host key is required. Paste the server's SHA256 fingerprint or known_hosts content.");
     const settings: Record<string, unknown> = {};
     const auth: Record<string, unknown> = {};
     const credentials: Record<string, string | null> = {};
