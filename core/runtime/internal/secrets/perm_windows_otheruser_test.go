@@ -105,7 +105,9 @@ func TestOtherLocalUserCannotReadSecrets(t *testing.T) {
 		t.Fatal("NURTUO_TEST_WINDOWS_OTHER_USER=1 needs an elevated (administrator) process")
 	}
 	name := "nurtuo" + randHex(t, 4)
-	pass := "Nt1!" + randHex(t, 12)
+	// 14 characters: `net user /add` asks an interactive question (and fails without stdin) for longer
+	// passwords. The account exists only for this test and is deleted in Cleanup.
+	pass := "Nt1!" + randHex(t, 5)
 	redact := func(b []byte) string { return strings.ReplaceAll(string(b), pass, "***") }
 	if out, err := exec.Command("net", "user", name, pass, "/add").CombinedOutput(); err != nil {
 		t.Fatalf("net user %s /add: %v: %s", name, err, redact(out))
