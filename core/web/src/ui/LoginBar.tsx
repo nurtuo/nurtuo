@@ -38,7 +38,7 @@ export function LoginBar({ session, workspaceId, onWorkspace, online, onLogin, o
       </span>
     );
   }
-  if (!online) return <span className="hint">Offline: no control plane. Sign-in is unavailable.</span>;
+  if (!online) return <span className="hint">Offline: no control plane. Connections are disabled.</span>;
   return (
     <form className="loginbar" onSubmit={async (e) => { e.preventDefault(); setErr(await onLogin(email, password)); setPassword(""); }}>
       <input aria-label="Email" placeholder="email" value={email} onChange={(e) => setEmail(e.target.value)} />

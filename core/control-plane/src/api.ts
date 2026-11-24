@@ -4,6 +4,7 @@ import { createServer, type Server } from "node:http";
 import { ApiError, type ComponentKind, type DeploymentStatus } from "./domain.js";
 import type { Repository } from "./repository.js";
 import type { AuthHook } from "./auth/middleware.js";
+import { matchPolicy } from "./auth/policy.js";
 
 export interface ApiRequest { method: string; path: string; query?: Record<string, string>; body?: unknown; /** lower-cased header names */ headers?: Record<string, string | undefined>; /** peer address */ ip?: string; /** aborted when the client disconnects before the response is sent */ signal?: AbortSignal }
 export interface ApiResponse { status: number; body?: unknown; headers?: Record<string, string | string[]> }
@@ -179,8 +180,20 @@ export function createHttpServer(repo: Repository, opts: HandlerOptions): Server
     // Aborted when the client goes away before the response is complete (kills a running test-run child).
     const ac = new AbortController();
     rs.on("close", () => { if (!rs.writableFinished) ac.abort(); });
+    const action = matchPolicy(rq.method ?? "GET", url.pathname)?.policy.action;
+    const jsonEnvelope = 512;
+    const connectionSettings = 6 * (253 + 255 + 4096) + jsonEnvelope;
+    const maxBytes = action === "connection.put" ? 6 * 4 * 64 * 1024 + connectionSettings
+      : Infinity;
+    const tooLarge = () => { rs.writeHead(413, { "content-type": "application/json", connection: "close" }).end(JSON.stringify({ error: { code: "payload_too_large", message: `request body larger than ${maxBytes} bytes` } })); };
+    if (Number(rq.headers["content-length"] ?? 0) > maxBytes) { tooLarge(); return; }
     const chunks: Buffer[] = [];
-    for await (const c of rq) chunks.push(c as Buffer);
+    let size = 0;
+    for await (const c of rq.iterator({ destroyOnReturn: false })) {
+      size += (c as Buffer).length;
+      if (size > maxBytes) { tooLarge(); return; } // before JSON parsing
+      chunks.push(c as Buffer);
+    }
     let body: unknown;
     let out: ApiResponse;
     try { if (chunks.length) body = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
