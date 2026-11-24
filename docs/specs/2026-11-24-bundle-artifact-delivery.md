@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Spec: Bundle artifact delivery (`FetchArtifact`), control-plane signing and standalone `bundle_dir` defaults
 
-Status: draft. Date: 2026-11-24.
+Status: approved. Date: 2026-11-24.
 
 Issue: https://github.com/nurtuo/nurtuo/issues/64 (phase 2 of https://github.com/nurtuo/nurtuo/issues/58)
 
@@ -19,16 +19,15 @@ deployed revision into a signed `nurtuo.bundle/v1` archive, sends that archive's
 archives into `bundle_dir` and verifies them with the existing `SignedBundleSource`. Standalone then
 applies the D3 defaults: `<data-dir>/bundles` with mode `0700`, and a key at
 `secrets/bundle-signing.key` with mode `0600` that is reused across restarts. After that, a
-standalone deploy reaches `running` without a manual copy. **Draft: four owner decisions are open
-(D5, D7, D9, D11).**
+standalone deploy reaches `running` without a manual copy. **Approved 2026-11-24: Łukasz accepted D5, D7, D9 and D11.**
 
 ## Status and links
 
 | | |
 |---|---|
-| Pull requests | spec PR for this draft (docs only); implementation will use `Closes #64` on a later `feat/` PR after approval |
+| Pull requests | https://github.com/nurtuo/nurtuo/pull/79 (this spec, docs only); implementation will use `Closes #64` on a later `feat/` PR after approval |
 | ADRs | [ADR 0006](../adr/0006-bundle-format-and-domain-separated-signature.md) (bundle format, Ed25519), [ADR 0009](../adr/0009-outbound-only-runtime-gateway.md) (outbound-only gateway, `FetchArtifact`) |
-| Issues | https://github.com/nurtuo/nurtuo/issues/64; https://github.com/nurtuo/nurtuo/issues/58 (phase 1 shipped in https://github.com/nurtuo/nurtuo/pull/71); related https://github.com/nurtuo/nurtuo/issues/61, https://github.com/nurtuo/nurtuo/issues/62, https://github.com/nurtuo/nurtuo/issues/57 (draft spec PR https://github.com/nurtuo/nurtuo/pull/73), https://github.com/nurtuo/nurtuo/issues/60 (PR https://github.com/nurtuo/nurtuo/pull/75), tracker https://github.com/nurtuo/nurtuo/issues/67 |
+| Issues | https://github.com/nurtuo/nurtuo/issues/64; https://github.com/nurtuo/nurtuo/issues/58 (phase 1 shipped in https://github.com/nurtuo/nurtuo/pull/71); related https://github.com/nurtuo/nurtuo/issues/61, https://github.com/nurtuo/nurtuo/issues/62, https://github.com/nurtuo/nurtuo/issues/57 (approved spec, PR https://github.com/nurtuo/nurtuo/pull/73), https://github.com/nurtuo/nurtuo/issues/60 (merged in PR https://github.com/nurtuo/nurtuo/pull/75), tracker https://github.com/nurtuo/nurtuo/issues/67 |
 | Code (today) | `proto/nurtuo/runtime/v1/gateway.proto` (`FetchArtifact`, `FetchArtifactRequest{digest}`, `FetchArtifactResponse{data}`); `core/control-plane/src/gateway.ts` (`Gateway`, `desiredStateMessage`, `register`, `createGatewayServer`, `peerKey`); `core/control-plane/src/api.ts` (`canonicalJson`, `digestOf`, `POST /v1/components/{id}/revisions` with optional `digest`); `core/control-plane/src/main.ts` (env `GATEWAY_*`); `core/deploy/bundle` (`Pack`, `Verify`, `GenerateKey`, `EncodePrivateKey`, `DecodePrivateKey`, `EncodePublicKey`, `KeyID`, `MaxBundleSize`); `core/runtime/internal/runtime/deployer.go` (`BundleSource`, `DirBundleSource`, `SignedBundleSource`, `EngineDeployer.Apply`); `core/runtime/internal/runtime/run.go` (`RunWith`, `unconfiguredDeployer`, `errNoBundleDir`); `core/runtime/internal/runtime/config.go` (`Config.BundleDir`, `Config.TrustedKeys`, `trustedKeys`, `Validate`); `core/runtime/internal/gateway/client.go` (`Client`, `Run`, `session`); `core/runtime/cmd/nurtuo/standalone_layout.go` (`DataDirs`, `NewDataDirs`, `Ensure`); `core/runtime/cmd/nurtuo/standalone_bootstrap.go` (`localBootstrapper.Bootstrap`, `Credentials`, `loadOrGenSecret`); `core/runtime/cmd/nurtuo/standalone_register.go` (`runRealRuntime`); `core/runtime/cmd/nurtuo/standalone.go` (`controlPlaneEnv`, `Stack.Run`) |
 | User docs | [operations.md](../operations.md) (`runtime.yaml` table, standalone section), [interop.md](../interop.md#artifacts), [security.md](../security.md) |
 | Pre-implement report | [analysis/pre-implement-bundle-artifact-delivery.md](analysis/pre-implement-bundle-artifact-delivery.md) |
@@ -57,24 +56,16 @@ Goals:
 
 ## Open Questions
 
-Blocking. The owner must answer these before Status can move to `approved`. Each one is a row in
-Decisions, with a recommendation. Until it is answered, Design uses the recommended default,
-marked *pending confirmation*.
+None blocking. Q1 to Q4 were answered by Łukasz on 2026-11-24, 12:29 Europe/Warsaw (he accepted
+all recommendations). They are recorded in Decisions:
 
-- **Q1 (D7):** May the control plane (TypeScript) carry a second implementation of the FROZEN
-  `nurtuo.bundle/v1` packer (`core/control-plane/src/bundle.ts`, `node:crypto` Ed25519, no new
-  dependency), guarded by cross-language tests? Or must packing stay in Go? Recommended: TS packer.
-- **Q2 (D5):** May we add one control-plane environment variable,
-  `NURTUO_BUNDLE_SIGNING_KEY_FILE`? When it is set, `DesiredState.bundle_digest` becomes the digest
-  of the signed archive (as `gateway.proto` already documents) instead of the revision content
-  digest. Recommended: yes, opt-in; unset means unchanged behaviour.
-- **Q3 (D9):** Should `FetchArtifact` also serve *unsigned* content (canonical revision JSON) to
-  runtimes without `trusted_keys`, or only signed archives in this issue? Recommended: signed only.
-- **Q4 (D11):** May #64 ship on Windows before #57 (owner-only DACL) lands? Until then
-  `bundles\` and `secrets\bundle-signing.key` have only the inherited ACL. Recommended: yes, do not
-  block. Wire `secrets.EnsurePrivateDir` when #57 lands, and document the interim gap.
+- **Q1 → D7: yes.** TypeScript packer in the control plane, with cross-language tests.
+- **Q2 → D5: yes.** Opt-in `NURTUO_BUNDLE_SIGNING_KEY_FILE`; archive digest in `DesiredState` when set.
+- **Q3 → D9: signed only.** `FetchArtifact` without a signing key returns `FAILED_PRECONDITION`.
+- **Q4 → D11: do not block on #57.** Document the interim Windows gap.
 
-Non-blocking (implementer defaults, see Decisions): D1, D4, D8, D10, D12 to D16.
+Non-blocking (implementer defaults, see Decisions): D1, D4, D8, D10, D12 to D16. Non-blocking open
+items are tracked in Gaps and risks.
 
 ## Scope
 
@@ -141,8 +132,9 @@ Non-goals:
   `DeploymentStatus{state: "error"}` and does not advance the revision. The control plane maps
   `error` to `failed` (`STATE_MAP`).
 - **Gateway client.** `Client.Run` creates the `grpc.ClientConn` locally (`grpc.NewClient`) and
-  keeps it private. Nothing can issue a second RPC on it. `ApplyDesiredState` runs synchronously
-  on the receive goroutine. PR #75 (#60) moves it off.
+  keeps it private. Nothing can issue a second RPC on it. `ApplyDesiredState` ran synchronously
+  on the receive goroutine when this spec was drafted. PR #75 (#60) is merged on `main` and moves it
+  off the receive loop, so Phase 2 builds on that.
 - **Standalone.** `DataDirs` has `Root`, `Postgres`, `PGRun`, `PGCache`, `Logs`, `Secrets`, and no
   bundles directory. `Ensure` creates `Secrets` with `0o700` and the others with `0o755`.
   `localBootstrapper.Bootstrap` generates the ECDSA CA, certificates, `db-password` and
@@ -157,7 +149,7 @@ Non-goals:
 | Prior spec says | Code does | Reference | Handling |
 |---|---|---|---|
 | 11-22 draft: "The control plane streams the **stored** archive" | The control plane stores no archive and has no packer; revisions hold JSON content only | `api.ts` `POST …/revisions`, `repository.ts` `createRevision` | This spec adds packing on demand (D4) |
-| `core/deploy/bundle/README.md`: "The control plane packs and signs" | Only Go tests call `Pack`; the control plane is TypeScript | `harness_test.go` `putSigned` | D7 (TS packer, pending) |
+| `core/deploy/bundle/README.md`: "The control plane packs and signs" | Only Go tests call `Pack`; the control plane is TypeScript | `harness_test.go` `putSigned` | D7 (TS packer, decided) |
 | 11-22 draft: `bundle_digest` is the digest the runtime fetches; implicit that it is the archive hash | `bundle_digest` is `digestOf(content)` (canonical JSON), so `SignedBundleSource` can never match it unless a digest is supplied by hand | `gateway.ts` `desiredStateMessage`, `api.ts` `digestOf` | D5: with a signing key the control plane sends the archive digest, matching the proto comment |
 | 11-22 draft: "a restart with the control plane down still serves the flow" (`TestFetchArtifactCacheSurvivesOutage`) | The runtime persists no desired state; after a restart nothing is applied until `DesiredState` arrives | `supervisor`, `run.go` | Dropped. The cache avoids re-downloads only; Gaps #5 |
 | 11-22 draft: refuse to start without `trusted_keys` unless `allow_unsigned_bundles: true` | No such key; empty `trusted_keys` is valid and selects `DirBundleSource` | `config.go` `Validate` | Out of scope (config contract; #61 owns the warning) |
@@ -173,8 +165,7 @@ Three phases (D13), each shippable on its own. Component names exist today unles
 #### A. Control plane: pack, sign, serve (TypeScript, `core/control-plane/src/`)
 
 1. ***New* `bundle.ts`** (AGPL-3.0-only, SPDX header). `packBundle(input, privateKey): Buffer`
-   implements `nurtuo.bundle/v1` exactly as `core/deploy/bundle` writes it (D7, *pending
-   confirmation*):
+   implements `nurtuo.bundle/v1` exactly as `core/deploy/bundle` writes it (D7, decided):
    - Entries in order: `manifest.json`, `config.json` (`{}`), `components/<kind>/<id>/<revision>.json`.
      Then `manifest.sig` with `{"alg":"ed25519","keyId":<first 16 hex of sha256(pub)>,"sig":<base64>}`.
      The signature is `crypto.sign(null, "nurtuo-bundle-v1\n" + manifestBytes, key)`.
@@ -193,7 +184,7 @@ Three phases (D13), each shippable on its own. Component names exist today unles
    to seconds, RFC 3339 UTC; one component `{kind: c.kind, id: c.id, revision: r.number,
    document: canonicalJson(r.content)}`. All inputs are immutable, so the same revision and key
    always give the same bytes and the same digest. This holds across control-plane restarts.
-3. **Which digest goes into `DesiredState`** (D5, *pending confirmation*).
+3. **Which digest goes into `DesiredState`** (D5, decided).
    `desiredStateMessage` keeps today's behaviour unless a signing key is configured. With a key,
    for each revision whose `digest === digestOf(content)` (control-plane derived), it sends
    `sha256:<hex of the packed archive>`. Revisions with a caller-supplied digest (externally
@@ -210,7 +201,7 @@ Three phases (D13), each shippable on its own. Component names exist today unles
    - `digest` must match `^sha256:[0-9a-f]{64}$`; a bare 64-hex digest is also accepted, as
      `SignedBundleSource` strips the prefix. Otherwise `INVALID_ARGUMENT`.
    - No signing key configured: `FAILED_PRECONDITION` "control plane has no bundle signing key
-     configured (NURTUO_BUNDLE_SIGNING_KEY_FILE)". Under D9's recommendation, unsigned content is
+     configured (NURTUO_BUNDLE_SIGNING_KEY_FILE)". Under D9 (decided), unsigned content is
      not served.
    - Authorisation: compute `desiredStateMessage(certId)`. The digest must be the `bundleDigest`
      of one of its deployments, else `NOT_FOUND` "artifact not found for this runtime". The text
@@ -221,7 +212,7 @@ Three phases (D13), each shippable on its own. Component names exist today unles
      "artifact is not stored by the control plane; place it in bundle_dir".
    - Stream the archive in chunks of at most 1 MiB (`data`), well under gRPC's 4 MiB default
      message limit. Stop on client cancel.
-6. **Configuration** (D5, *pending confirmation*). `main.ts` reads
+6. **Configuration** (D5, decided). `main.ts` reads
    `NURTUO_BUNDLE_SIGNING_KEY_FILE`. If it is set but unreadable or not a 32-byte hex seed, the
    process exits 1 with a message that names the variable and never prints the key. If it is
    valid, the log says `gateway: bundle signing enabled (key id <16 hex>)`. `GatewayOptions` gains
@@ -329,13 +320,14 @@ and `service install` will default to `trusted_keys`. #61 does not change `Signe
   the control-plane component id (= `deployment_id`). This spec adds no new flow-id-keyed state and
   does not touch `EngineDeployer.flows` or `connhost.Manager`. Two deployments of the same revision
   share one read-only cache file. That is compatible with `<deployment>/<flow>` keys.
-- **#60 / PR #75:** fetching happens inside `EngineDeployer.Apply`. Before #75, a large download
-  blocks the receive loop (commands wait; heartbeats continue on the sender goroutine). After #75
-  it does not. There is no ordering dependency (Gaps #3).
-- **#57 / PR #73** (draft): it proposes `secrets.EnsurePrivateDir` in `internal/secrets` and says
+- **#60 / PR #75 (merged):** fetching happens inside `EngineDeployer.Apply`, which now runs off
+  the gateway receive loop, so a large download does not block commands or the receive goroutine.
+  Phase 2 is implemented on top of #75 and must be rebased on it. There is no ordering dependency
+  left (Gaps #3).
+- **#57 / PR #73** (approved spec; implementation not part of this issue): it proposes `secrets.EnsurePrivateDir` in `internal/secrets` and says
   #64 should call `EnsurePrivateDir(<data-dir>\bundles)`. `secrets\bundle-signing.key` sits under
-  `secrets\` and inherits #57's DACL with no extra code. Sequencing is D11. This spec does not
-  design the DACL.
+  `secrets\` and inherits #57's DACL with no extra code. Sequencing is D11 (decided: do not block on #57; whichever
+  lands second wires `EnsurePrivateDir`). This spec does not design the DACL.
 
 ### Alternatives considered
 
@@ -379,7 +371,7 @@ and `service install` will default to `trusted_keys`. #61 does not change `Signe
 | `gateway.proto` `FetchArtifact`, `FetchArtifactRequest`, `FetchArtifactResponse` | none (implemented as declared) | FROZEN names/numbers; behaviour experimental → stable once shipped |
 | `FetchArtifact` behaviour: chunk ≤ 1 MiB, error codes (`UNAUTHENTICATED`, `INVALID_ARGUMENT`, `NOT_FOUND`, `FAILED_PRECONDITION`), authorisation by desired state | new behaviour on an existing RPC | experimental |
 | `Deployment.bundle_digest` | with a signing key: archive digest (matches the proto comment "sha256 of the signed bundle"); without: unchanged | STABLE field; value change is opt-in (D5) |
-| Control plane env `NURTUO_BUNDLE_SIGNING_KEY_FILE` | **new**, additive, optional (D5, needs owner) | STABLE once shipped (control plane env is STABLE in the compatibility contract) |
+| Control plane env `NURTUO_BUNDLE_SIGNING_KEY_FILE` | **new**, additive, optional (D5, decided) | STABLE once shipped (control plane env is STABLE in the compatibility contract) |
 | `nurtuo.bundle/v1` | none; a second (TS) writer must produce archives `bundle.Verify` accepts (D7) | FROZEN |
 | `runtime.yaml` `bundle_dir`, `trusted_keys` | no schema change; signed mode additionally fetches missing archives | STABLE |
 | Standalone data dir layout | adds `bundles/` (`0700`) and `secrets/bundle-signing.key` (`0600`, hex Ed25519 seed). Additive; decided in D3 | FROZEN (additive entries, no format change) |
@@ -436,8 +428,8 @@ and `service install` will default to `trusted_keys`. #61 does not change `Signe
   the interim guidance is the same ("do not run standalone on a multi-user Windows host").
 - **Cache content.** Bundles hold flows and connection definitions with `secret://` references,
   never secret values; the packer adds nothing secret.
-- **Owner approval.** This is security work (signatures, secrets). The spec needs `approved`
-  status. The implementation PR follows AGENTS.md security rules. No check is disabled or
+- **Owner approval.** This is security work (signatures, secrets). Łukasz approved this spec on
+  2026-11-24 (status `approved`). The implementation PR follows AGENTS.md security rules. No check is disabled or
   loosened.
 
 ## Step plan
@@ -499,7 +491,7 @@ Exit: `nurtuo standalone` deploys reach `running` with no manual step; key and d
     `node scripts/check-docs-links.mjs`.
 14. Windows (D11): if #57 has landed, `Ensure` calls `secrets.EnsurePrivateDir(d.Bundles)`.
     Otherwise this step is a follow-up note on #57, and `operations.md` keeps the multi-user
-    Windows warning. Verified by #57's Windows test once available.
+    Windows warning. Verified by #57's Windows test once available. Per D11 (decided), this step does not block shipping.
 
 ## Acceptance criteria
 
@@ -561,8 +553,7 @@ No key material is committed or printed.
 
 ## Decisions
 
-Classification: **decided** = already decided by Łukasz (restated, not reopened); **needs-owner** =
-only Łukasz can decide; **implementer-default** = reversible engineering default, does not block
+Classification: **decided** = decided by Łukasz (restated, not reopened); **implementer-default** = reversible engineering default, does not block
 approval.
 
 | ID | Question | Options | Recommendation | Why | Class |
@@ -571,17 +562,17 @@ approval.
 | D2 | Send/set standalone `BundleDir` / signing key before `FetchArtifact` exists? | — | **No.** Phase 1 of #58 is the honest placeholder only, no contract change; implemented by #71. Here: Phase 3 starts only after Phases 1–2 are on `main` | Łukasz, 2026-11-24 ([runtime-bundle-dir](2026-11-23-runtime-bundle-dir.md), #64 comment) | decided |
 | D3 | Standalone bundle dir and key | — | **Yes:** `BundleDir` = `<data-dir>/bundles` mode `0700`; key at `secrets/bundle-signing.key` mode `0600`; reused after restart; no rotation | Łukasz, 2026-11-24 (same sources) | decided |
 | D4 | Where and how the control plane serves artifacts | (a) pack on demand, deterministic, bounded in-memory cache; (b) pack at deploy and store in a new `artifacts` table; (c) build per request, no cache | **(a)**, same code for standalone and distributed; only derived-digest revisions are packed; externally supplied digests pass through | no migration, no REST change, restart-stable digests; (b) stays a follow-up if packing cost shows | implementer-default |
-| D5 | How the control plane gets the signing key, and what `bundle_digest` means then | (a) new optional env `NURTUO_BUNDLE_SIGNING_KEY_FILE` (path to hex seed); with it, `DesiredState` carries the archive digest; without, unchanged; (b) key in DB / REST upload; (c) env with the key value | **(a)** | additive and opt-in; matches the proto comment "sha256 of the signed bundle"; path not value keeps the key out of process env listings; but a new STABLE control-plane env key and a value change for opted-in installs need owner OK | needs-owner |
+| D5 | How the control plane gets the signing key, and what `bundle_digest` means then | (a) new optional env `NURTUO_BUNDLE_SIGNING_KEY_FILE` (path to hex seed); with it, `DesiredState` carries the archive digest; without, unchanged; (b) key in DB / REST upload; (c) env with the key value | **(a)** | additive and opt-in; matches the proto comment "sha256 of the signed bundle"; path not value keeps the key out of process env listings; a new STABLE control-plane env key and a value change for opted-in installs, accepted by the owner | decided (Łukasz, 2026-11-24, 12:29 Europe/Warsaw, accepted recommendation) |
 | D6 | Standalone deploys show `failed` until this lands | — | **Yes, accepted**; this issue is prioritised | Łukasz, 2026-11-24 | decided |
-| D7 | Who signs, with what, where the packer lives | (a) control plane signs, TS port of `nurtuo.bundle/v1` writer in `core/control-plane/src/bundle.ts`, `node:crypto` Ed25519, cross-language golden + interop tests; (b) Go packer called by the control plane (sidecar/CLI); (c) runtime signs | **(a)**; key generated by the standalone bootstrapper (Go, `bundle.GenerateKey`, hex seed) and wired into `Config.TrustedKeys` by `runRealRuntime`; no rotation (D3) | ADR 0006 / bundle README say the control plane packs and signs; no new dependency or CLI; (b) adds a CLI surface and a Go binary to the control-plane image; (c) proves nothing. A second implementation of a FROZEN format is an architecture choice | needs-owner |
+| D7 | Who signs, with what, where the packer lives | (a) control plane signs, TS port of `nurtuo.bundle/v1` writer in `core/control-plane/src/bundle.ts`, `node:crypto` Ed25519, cross-language golden + interop tests; (b) Go packer called by the control plane (sidecar/CLI); (c) runtime signs | **(a)**; key generated by the standalone bootstrapper (Go, `bundle.GenerateKey`, hex seed) and wired into `Config.TrustedKeys` by `runRealRuntime`; no rotation (D3) | ADR 0006 / bundle README say the control plane packs and signs; no new dependency or CLI; (b) adds a CLI surface and a Go binary to the control-plane image; (c) proves nothing. A second implementation of a FROZEN format is an architecture choice | decided (Łukasz, 2026-11-24, 12:29 Europe/Warsaw, accepted recommendation) |
 | D8 | Composition with #61 | (a) signed-mode fetch only; unsigned path untouched; one shared digest-check helper reused by whichever lands second; (b) this spec also adds unsigned digest checks | **(a)** | keeps #61's files and scope intact; digest-then-signature order is the same in both paths; assumption about #61 stated in Design | implementer-default |
-| D9 | Serve unsigned content over `FetchArtifact` to runtimes without `trusted_keys`? | (a) no, signed only in this issue (`FAILED_PRECONDITION` without key; unsigned runtimes do not fetch); (b) yes, serve `canonicalJson(content)` for derived digests, runtime verifies SHA-256 | **(a)** | lowest blast radius; nudges towards `trusted_keys` (#61 direction); (b) is a later additive change through the same seam | needs-owner |
+| D9 | Serve unsigned content over `FetchArtifact` to runtimes without `trusted_keys`? | (a) no, signed only in this issue (`FAILED_PRECONDITION` without key; unsigned runtimes do not fetch); (b) yes, serve `canonicalJson(content)` for derived digests, runtime verifies SHA-256 | **(a)** | lowest blast radius; nudges towards `trusted_keys` (#61 direction); (b) is a later additive change through the same seam | decided (Łukasz, 2026-11-24, 12:29 Europe/Warsaw, accepted recommendation) |
 | D10 | Runtime fetch/cache behaviour | — | fetch in `Apply` when `<hex>.bundle` is missing or fails verification; temp file `.fetch-*` (`0600`) in `bundle_dir`, digest check, fsync, rename; replace an existing file only with a verified fetch; delete rejected fetched files; no eviction; `Remove` keeps the file; 5 min per-fetch deadline; no new config key | reuses `SignedBundleSource` and the existing file layout; no data loss; reversible | implementer-default |
-| D11 | Sequencing against #57 on Windows | (a) ship now: Unix `0700`/`0600` here; call `secrets.EnsurePrivateDir(<data-dir>\bundles)` once #57 lands (whichever lands second wires it); document the interim gap; (b) block #64 on Windows until #57 | **(a)** | does not hold M1 on an unapproved draft; same exposure class #57 already documents; the call site is one line | needs-owner |
+| D11 | Sequencing against #57 on Windows | (a) ship now: Unix `0700`/`0600` here; call `secrets.EnsurePrivateDir(<data-dir>\bundles)` once #57 lands (whichever lands second wires it); document the interim gap; (b) block #64 on Windows until #57 | **(a)** | does not hold M1 on the #57 implementation; same exposure class #57 already documents; the call site is one line | decided (Łukasz, 2026-11-24, 12:29 Europe/Warsaw, accepted recommendation) |
 | D12 | Existing standalone installs after upgrade | — | automatic: `Ensure` creates `bundles/`, bootstrap generates the key on first start, desired state is resent on Hello, `failed` → `running`; release note; no migration | no operator action; nothing persisted to convert | implementer-default |
 | D13 | Split into more than one spec? | (a) one spec, three shippable phases (control plane, runtime, standalone); (b) separate specs per side | **(a)** | one capability (artifact delivery) end to end; phases ship independently; script modules split out (Non-goals) | implementer-default |
 | D14 | Interaction with #62 | — | none required: content-addressed cache, component id as manifest id, no new flow-id-keyed state | keeps #62 unblocked | implementer-default (informational) |
-| D15 | Interaction with #60 / PR #75 | — | no dependency; before #75 a long fetch blocks the receive loop (Gaps #3) | fetch is its own HTTP/2 stream | implementer-default (informational) |
+| D15 | Interaction with #60 / PR #75 | — | no dependency; #75 is merged, so `ApplyDesiredState` runs off the receive loop and a long fetch does not block it (Gaps #3) | fetch is its own HTTP/2 stream | implementer-default (informational) |
 | D16 | Bundle content per deployment | (a) one `flow` component = revision content, id = component id, name = component name (or id), `createdAt` = revision time; (b) expand `{"flows":[…]}` envelopes into several components | **(a)** | matches `desiredStateMessage` (one revision per deployment) and what the MCP store posts (`control-plane-store.ts`); envelopes are a follow-up (Gaps #6) | implementer-default |
 
 ## Gaps and risks
@@ -589,8 +580,8 @@ approval.
 | # | Scenario (concrete) | Severity | Area | Mitigation / follow-up |
 |---|---|---|---|---|
 | 1 | TS writer differs from Go `Pack` in an edge case (non-ASCII key order: JS sorts UTF-16 units, Go sorts bytes; number literals normalised by `JSON.parse`; U+2028 escaping) → bytes differ from Go, though `Verify` still accepts because it checks hashes, not canonical form | medium | control plane / format | golden test on ASCII input; interop test is the real gate; document that TS output is self-deterministic, not byte-equal to Go for every input |
-| 2 | On Windows before #57, another local user reads `secrets\bundle-signing.key` and forges bundles | high (multi-user Windows only) | security | D11; #57; documented warning |
-| 3 | A 200 MiB bundle downloads inside `Apply` on the gateway receive goroutine (before #75): commands time out (10 s) during the download | medium | runtime | #60 / PR #75; chunked stream keeps memory flat |
+| 2 | (D11, accepted) On Windows before #57, another local user reads `secrets\bundle-signing.key` and forges bundles | high (multi-user Windows only) | security | D11; #57; documented warning |
+| 3 | A 200 MiB bundle downloads inside `Apply`. With #75 (merged) this no longer runs on the receive goroutine; a long download only delays that deployment's apply | low | runtime | Phase 2 is built on #75; chunked stream keeps memory flat; check apply behaviour while a fetch is running |
 | 4 | Transient fetch failure while connected leaves the deployment `failed` until the next desired state or reconnect (no retry timer) | medium | runtime / supervisor | existing supervisor behaviour; out of scope; candidate follow-up |
 | 5 | Runtime restart while the control plane is down: nothing runs, even though archives are cached (no persisted desired state) | medium | runtime | pre-existing; cache only saves downloads; separate spec if needed |
 | 6 | A revision whose content is a `{"flows":[…]}` envelope is packed as one `flow` component and fails `flow.Parse` on the runtime | low | control plane | clear `failed` message; envelope expansion as follow-up |
@@ -620,10 +611,11 @@ approval.
   [backward-compatibility-contract](2026-11-22-backward-compatibility-contract.md) (control plane env
   and standalone layout classes).
 - Superseded draft: [2026-11-22-bundle-artifact-delivery](2026-11-22-bundle-artifact-delivery.md).
-- #57 draft spec in PR #73 (`docs/specs/2026-11-24-windows-secrets-dacl.md`, not on `main`), only for
-  the `EnsurePrivateDir` dependency.
+- #57 approved spec ([windows-secrets-dacl](2026-11-24-windows-secrets-dacl.md)), only for the
+  `EnsurePrivateDir` dependency; its implementation is not part of this issue.
 - Open Mercato: `code-workflow-version-pinning` (ship exactly the pinned definition that runs).
 
 ## Changelog
 
 - 2026-11-24: created as draft.
+- 2026-11-24: approved; Łukasz accepted D5, D7, D9, D11 (TS packer, opt-in NURTUO_BUNDLE_SIGNING_KEY_FILE, signed-only FetchArtifact, do not block Windows on #57). D2, D3, D6 unchanged. Merged `main` (#75 landed; #57 spec approved in #73).

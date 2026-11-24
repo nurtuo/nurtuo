@@ -1,11 +1,30 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Pre-implement: Bundle artifact delivery (`FetchArtifact`), control-plane signing and standalone `bundle_dir` defaults
 
-**Readiness:** no-go
+**Readiness:** conditional (updated 2026-11-24 after approval; the original audit verdict was no-go)
 **Spec:** docs/specs/2026-11-24-bundle-artifact-delivery.md
 **Date:** 2026-11-24. Audited against `main` at `c9d1a7c` (includes #71 and #74).
 
-## Blockers
+## Update 2026-11-24 (after owner approval)
+
+Łukasz answered Q1 to Q4 on 2026-11-24, 12:29 Europe/Warsaw and accepted all recommendations:
+D7 (TS packer), D5 (opt-in `NURTUO_BUNDLE_SIGNING_KEY_FILE`), D9 (signed-only `FetchArtifact`) and
+D11 (do not block on #57). They are recorded as decided in the spec, the Open Questions block is
+closed, and the spec Status is `approved`. The product decisions in the sections below are
+unchanged; the Blockers and the readiness-gate Critical finding are resolved, and the original
+text is kept as the audit record.
+
+Factual updates since the audit (`main` at `f4f50af`): #75 (#60) has merged, so the "rebase on
+#75 if it merged" item now applies and Gaps #3 is lowered; #57's spec is approved (PR #73) and no
+longer a draft. #61 is still a draft spec (PR #76) and unchanged.
+
+**Verdict after approval: conditional.** Implementation may start. No blocker remains. Warnings
+that stay open and must be handled during implementation (see "During implementation"): the
+non-ASCII and number-heavy cross-language fixture; CI for interop/e2e or restating the criterion
+as locally verified; rebasing Phase 2 on the merged #75; re-reading the key file on `EEXIST` in
+`loadOrGenSigningKey`; re-checking #61 before Phase 2.
+
+## Blockers (original audit, resolved by approval)
 
 - **Status is `draft`, and four blocking owner decisions are open:** D5 (new control-plane env
   `NURTUO_BUNDLE_SIGNING_KEY_FILE` and the `bundle_digest` value switch), D7 (a TypeScript writer
@@ -134,18 +153,17 @@ Applies once the owner has answered the blockers. These items make the verdict `
 1. Add the non-ASCII / number-heavy cross-language fixture (TS writes, Go `Verify` accepts).
 2. Add a CI step that builds the control plane and runs the interop and standalone e2e tests, or
    restate the CI acceptance criterion as locally verified.
-3. Rebase Phase 2 on PR #75 if it merged; keep the `Client` conn-field change minimal.
+3. Rebase Phase 2 on PR #75 (now merged); keep the `Client` conn-field change minimal.
 4. `loadOrGenSigningKey`: on `EEXIST`, re-read instead of failing.
 5. Re-check #61's merged design before Phase 2; reuse its digest helper if present.
 
 ## Next action
 
-- `no-go`: the owner answers Q1 to Q4 (D5, D7, D9, D11) on the spec PR. Then revise the spec with
-  the spec-writing skill (record the answers, remove Open Questions, set `approved`) and re-run
-  this audit.
+- `conditional`: start implementation on a `feat/` PR (`Closes #64`), phase by phase, and clear the
+  five "During implementation" items. Re-run this audit before Phase 2 if #61 has merged.
 
 ```
-Readiness: no-go
+Readiness: conditional
 Report: docs/specs/analysis/pre-implement-bundle-artifact-delivery.md
 Spec: docs/specs/2026-11-24-bundle-artifact-delivery.md
 ```

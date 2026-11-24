@@ -3,6 +3,10 @@
 
 Status: draft. Date: 2026-11-22.
 
+> Phase 1 (workspace creation gate, #54) is specified in `docs/specs/2026-11-24-workspace-create-gate.md` (2026-11-24), which Extends this spec.
+>
+> The DB-backed `instance_roles` model from gap 4 is tracked in #77 (not in #55); phase 1 uses a temporary env-var admin list (decision D1 of the phase-1 spec).
+
 ## TLDR
 
 Give every component, revision, runtime, desired state and deployment an owning workspace, make every
@@ -17,7 +21,7 @@ workspace `default` in one migration.
 |---|---|
 | Pull requests | none yet |
 | ADRs | a new ADR for "workspace is the tenant boundary; runtimes belong to one workspace" |
-| Issues | none |
+| Issues | epic https://github.com/nurtuo/nurtuo/issues/66; phase 1 https://github.com/nurtuo/nurtuo/issues/54; phase 2 https://github.com/nurtuo/nurtuo/issues/55 |
 | Code | `core/control-plane/migrations/`, `core/control-plane/src/{repository,memory-repository,pg-repository,api,gateway}.ts`, `core/control-plane/src/auth/{middleware,policy,endpoints}.ts` |
 | User docs | [auth.md](../auth.md#known-gaps), [security.md](../security.md) |
 | Evidence | [M1 review guide](../review/PR-STACK.md): "roles and tokens are not yet partitioned per workspace"; `auth.md` Known gaps; as-built specs `control-plane-api-and-data` (gap 1) and `auth-rbac-audit` (gap 1) |

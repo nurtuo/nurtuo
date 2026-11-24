@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeDeployer is an in-memory Deployer recording calls.
@@ -110,5 +111,51 @@ func TestReconcileFailureKeepsRevision(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("no error status: %+v", sts)
+	}
+}
+
+// slowDeployer blocks in Apply until release is closed.
+type slowDeployer struct {
+	*fakeDeployer
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *slowDeployer) Apply(ctx context.Context, d Deployment) error {
+	close(s.entered)
+	<-s.release
+	return s.fakeDeployer.Apply(ctx, d)
+}
+
+func (s *slowDeployer) State(string) (string, string) { return StatePaused, "" }
+
+func TestReportChangesAndRevisionDuringReconcile(t *testing.T) {
+	ctx := context.Background()
+	sd := &slowDeployer{fakeDeployer: newFakeDeployer(), entered: make(chan struct{}), release: make(chan struct{})}
+	sd.running["old"] = Deployment{ID: "old", BundleDigest: "x"}
+	s := New(sd)
+	done := make(chan error, 1)
+	go func() {
+		done <- s.Reconcile(ctx, 2, []Deployment{{ID: "old", BundleDigest: "x"}, {ID: "new", BundleDigest: "y"}}, nil)
+	}()
+	<-sd.entered
+
+	returned := make(chan struct{})
+	go func() {
+		_ = s.Revision()
+		s.ReportChanges(ctx, func(Status) {})
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Revision/ReportChanges blocked behind a running Reconcile")
+	}
+	close(sd.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if s.Revision() != 2 {
+		t.Fatalf("revision = %d", s.Revision())
 	}
 }
