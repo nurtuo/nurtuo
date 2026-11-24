@@ -29,3 +29,13 @@ html, body, #root { height: 100%; margin: 0; font-family: system-ui, sans-serif;
 .row { display: flex; gap: 4px; align-items: center; margin-bottom: 4px; }
 .badge { font-size: 10px; padding: 1px 4px; border-radius: 3px; background: #e5e7eb; }
 .badge.missing { background: #fee2e2; }
+.run-badge { padding: 1px 6px; border-radius: 3px; font-weight: 600; }
+.run-badge.succeeded { background: #dcfce7; }
+.run-badge.failed { background: #fee2e2; }
+.run-badge.stopped { background: #fef3c7; }
+.doc pre { max-height: 240px; overflow: auto; background: #fff; border: 1px solid #ddd; padding: 6px; white-space: pre-wrap; word-break: break-all; }
+.step-node .run-label { font-size: 10px; font-weight: 600; }
+.step-node.run-ok { border-color: #16a34a; background: #dcfce7; }
+.step-node.run-error { border-color: #dc2626; background: #fee2e2; }
+.step-node.run-stopped { border-color: #d97706; background: #fef3c7; }
+.step-node.run-not-run { border-color: #9ca3af; background: #f3f4f6; color: #6b7280; }

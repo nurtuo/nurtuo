@@ -171,6 +171,8 @@ async function route(repo: Repository, req: ApiRequest): Promise<ApiResponse> {
   throw new ApiError(res ? 405 : 404, res ? "method_not_allowed" : "not_found", "no such route");
 }
 
+/** Interactive run body limit (operation limits D1). */
+export const MAX_BODY_BYTES = 1024 * 1024;
 
 /** Thin node:http adapter. */
 export function createHttpServer(repo: Repository, opts: HandlerOptions): Server {
@@ -183,7 +185,8 @@ export function createHttpServer(repo: Repository, opts: HandlerOptions): Server
     const action = matchPolicy(rq.method ?? "GET", url.pathname)?.policy.action;
     const jsonEnvelope = 512;
     const connectionSettings = 6 * (253 + 255 + 4096) + jsonEnvelope;
-    const maxBytes = action === "connection.host_key_scan" ? 6 * 253 + jsonEnvelope
+    const maxBytes = action === "test_run.execute" ? MAX_BODY_BYTES
+      : action === "connection.host_key_scan" ? 6 * 253 + jsonEnvelope
       : action === "connection.put" ? 6 * 4 * 64 * 1024 + connectionSettings
       : Infinity;
     const tooLarge = () => { rs.writeHead(413, { "content-type": "application/json", connection: "close" }).end(JSON.stringify({ error: { code: "payload_too_large", message: `request body larger than ${maxBytes} bytes` } })); };

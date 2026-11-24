@@ -1,0 +1,16 @@
+{
+  "schema": "nurtuo.flow/v1",
+  "id": "sftp-rebex-demo",
+  "name": "SFTP Rebex demo",
+  "description": "Download one file from the public Rebex demo server (test.rebex.net). In the canvas: load this flow, create the SFTP connection rebex-demo (see docs/getting-started.md), press Run and set the input property path=/readme.txt.",
+  "revision": 1,
+  "steps": [
+    { "id": "start-1", "kind": "start", "config": { "type": "manual" } },
+    { "id": "connector-1", "kind": "connector", "config": { "connector": "sftp", "operation": "GET", "connection": "rebex-demo" } },
+    { "id": "returndocuments-1", "kind": "returnDocuments", "config": {} }
+  ],
+  "edges": {
+    "start-1:default": "connector-1",
+    "connector-1:default": "returndocuments-1"
+  }
+}

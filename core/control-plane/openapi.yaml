@@ -8,7 +8,8 @@ info:
     API token (`Authorization: Bearer nrt_...`) or a browser session cookie (mutating requests must also
     send `X-Nurtuo-Csrf`). Workspace-scoped operations outside `/v1/workspaces/{ws}/...` select the
     workspace with `X-Nurtuo-Workspace` (API tokens are bound to one workspace). 401 means missing or
-    invalid credentials, 403 means authenticated but not permitted. See docs/auth.md.
+    invalid credentials, 403 means authenticated but not permitted. Request bodies are limited to 1 MiB
+    (413 `payload_too_large`). See docs/auth.md.
   license: { name: AGPL-3.0-only, url: "https://www.gnu.org/licenses/agpl-3.0.html" }
 servers:
   - url: http://localhost:8080
@@ -297,6 +298,17 @@ paths:
       description: EXPERIMENTAL. Fetches the SSH host key negotiated by SFTP without authentication or persistence.
       requestBody: { required: true, content: { application/json: { schema: { type: object, required: [host], properties: { host: { type: string }, port: { type: integer, minimum: 1, maximum: 65535, default: 22 } } } } } }
       responses: { "200": { description: Negotiated host key first, content: { application/json: { schema: { type: object, required: [keys], properties: { keys: { type: array, items: { type: object, required: [type, fingerprintSha256], properties: { type: { type: string }, fingerprintSha256: { type: string } } } } } } } } }, "400": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" }, "404": { $ref: "#/components/responses/Error" }, "413": { $ref: "#/components/responses/PayloadTooLarge" }, "429": { $ref: "#/components/responses/Error" }, "503": { $ref: "#/components/responses/Error" } }
+  /v1/workspaces/{ws}/test-runs:
+    parameters: [ { $ref: "#/components/parameters/Ws" } ]
+    post:
+      operationId: createTestRun
+      description: |
+        EXPERIMENTAL. Runs an inline `nurtuo.flow/v1` document synchronously through `nurtuo flow run` against
+        workspace connections (sftp GET/QUERY only). A failed or stopped run is a 200 result, not an API error.
+        Errors: 400 `invalid_flow`, `not_allowed_in_test_run`, `connection_required`, `host_not_allowed`;
+        404 `connection_not_found`; 409 `secret_missing`, `credential_unbound`, `dial_enforcement_unavailable`; 429 `too_many_runs`; 503 `test_run_unavailable`. Session users only.
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [flow], properties: { flow: { type: object }, input: { type: object, properties: { properties: { type: object, additionalProperties: { type: string } } } }, timeoutMs: { type: integer, minimum: 1000, maximum: 120000, default: 30000 } } } } } }
+      responses: { "200": { description: Result, content: { application/json: { schema: { $ref: "#/components/schemas/TestRunResult" } } } }, "400": { $ref: "#/components/responses/Error" }, "404": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" }, "413": { $ref: "#/components/responses/PayloadTooLarge" }, "429": { $ref: "#/components/responses/Error" }, "503": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
 components:
   securitySchemes:
     bearerAuth: { type: http, scheme: bearer, description: "API token (nrt_...) or session JWT" }
@@ -316,7 +328,7 @@ components:
       description: Planned feature, not implemented yet
       content: { application/json: { schema: { $ref: "#/components/schemas/ErrorBody" } } }
     PayloadTooLarge:
-      description: Request exceeds the operation body limit (`payload_too_large`)
+      description: Request body larger than 1 MiB (`payload_too_large`); applies to every `/v1/` route
       content: { application/json: { schema: { $ref: "#/components/schemas/ErrorBody" } } }
     Error:
       description: Error
@@ -331,6 +343,7 @@ components:
     AuditPage: { type: object, properties: { items: { type: array, items: { $ref: "#/components/schemas/AuditEntry" } }, nextCursor: { type: string, nullable: true } } }
     Connection: { type: object, properties: { id: { type: string }, connector: { type: string }, settings: { type: object, description: "Secret fields hold secret:// references only" }, secrets: { type: object, additionalProperties: { type: string, enum: [set, missing] } }, updatedAt: { type: string, format: date-time } } }
     ConnectionList: { type: object, properties: { items: { type: array, items: { $ref: "#/components/schemas/Connection" } } } }
+    TestRunResult: { type: object, properties: { runId: { type: string }, status: { type: string, enum: [succeeded, failed, stopped] }, durationMs: { type: integer }, steps: { type: array, items: { type: object, properties: { id: { type: string }, kind: { type: string }, status: { type: string, enum: [ok, error, stopped, not_run] }, in: { type: integer }, out: { type: integer }, failed: { type: integer }, dropped: { type: integer } } } }, documents: { type: array, items: { type: object, properties: { id: { type: string }, properties: { type: object, additionalProperties: { type: string } }, size: { type: integer }, payload: { type: string, description: base64 } } } }, error: { type: object, properties: { code: { type: string }, message: { type: string } } }, stop: { type: object, properties: { status: { type: integer }, message: { type: string } } } } }
     ComponentKind: { type: string, enum: [flow, map, connector, script] }
     DeploymentStatus: { type: string, enum: [pending, running, failed, stopped] }
     ComponentCreate:

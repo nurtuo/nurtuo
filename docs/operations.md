@@ -207,6 +207,20 @@ Bootstrap is idempotent: existing secrets are reused. Certificates are issued fo
 standalone mode will fail to connect until you delete `secrets/` (which also removes the database
 password, so recreate the data directory as well).
 
+## Canvas test runs (EXPERIMENTAL)
+
+The control plane can run a canvas flow once through `nurtuo flow run` (see
+[the spec](specs/2026-11-23-canvas-run.md)). Environment variables of the control plane:
+
+| Variable | Meaning |
+| --- | --- |
+| `NURTUO_FLOW_RUN_BIN` | Absolute path of the `nurtuo` binary used for test runs. Unset or not executable: `POST /v1/workspaces/{ws}/test-runs` answers 503 `test_run_unavailable`. `nurtuo standalone` sets it for its control plane. |
+| `NURTUO_TEST_RUN_ALLOW_PRIVATE` | `1` lets test runs and connections reach loopback, private and link-local addresses. Off by default (SSRF protection); turn it on only for local development and tests. |
+
+Workspace secrets set from the canvas live in the control plane's memory and are lost on restart (run
+`secret_missing` until they are entered again). Request bodies of every `/v1/` route are limited to
+1 MiB (413 `payload_too_large`).
+
 ## Logs
 
 - Standalone: control plane output goes to `logs/control-plane.log` and to stderr; the runtime logs

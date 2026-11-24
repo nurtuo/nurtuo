@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from "vitest";
-import { ControlPlane, OfflineError } from "./controlPlane";
+import { ApiError, ControlPlane, OfflineError, describeApiError } from "./controlPlane";
 
 interface Call { url: string; init: RequestInit }
 function fake(handler: (url: string, init: RequestInit) => Response | Promise<Response>) {
@@ -39,12 +39,30 @@ describe("ControlPlane client", () => {
     expect(await cp.me()).toBeNull();
   });
 
+  it("uses the workspace path and encodes names", async () => {
+    const { cp, calls } = fake(() => json({ runId: "r" }));
+    await cp.testRun("my ws", { flow: {}, input: { properties: {} } });
+    expect(calls[0]!.url).toBe("/v1/workspaces/my%20ws/test-runs");
+    expect(calls[0]!.init.method).toBe("POST");
+  });
+
   it("sends the password in the write-only credentials member of a single PUT", async () => {
     const { cp, calls } = fake(() => new Response(null, { status: 204 }));
     await cp.putConnection("w", "c1", { connector: "sftp", settings: {}, credentials: { password: "test-value" } });
     expect(calls).toHaveLength(1);
     expect(calls[0]!.url).toBe("/v1/workspaces/w/connections/c1");
     expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ connector: "sftp", settings: {}, credentials: { password: "test-value" } });
+  });
+
+  it("maps errors", async () => {
+    const { cp } = fake(() => json({ error: { code: "secret_missing", message: "secret x missing" } }, 409));
+    const e = await cp.testRun("w", { flow: {}, input: { properties: {} } }).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(ApiError);
+    expect((e as ApiError).code).toBe("secret_missing");
+    expect(describeApiError(e)).toContain("Open Connections");
+    expect(describeApiError(new ApiError(403, "forbidden", "x"))).toMatch(/role/);
+    expect(describeApiError(new ApiError(429, "too_many_runs", "x"))).toMatch(/in progress/);
+    expect(describeApiError(new ApiError(503, "test_run_unavailable", "x"))).toMatch(/not configured/);
   });
 
   it("network failures and proxy errors are offline", async () => {

@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import assert from "node:assert/strict";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
+import { j, setup, sftpConn, flowOf, FAKE_NURTUO } from "../auth/test-util.js";
 import { checkEgress, isBlockedAddress } from "./egress.js";
 
 test("refused ranges", () => {
@@ -17,4 +21,43 @@ test("checkEgress resolves names (every address), honours the allow switch, fail
   await assert.rejects(checkEgress("127.0.0.1", { allowPrivate: false, lookup }), (e: any) => e.code === "host_not_allowed");
   await assert.rejects(checkEgress("[::1]", { allowPrivate: false, lookup }), (e: any) => e.code === "host_not_allowed");
   await checkEgress("mixed", { allowPrivate: true, lookup });
+});
+
+async function runWorld() {
+  const w = setup({ testRun: { bin: FAKE_NURTUO, lookup: async () => ["8.8.8.8"], spoolPollMs: 20 } });
+  const { ws } = await w.owner("o@x.io", "ws-a");
+  const o = await w.login("o@x.io");
+  await w.call("PUT", `/v1/workspaces/${ws.id}/connections/c1`, { cookie: o.cookie, csrf: o.csrf, body: sftpConn() });
+  const run = (body: unknown) => w.call("POST", `/v1/workspaces/${ws.id}/test-runs`, { cookie: o.cookie, csrf: o.csrf, body });
+  return { ...w, ws, o, run };
+}
+
+test("host resolving to a private address is refused before spawn; the allow switch lifts it", async () => {
+  const w = setup({ testRun: { bin: FAKE_NURTUO, lookup: async () => ["10.0.0.9"] } });
+  const { ws } = await w.owner("o@x.io", "ws-a");
+  const o = await w.login("o@x.io");
+  const auth = { cookie: o.cookie, csrf: o.csrf };
+  await w.call("PUT", `/v1/workspaces/${ws.id}/connections/c1`, { ...auth, body: sftpConn() });
+  const pidfile = join(mkdtempSync(join(tmpdir(), "pid-")), "pid");
+  const r = await w.call("POST", `/v1/workspaces/${ws.id}/test-runs`, { ...auth, body: { flow: flowOf(), input: { properties: { pidfile } } } });
+  assert.equal(r.status, 400); assert.equal(j(r).error.code, "host_not_allowed");
+  assert.equal(existsSync(pidfile), false, "no process may be spawned");
+});
+
+test("non-sftp connectors and mutating operations are refused before spawn; GET/get/QUERY/query pass; connection is required", async () => {
+  const { run } = await runWorld();
+  const pidfile = join(mkdtempSync(join(tmpdir(), "pid-")), "pid");
+  const input = { properties: { pidfile } };
+  for (const op of ["RENAME", "DELETE", "CREATE", "UPSERT", "UPDATE", "bogus", "execute"]) {
+    const r = await run({ flow: flowOf("c1", op), input });
+    assert.equal(r.status, 400, op); assert.equal(j(r).error.code, "not_allowed_in_test_run", op);
+  }
+  const http = await run({ flow: flowOf("c1", "GET", "http"), input });
+  assert.equal(j(http).error.code, "not_allowed_in_test_run");
+  for (const op of ["GET", "get", "Get", "QUERY", "query"]) assert.equal((await run({ flow: flowOf("c1", op) })).status, 200, op);
+  rmSync(pidfile, { force: true });
+  const noConn = flowOf(); delete (noConn.steps[1]!.config as any).connection;
+  const r = await run({ flow: noConn, input });
+  assert.equal(r.status, 400); assert.equal(j(r).error.code, "connection_required");
+  assert.equal(existsSync(pidfile), false, "no process may be spawned for refused flows");
 });

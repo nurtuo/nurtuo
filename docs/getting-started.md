@@ -136,6 +136,31 @@ export NURTUO_SECRET_SFTP_PASSWORD='...'
 
 The SFTP host key is checked against `~/.ssh/known_hosts` (`--known-hosts <file>` to use another file).
 
+## Try it: run a flow from the canvas (experimental)
+
+With a control plane running, the canvas **Build** tab can run the flow you are editing against a
+workspace connection and show the result and a colour per step. The sample
+`examples/flows/sftp-rebex-demo.flow.json` reads a file from the public Rebex SFTP demo server.
+
+```sh
+# terminal 1: control plane (in-memory, no database), with the nurtuo binary it spawns per run
+go build -o /tmp/nurtuo ./core/runtime/cmd/nurtuo    # from the repository root
+pnpm --filter @nurtuo/control-plane... run build
+NURTUO_AUTH_SECRET="$(openssl rand -hex 24)" NURTUO_BOOTSTRAP_EMAIL=dev@example.com \
+NURTUO_BOOTSTRAP_PASSWORD="$DEV_CANVAS_PASSWORD" NURTUO_FLOW_RUN_BIN=/tmp/nurtuo \
+  node core/control-plane/dist/main.js            # listens on :8080
+# terminal 2: canvas (Vite proxies /v1 to :8080; use http://127.0.0.1:5173 so the Secure cookie is kept)
+pnpm --filter @nurtuo/web dev
+```
+
+Set `DEV_CANVAS_PASSWORD` to a local password before starting the control plane. Log in, open **Connections**, create `rebex-demo` (host `test.rebex.net`, port 22, the user and
+password from the Rebex demo page). Click **Fetch host key**, compare the fingerprint with the one
+Rebex publishes, then click **Trust this key** and save. Load the sample flow, press **Run** and set
+`path=/readme.txt`. Rebex is a manual smoke test. The
+password is stored only as a workspace secret (in memory: gone after a control-plane restart) and
+never appears in the flow. Test runs allow `sftp` `GET` and `QUERY` only and refuse private
+addresses unless `NURTUO_TEST_RUN_ALLOW_PRIVATE=1`.
+
 ## Run the tests that matter for docs and contracts
 
 `make docs` runs the last two checks below (verified with `make docs` on Windows). CI runs them

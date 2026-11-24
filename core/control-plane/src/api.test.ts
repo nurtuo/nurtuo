@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { AddressInfo } from "node:net";
-import { createHandler, createHttpServer, digestOf } from "./api.js";
+import { MAX_BODY_BYTES, createHandler, createHttpServer, digestOf } from "./api.js";
 import { MemoryRepository } from "./memory-repository.js";
 
 function setup() {
@@ -121,6 +121,18 @@ async function serve(opts: Parameters<typeof createHttpServer>[1]) {
   await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
   return { srv, base: `http://127.0.0.1:${(srv.address() as AddressInfo).port}` };
 }
+
+test("body over 1 MiB is 413 before parsing; a body under the limit still works", async () => {
+  const { srv, base } = await serve({ auth: "disabled" });
+  try {
+    // not JSON on purpose: a parse error (400) would mean the limit was applied after parsing
+    const big = await fetch(`${base}/v1/workspaces/ws/test-runs`, { method: "POST", headers: { "content-type": "application/json" }, body: "x".repeat(MAX_BODY_BYTES + 1) });
+    assert.equal(big.status, 413);
+    assert.equal(asAny(await big.json()).error.code, "payload_too_large");
+    const ok = await fetch(`${base}/v1/components`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "small" }) });
+    assert.equal(ok.status, 201);
+  } finally { srv.close(); srv.closeAllConnections(); }
+});
 
 test("request close aborts ApiRequest.signal", async () => {
   const { setup: authSetup } = await import("./auth/test-util.js");

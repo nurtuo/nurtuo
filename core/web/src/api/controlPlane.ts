@@ -30,6 +30,36 @@ export interface ConnectionItem {
   secrets: Record<string, "set" | "missing">;
   updatedAt?: string;
 }
+export interface StepRunDto {
+  id: string;
+  kind: string;
+  status: "ok" | "error" | "stopped" | "not_run";
+  in: number;
+  out: number;
+  failed: number;
+  dropped: number;
+}
+export interface RunDocument {
+  id: string;
+  properties: Record<string, string>;
+  size?: number;
+  payload: string; // base64
+}
+export interface TestRunResponse {
+  runId: string;
+  status: "succeeded" | "failed" | "stopped";
+  durationMs: number;
+  steps: StepRunDto[];
+  documents?: RunDocument[];
+  error?: { code: string; message: string };
+  stop?: { status?: number; message?: string };
+}
+export interface TestRunRequest {
+  flow: unknown;
+  input: { properties: Record<string, string> };
+  timeoutMs?: number;
+}
+
 type FetchFn = (input: string, init?: RequestInit) => Promise<Response>;
 
 const MUTATING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
@@ -118,7 +148,9 @@ export class ControlPlane {
   deleteConnection(ws: string, id: string): Promise<void> {
     return this.request("DELETE", `${this.ws(ws)}/connections/${encodeURIComponent(id)}`);
   }
-
+  testRun(ws: string, req: TestRunRequest, signal?: AbortSignal): Promise<TestRunResponse> {
+    return this.request("POST", `${this.ws(ws)}/test-runs`, req, signal);
+  }
 }
 
 /** Canvas-facing text for API failures of a test run (spec "Failure modes"). */
