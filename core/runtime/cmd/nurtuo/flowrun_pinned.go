@@ -112,7 +112,7 @@ func (transport getOnlyTransport) RoundTrip(req *http.Request) (*http.Response, 
 		return nil, errors.New("test runs allow HTTP GET only")
 	}
 	for _, name := range []string{"X-HTTP-Method-Override", "X-HTTP-Method", "X-Method-Override"} {
-		if _, present := req.Header[name]; present {
+		if _, present := req.Header[http.CanonicalHeaderKey(name)]; present {
 			return nil, errors.New("HTTP method override headers are disabled in test runs")
 		}
 	}

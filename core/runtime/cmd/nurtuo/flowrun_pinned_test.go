@@ -44,6 +44,11 @@ func TestPinnedHTTPTransportRefusesMethodsOtherThanGET(t *testing.T) {
 	if response, err := (getOnlyTransport{}).RoundTrip(req); err == nil || response != nil {
 		t.Fatal("the test run transport accepted a POST")
 	}
+	req = httptest.NewRequest(http.MethodGet, "https://employee.test/", nil)
+	req.Header.Set("X-HTTP-Method-Override", http.MethodPost)
+	if response, err := (getOnlyTransport{}).RoundTrip(req); err == nil || response != nil {
+		t.Fatal("the test run transport accepted a method override")
+	}
 }
 
 func TestPinnedHTTPDialsVettedIPAndKeepsHost(t *testing.T) {
