@@ -1,13 +1,13 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
-# Spec: Owner-only Windows DACL for standalone secrets and private files
+# Spec: Private (protected) Windows DACL for standalone secrets and private files
 
-Status: draft. Date: 2026-11-24.
+Status: approved. Date: 2026-11-24. Approved by Łukasz on 2026-11-24 (decisions D4, D7, D9, D13; see Decisions).
 
 Extends: [connections-and-secrets](implemented/2026-11-21-connections-and-secrets.md) (gap 1, critical), [runtime-cli-service-standalone](implemented/2026-11-21-runtime-cli-service-standalone.md) (standalone data directory). Related: [runtime bundle_dir](2026-11-23-runtime-bundle-dir.md) (phase 2, issue #64: `bundles/` `0700`, `secrets/bundle-signing.key` `0600`), [workspace isolation](2026-11-22-workspace-isolation.md) (issue #54, different layer, see "Overlaps / related work").
 
 ## TLDR
 
-On Windows, `checkPerm` and `chmodPrivate` in `core/runtime/internal/secrets/perm_windows.go` are no-ops, and `nurtuo standalone` keeps its data root in `%ProgramData%\Nurtuo`, which inherits read access (and create-file access) for the local `Users` group. Any other local user can read `secrets\store\master.key` plus `secrets.enc` (every connection secret), `admin-token`, `db-password` and the TLS private keys. This spec replaces the Windows no-ops with real DACL helpers: private directories and files get an explicit, protected (non-inherited) DACL at creation, existing installs are repaired at startup, and every read path verifies the DACL and fails closed when it is too open or the owner is foreign. The helpers are generic so `<data-dir>/bundles` and `secrets/bundle-signing.key` from #64 reuse them. **Draft: four owner decisions are open (D4, D7, D9, D13).**
+On Windows, `checkPerm` and `chmodPrivate` in `core/runtime/internal/secrets/perm_windows.go` are no-ops, and `nurtuo standalone` keeps its data root in `%ProgramData%\Nurtuo`, which inherits read access (and create-file access) for the local `Users` group. Any other local user can read `secrets\store\master.key` plus `secrets.enc` (every connection secret), `admin-token`, `db-password` and the TLS private keys. This spec replaces the Windows no-ops with real DACL helpers. Private directories and files get an explicit, protected (non-inherited) DACL at creation. The allowed principals are the running account, `SYSTEM` and `BUILTIN\Administrators` (D4). Standalone-managed `secrets\` is repaired at startup (D2). Every read path verifies the DACL and fails closed when it is too open or the owner is foreign. Operator-chosen `dir` / `encrypted-file` paths are never re-ACLed. They are checked, and on a problem they fail closed with an actionable error (D9). The helpers are generic, so `<data-dir>/bundles` and `secrets/bundle-signing.key` from #64 reuse them. For now they live in `internal/secrets`; that placement is **interim** (D1, see the TODO). The data root, `postgres\data` and `logs\` are follow-up [#78](https://github.com/nurtuo/nurtuo/issues/78) (D7). **Approved: all blocking owner decisions are resolved (D4, D7, D9, D13, 2026-11-24).**
 
 ## Status and links
 
@@ -15,41 +15,50 @@ On Windows, `checkPerm` and `chmodPrivate` in `core/runtime/internal/secrets/per
 |---|---|
 | Pull requests | this spec (docs only); implementation will use `Closes #57` on a later `feat/` or `fix/` PR after approval |
 | ADRs | [ADR 0010](../adr/0010-connections-and-secrets.md) (lists "Windows ACL check" as future work) |
-| Issues | https://github.com/nurtuo/nurtuo/issues/57 (from the gap list in https://github.com/nurtuo/nurtuo/pull/47); related #64 (bundle-dir phase 2), #54 (workspace isolation, parallel work, not touched here) |
+| Issues | https://github.com/nurtuo/nurtuo/issues/57 (from the gap list in https://github.com/nurtuo/nurtuo/pull/47); D7 follow-up (data root, `postgres\data`, `logs\`): https://github.com/nurtuo/nurtuo/issues/78; related #64 (bundle-dir phase 2), #54 (workspace isolation, parallel work, not touched here) |
 | Code (existing) | `core/runtime/internal/secrets/{perm_unix.go,perm_windows.go,dir.go,encrypted.go,open.go}`, `core/runtime/cmd/nurtuo/{standalone_layout.go,standalone_bootstrap.go,standalone.go,standalone_register.go,secret.go}`, `core/runtime/internal/runtime/run.go` (`secrets.Open` at runtime start), `.github/workflows/ci.yml` (`go` job) |
 | User docs | [security.md](../security.md), [operations.md](../operations.md) (standalone data directory) |
 
 ## Goal
 
-Operators who run `nurtuo standalone` (and, by the shared helpers, the runtime with the `dir` or `encrypted-file` provider) on Windows need the secret material to be readable only by the account that runs Nurtuo, as `0700`/`0600` already guarantee on Linux and macOS. Today nothing restricts it on Windows. The proposal: real Windows implementations of the existing permission helpers, an exported `EnsurePrivateDir` that creates or repairs a private directory, fail-closed verification on every read, and a Windows CI job with a real DACL test.
+Operators who run `nurtuo standalone` on Windows need the secret material to be readable only by the account that runs Nurtuo, plus `SYSTEM` and `Administrators` (D4). On Linux and macOS, `0700`/`0600` plus root already guarantee this. Operators of the runtime with the `dir` or `encrypted-file` provider get the same check through the shared helpers. Today nothing restricts it on Windows. The proposal:
+
+- real Windows implementations of the existing permission helpers;
+- an exported `EnsurePrivateDir` that creates or repairs a standalone-managed private directory;
+- fail-closed verification on every read, with an actionable error and no repair for operator-chosen paths (D9);
+- a Windows CI job with a real DACL test.
 
 ## Open Questions
 
-Blocking (owner, see Decisions):
+None blocking. Łukasz resolved Q1–Q4 on 2026-11-24; see Decisions:
 
-- **Q1 (D4):** DACL shape: strictly owner-only (as the issue says), or owner + `SYSTEM` + `BUILTIN\Administrators` (recommended, the Windows equivalent of `0700` with root)?
-- **Q2 (D7):** Scope: only `secrets\` (recommended for this spec), or also the data root, `postgres\data` and `logs\` (recommended as a separate follow-up)?
-- **Q3 (D9):** Should the non-standalone runtime (`nurtuo run` / `nurtuo service` with `secrets.provider: dir | encrypted-file`) also repair and fail closed on Windows (recommended), or only standalone?
-- **Q4 (D13):** Make the new Windows CI job a required check (recommended: not now)?
+- **Q1 (D4):** resolved. The principals are the running account + `SYSTEM` + `BUILTIN\Administrators`, with a protected DACL. This is not strictly "owner-only".
+- **Q2 (D7):** resolved. This spec covers `secrets\` only. The data root, `postgres\data`, `postgres\runtime` and `logs\` move to [#78](https://github.com/nurtuo/nurtuo/issues/78).
+- **Q3 (D9):** resolved. Operator-chosen `dir` / `encrypted-file` paths are checked and fail closed with an actionable error. They are never repaired. Standalone-managed `secrets\` is still repaired (D2).
+- **Q4 (D13):** resolved. `go-windows` is not a required check. No branch-protection or repository-settings change.
 
-Non-blocking: all other rows in Decisions are implementer defaults.
+Non-blocking: all other rows in Decisions are implementer defaults. The D1 target direction (a shared private-path ACL layer) is a non-blocking TODO, not an open decision.
 
 ## Scope
 
 In scope:
 
 - Windows implementations of `checkPerm` and `chmodPrivate` in `core/runtime/internal/secrets` (today no-ops).
-- New exported helpers in the same package (D1): `EnsurePrivateDir` (create or repair a private directory tree) and an atomic private-file create used by `FileKeySource` and `writeFileAtomic`.
+- New exported helpers in the same package (D1, interim placement; see the TODO under "Proposed approach"): `EnsurePrivateDir` (create or repair a private directory tree) and an atomic private-file create used by `FileKeySource` and `writeFileAtomic`.
 - Standalone wiring: `DataDirs.Ensure` and `localBootstrapper.Bootstrap` protect `<data-dir>\secrets` and everything below it (`store\master.key`, `store\secrets.enc`, `admin-token`, `db-password`, `server.key`, `client.key`, the certificates) before any secret is written or read.
 - Startup repair of too-open DACLs on existing installs (D2), fail closed when repair is impossible (D3).
-- The `secrets.Open` path used by the runtime and `nurtuo secret` for `dir` / `encrypted-file` (D9, pending owner).
-- Windows-only tests and a non-required Windows CI job (D6).
-- User docs: interim warning (D5) and the final description of the Windows protection.
+- The `secrets.Open` path used by the runtime and `nurtuo secret` for `dir` / `encrypted-file` (D9). On Windows it checks an existing operator-chosen path and fails closed with an actionable error. It never repairs that path.
+- Windows-only tests and a non-required Windows CI job (D6, D13).
+- User docs: the final description of the Windows protection (Phase 3 step 3). The interim warning (D5) is specified in Phase 1, but the implementation PR skips it (see Phase 1).
 
 Non-goals:
 
+- Changing ACLs on operator-chosen `dir` / `encrypted-file` paths (D9). Those are check-and-fail-closed only.
+- Making `go-windows` a required check, or any branch-protection or repository-settings change (D13).
+- The shared / dedicated private-path ACL layer (D1 target direction; see the TODO).
+
 - Bundle delivery, `<data-dir>\bundles`, `bundle-signing.key` generation (issue #64; this spec only makes the helper reusable, see "Overlaps").
-- Protecting the data root, `postgres\data`, `postgres\runtime` or `logs\` (D7; recorded as gap 3).
+- Protecting the data root, `postgres\data`, `postgres\runtime` or `logs\` (D7, gap 3). Follow-up: [#78](https://github.com/nurtuo/nurtuo/issues/78).
 - DPAPI / OS keychain (`KeychainKeySource` stays a stub; connections-and-secrets gap 2).
 - Secret, master key, admin token or DB password rotation tooling (connections-and-secrets gaps 3 and 5).
 - Any Linux/macOS behaviour change (D8).
@@ -78,26 +87,30 @@ Non-goals:
 | Where | What it says | What the code does |
 |---|---|---|
 | `core/runtime/internal/secrets/perm_windows.go:9` (comment), [ADR 0010](../adr/0010-connections-and-secrets.md) `dir` row, [security.md](../security.md) "Secrets handling" | secret directories / the data dir inherit the owner's **profile** ACL | standalone's default root is `%ProgramData%\Nurtuo` (`standalone_layout.go:31`); the profile (`%LOCALAPPDATA%`) is only the fallback. The claim is stale; treated as unintentional (the issue confirms the ProgramData risk). The implementation PR fixes the comment and the user docs; ADR 0010 is not edited (its "future work" line is resolved by this spec). |
-| [connections-and-secrets](implemented/2026-11-21-connections-and-secrets.md) gap 1 | "set an owner-only DACL on the **secrets directory**" | the same exposure also applies to the `dir` provider and an `encrypted-file` `key_file` at any operator path, and to the bootstrap files that are never checked on read. The design covers them through the shared helpers (D1, D9). |
+| [connections-and-secrets](implemented/2026-11-21-connections-and-secrets.md) gap 1 | "set an owner-only DACL on the **secrets directory**" | the same exposure also applies to the `dir` provider and an `encrypted-file` `key_file` at any operator path, and to the bootstrap files that are never checked on read. The design covers them through the shared helpers: verification for every path; repair only for standalone-managed `secrets\` (D1, D2, D9). |
 | [security.md](../security.md) "Transport" bullet | standalone private keys `0600`, directory `0700` | true on POSIX only at creation; existing directories are never re-moded (`os.MkdirAll`), and on Windows modes are ignored. Unix part out of scope (D8, gap 6). |
 
 ### Proposed approach
 
 All new code is in `core/runtime/internal/secrets` (AGPL-3.0-only, same module as all callers; `cmd/nurtuo` already imports it). No new package.
 
-**1. Allowed principals (D4, pending owner).** One function `privateSIDs()` returns the set used for both setting and verifying:
+**D1 is interim.** The helpers sit in `internal/secrets` only for this issue (Łukasz, 2026-11-24: "na razie", meaning "for now"). This placement is temporary.
+
+> **TODO(#78): target direction for D1.** Move to a shared, dedicated private-path ACL layer, not permanently only inside `internal/secrets`. Then the D7 follow-up ([#78](https://github.com/nurtuo/nurtuo/issues/78): data root, `postgres\data`, `postgres\runtime`, `logs\`) can reuse it without stretching `internal/secrets`. This spec does not decide the package layout and does not implement the move. The implementation PR for #57 may add a matching `TODO(#78)` code comment at one obvious site (for example next to `EnsurePrivateDir`).
+
+**1. Allowed principals (D4, approved).** One function `privateSIDs()` returns the set used for both setting and verifying:
 
 - the process token user (`windows.GetCurrentProcessToken().GetTokenUser()`), not the file owner: an elevated administrator's new objects are owned by `BUILTIN\Administrators` by default, so "the owner" is not a reliable principal;
 - `NT AUTHORITY\SYSTEM` (`windows.CreateWellKnownSid(windows.WinLocalSystemSid)`): backup, the Windows service account of `nurtuo service`, no lock-out when an install later runs as a service;
 - `BUILTIN\Administrators` (`WinBuiltinAdministratorsSid`): an elevated operator can run `nurtuo secret set` against a store created by another account or by `LocalSystem`. Administrators can take ownership of any file anyway (`SeTakeOwnershipPrivilege`); on Unix `root` likewise bypasses `0700`.
 
-The strict "owner-only" alternative (token user only) is recorded in D4 with its lock-out risks.
+The strict "owner-only" alternative (token user only) was rejected in D4 because of its lock-out risks. The protection is therefore "private", not strictly "owner-only" as the issue title says.
 
 **2. DACL shape (maps `0700` / `0600`).**
 
 | Unix | Windows (proposed) |
 |---|---|
-| directory `0700` | protected DACL (`PROTECTED_DACL_SECURITY_INFORMATION`, so nothing inherits from `ProgramData`), one `ACCESS_ALLOWED` ACE `FILE_ALL_ACCESS` per allowed SID with `OBJECT_INHERIT_ACE \| CONTAINER_INHERIT_ACE` (built with `windows.ACLFromEntries`, `SUB_CONTAINERS_AND_OBJECTS_INHERIT`) |
+| directory `0700` | (D4) protected DACL (`PROTECTED_DACL_SECURITY_INFORMATION`, so nothing inherits from `ProgramData`), one `ACCESS_ALLOWED` ACE `FILE_ALL_ACCESS` per allowed SID with `OBJECT_INHERIT_ACE \| CONTAINER_INHERIT_ACE` (built with `windows.ACLFromEntries`, `SUB_CONTAINERS_AND_OBJECTS_INHERIT`) |
 | file `0600` | normally inherited from the private directory (atomic at create time); `chmodPrivate` additionally sets an explicit protected DACL with the same SIDs and no inheritance flags, for files whose parent is not a private directory (`key_file` at a custom path) |
 
 Applied with `windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, DACL_SECURITY_INFORMATION|PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, acl, nil)`; the owner is not changed (taking ownership needs privileges and would hide a planted object, see 4).
@@ -116,16 +129,22 @@ Applied with `windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, DACL_SE
 - the DACL is NULL (grants everyone) or cannot be read;
 - any `ACCESS_ALLOWED*` ACE (including inherit-only ACEs on a directory, which would propagate to new files) names a SID outside `privateSIDs()`. Tolerated extra SIDs: `CREATOR OWNER` (`S-1-3-0`, resolves to whoever may create files, i.e. an allowed SID) and `OWNER RIGHTS` (`S-1-3-4`). Unknown or callback/object ACE types that grant access fail closed. Deny ACEs are ignored. Strictness matches Unix `mode & 0o077 != 0` (any bit for group/other fails), so a `Users` ACE with only `READ_ATTRIBUTES` also fails.
 
-The decision logic is a pure function, `judgeDACL(owner string, aces []aceInfo, allowed map[string]bool) error`, in a file without a build tag (`private_acl.go`), so its table tests run on Linux in the required `go` job; only the Win32 extraction (`windows.GetAce`, `ACL.AceCount`) is in `perm_windows.go`. Error text names the path, the offending SID in string form (for example `S-1-5-32-545`) and a fix hint (restart `nurtuo standalone` to repair, or `icacls` for a custom path); it never contains file content.
+The decision logic is a pure function, `judgeDACL(owner string, aces []aceInfo, allowed map[string]bool) error`, in a file without a build tag (`private_acl.go`), so its table tests run on Linux in the required `go` job; only the Win32 extraction (`windows.GetAce`, `ACL.AceCount`) is in `perm_windows.go`. Error text names the path, the offending SID in string form (for example `S-1-5-32-545`) and a fix hint. It never contains file content. The hint depends on who owns the path:
 
-**5. Repair (`EnsurePrivateDir`, D2).** New exported API in `internal/secrets` (both OSes):
+- standalone-managed `secrets\`: restart `nurtuo standalone` to repair it.
+- operator-chosen `dir` / `encrypted-file` path (D9): the allowed principals (this account, `SYSTEM`, `BUILTIN\Administrators`), a protected DACL, and `icacls` guidance. For example: `icacls "<path>" /inheritance:r /grant:r "<account>:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F"`, then `icacls "<path>" /remove "<offending principal>"`. Drop `(OI)(CI)` for a file. For a foreign owner, `takeown` / `icacls /setowner` after checking the contents.
+
+**5. Repair (`EnsurePrivateDir`, D2) and check-only (D9).** New exported API in `internal/secrets` (both OSes; interim placement, D1):
 
 ```go
-// EnsurePrivateDir creates path (0700 on Unix, protected owner-only DACL on Windows) and, on
+// EnsurePrivateDir creates path (0700 on Unix, protected private DACL on Windows) and, on
 // Windows, verifies and repairs the directory and everything below it. It returns the paths whose
 // DACL it tightened. It fails closed if any object has a foreign owner or cannot be fixed.
+// Only for Nurtuo-managed paths (standalone secrets\, #64 bundles\); never for operator-chosen paths (D9).
 func EnsurePrivateDir(path string) (repaired []string, err error)
 ```
+
+Operator-chosen paths use a check-only counterpart (D9). It is unexported, and the implementer picks the name, for example `ensurePrivateDirNoRepair`. It creates a missing leaf exactly like `EnsurePrivateDir`; creating a new private object is not a change to an operator's ACL. For an existing directory it walks the tree with `checkPerm` and fails closed with the actionable operator error from step 4. It **never** calls `SetNamedSecurityInfo` on an existing object. On Unix it is `os.MkdirAll(path, 0o700)`, the same as today.
 
 Windows algorithm: create missing leaf as in 3; walk the tree without following reparse points (refuse them); for each object: foreign owner → error, no change; DACL acceptable → nothing; DACL too open → `SetNamedSecurityInfo` with the private DACL (directories: inheritable; `SetNamedSecurityInfo` also propagates to children whose DACL is not protected), record the path, re-run `checkPerm`, error if still too open. The function never adds an ACE outside `privateSIDs()` and never removes allowed ones, so it cannot weaken protection.
 
@@ -137,8 +156,9 @@ Unix: `os.MkdirAll(path, 0o700)` and `nil` repaired list, exactly today's behavi
 |---|---|
 | `DataDirs.Ensure` (`standalone_layout.go:71`) | `secrets.EnsurePrivateDir(d.Secrets)` instead of `os.MkdirAll(d.Secrets, 0o700)`; repaired paths are printed once to stderr (`standalone: tightened permissions on <path>`) by `runStandalone`. Signature becomes `Ensure() ([]string, error)` or takes a writer (implementer choice; internal). |
 | `localBootstrapper.Bootstrap` (`standalone_bootstrap.go:56`) | same helper instead of `MkdirAll`. All bootstrap files are written and read below a verified directory. |
-| `Dir.Set` (`dir.go:83`), `Encrypted.save` (`encrypted.go:185`), `FileKeySource.Key` (`encrypted.go:68`) | `EnsurePrivateDir(dir)` instead of `MkdirAll(dir, 0o700)` (on Unix identical). For `FileKeySource` with a custom `key_file`, only the file is protected via `createPrivateExclusive`; its parent is created with `EnsurePrivateDir` only when missing (an existing operator directory is not rewritten). |
-| `secrets.Open` (`open.go`) for `dir` / `encrypted-file` (D9, pending owner) | on Windows, when `Path` exists, run `EnsurePrivateDir(Path)` and protect an existing `KeyFile`; error → `Open` fails, so the runtime refuses to start (`run.go:45`) and `nurtuo secret` exits 1. Unix: unchanged. |
+| `standaloneSecretStore` (`secret.go:125`, `nurtuo secret` without flags) | `EnsurePrivateDir(<data-dir>\secrets)` before opening the store, so the standalone write path repairs as D2 requires. The store is standalone-managed. |
+| `Dir.Set` (`dir.go:83`), `Encrypted.save` (`encrypted.go:185`), `FileKeySource.Key` (`encrypted.go:68`) | the check-only helper (step 5) instead of `MkdirAll(dir, 0o700)`; on Unix it is identical. A missing directory is created private. An existing one is verified, and a problem fails closed **without repair** (D9). The standalone store passes because standalone has already repaired `secrets\` (rows above). For `FileKeySource` with a custom `key_file`, a new file is created private with `createPrivateExclusive`. An existing operator directory or key file is only checked, never rewritten. |
+| `secrets.Open` (`open.go`) for `dir` / `encrypted-file` (D9) | on Windows, when `Path` exists, check it (check-only helper, no repair) and check an existing `KeyFile` with `checkPerm`. If either is too open or has a foreign owner, `Open` fails with the actionable operator error (step 4). The runtime then refuses to start (`run.go:45`) and `nurtuo secret` exits 1. No ACL on that path is changed. Unix: unchanged. |
 | read paths (`Dir.checkDir`, `Dir.Get`, `FileKeySource.Key`, `Encrypted.load`) | unchanged; they now call the real Windows `checkPerm`. Windows only: `Encrypted.load` also checks its directory. |
 
 **7. Failure modes and what the operator sees.**
@@ -149,7 +169,8 @@ Unix: `os.MkdirAll(path, 0o700)` and `nil` repaired list, exactly today's behavi
 | Existing install, inherited `Users` read | DACL repaired at start; stderr lists repaired paths; start continues. Release note: the material was readable before; rotate on multi-user hosts (D12) |
 | `secrets\` or a file inside owned by another (non-allowed) account | start refused: `standalone: <path> is owned by S-1-5-21-…-1002, not by this account, SYSTEM or Administrators; remove it or take ownership after checking its contents`. Exit 1. No content read. |
 | Repair fails (access denied: install created by a different non-admin user) | start refused with path and Win32 error; fix: run as that user or as administrator |
-| Read path finds a too-open DACL after start (someone changed it) | the read fails with the path and SID; deployments fail `Prepare` with that message (no secret value in it); next start repairs |
+| Read path finds a too-open DACL after start (someone changed it) | the read fails with the path and SID; deployments fail `Prepare` with that message (no secret value in it). Standalone: the next start repairs it. Operator-chosen path: the operator fixes it (D9) |
+| Distributed runtime / `nurtuo secret --provider …` on Windows: existing operator-chosen `dir` / `encrypted-file` path (or `key_file`) is too open or foreign-owned (D9) | `Open` fails and the runtime refuses to start (exit 1). The error names the path, the offending SID, the allowed principals, and the `icacls` (or `takeown`) commands to fix it. Nothing on that path is changed and no content is read |
 | Run as a different account later (for example a virtual service account `NT SERVICE\…`) | access denied, refused; documented (gap 4) |
 
 **Rollback.** Reverting the code restores the no-ops. The tightened DACLs stay on disk and are harmless for the account that ran Nurtuo (it remains in the DACL); an operator who needs inheritance back can run `icacls <path> /reset /T`. No data migration.
@@ -190,7 +211,7 @@ No public contract changes. Behaviour changes on Windows only:
 
 - Existing standalone installs: DACLs of `secrets\` are tightened at the next start. Other local non-admin users lose read access (intended). Tools or scripts running as a different non-admin account that read `admin-token` stop working; documented in release notes.
 - Existing installs where `secrets\` content was created by another non-admin account (planted or multi-user use): start is refused until the operator resolves it (fail closed).
-- Distributed runtime on Windows with `dir` / `encrypted-file` (D9): a store directory an operator created under `ProgramData` is tightened at the next start, or start fails when it has a foreign owner. Operators who intentionally granted a group read access lose it (they can switch to `env`). Pending owner decision.
+- Distributed runtime on Windows with `dir` / `encrypted-file` (D9): Nurtuo **does not change** the ACL of an operator-chosen store directory or `key_file`. If that path is too open (for example created under `ProgramData` with inherited `Users` read) or has a foreign owner, the next start fails closed. The error tells the operator how to fix the ACL (principals, `icacls`). Operators who intentionally granted a group read access must remove it or switch to `env`. Release notes call this out as an upgrade step for Windows service installs.
 - Linux / macOS: no change (D8).
 
 Changeset: none (`core/` is not a published npm package or Go module tag).
@@ -198,34 +219,44 @@ Changeset: none (`core/` is not a published npm package or Go module tag).
 ## Security
 
 - Threat addressed: another interactive or remote-desktop user, or a low-privileged local process under another account, on the same Windows host reading or pre-planting standalone secret material.
-- Not addressed: administrators and `SYSTEM` (by design, D4); malware running as the Nurtuo account; backups of the data dir (connections-and-secrets gap 2); data in `postgres\data` and `logs\` (D7).
-- Fails closed: foreign owner, NULL DACL, unknown granting ACE, reparse points, repair failure.
-- Never weakens: repair only removes non-allowed ACEs and inheritance; never adds a principal outside `privateSIDs()`.
+- Not addressed: administrators and `SYSTEM` (by design, D4); malware running as the Nurtuo account; backups of the data dir (connections-and-secrets gap 2); data in the data root, `postgres\data`, `postgres\runtime` (planted binaries) and `logs\` (D7, follow-up [#78](https://github.com/nurtuo/nurtuo/issues/78)).
+- Fails closed: foreign owner, NULL DACL, unknown granting ACE, reparse points, repair failure, and any too-open operator-chosen path (D9, no repair).
+- Never weakens: repair (standalone-managed `secrets\` only) only removes non-allowed ACEs and inheritance; never adds a principal outside `privateSIDs()`. Operator-chosen paths are never modified (D9).
 - Secrets never appear in errors or logs; messages contain paths and SIDs only.
-- Interim: until the implementation ships, "do not run `nurtuo standalone` on a multi-user Windows host" (D5).
-- AGENTS.md: security work → spec approval before code; no check is disabled or skipped.
+- Interim: until the implementation ships, "do not run `nurtuo standalone` on a multi-user Windows host" (D5). The implementation PR documents the final behaviour directly (see Phase 1).
+- AGENTS.md: security work → spec approval before code; no check is disabled or skipped. `go-windows` stays non-required, with no branch-protection change (D13).
 
 ## Decisions
 
-Recommendations are not decisions until Łukasz confirms the `needs-owner` rows. Implementer defaults are reversible and do not block approval.
+### Owner decisions (approved by Łukasz, 2026-11-24, Europe/Warsaw)
+
+These follow how Boomi handles it: close to Boomi, not a verbatim copy. They are not reopened by implementation.
+
+- **D4: YES (recommendation).** DACL principals = running account + `SYSTEM` + `BUILTIN\Administrators`. Protected DACL: no inheritance from ProgramData. Inheritable ACEs on directories; files under a protected directory inherit; stand-alone files get an explicit DACL. Not strictly "owner-only".
+- **D7: YES (recommendation).** This spec covers `secrets\` only. The data root, `postgres\data` and `logs\` (including the planted-binary risk under `postgres\runtime`) are follow-up [#78](https://github.com/nurtuo/nurtuo/issues/78).
+- **D9: Boomi-like, closer to (b)/(c) than (a).** Do **not** change ACLs on operator-chosen paths for the `dir` / `encrypted-file` runtime. Those paths are **checked and fail closed** with a **clear error that tells the operator how to fix** the ACL (which principals, `icacls` guidance). Standalone-managed `secrets\` **may still be repaired** at startup and on write paths, per D2. Phase 3 step 1, the acceptance criteria and the tests are amended: `TestOpenRepairsWindowsStore` is replaced by `TestOpenFailsClosedOnOpenOperatorStore`.
+- **D13: YES (recommendation, non-blocking).** The `go-windows` job is **not** a required check. No change to branch protection or repository settings.
+- **D1 (implementer default), interim only.** Łukasz, 2026-11-24: "na razie" ("for now"). Real Windows `checkPerm` / `chmodPrivate` plus the exported `EnsurePrivateDir` in `internal/secrets`, reusable by #64, is the approach **for this issue**. The placement in `internal/secrets` is temporary. Target direction: **TODO(#78)** under "Proposed approach" (a shared / dedicated private-path ACL layer). That target is not implemented here, and no package layout is decided.
+
+All blocking owner questions are resolved. The remaining rows are implementer defaults; they are reversible and do not need owner re-approval. The table keeps the original options for the record. The Class column shows the outcome.
 
 | ID | Question | Options | Recommendation | Why | Class |
 |---|---|---|---|---|---|
-| D1 | Helper scope | (a) one-off DACL on `secrets\` in `cmd/nurtuo`; (b) real Windows `checkPerm`/`chmodPrivate` + exported `EnsurePrivateDir` in `internal/secrets` for every private path | **(b)** | the four existing `checkPerm` call sites, the `dir` provider, `key_file` and #64 (`bundles\`, `bundle-signing.key`) get the same protection; no new package; no bundle delivery work | implementer-default |
-| D2 | Repair existing installs at startup? | (a) only at creation; (b) verify and repair at standalone start (and store write paths) | **(b)**, never adding principals, never changing the owner, foreign owner → refuse | every install before this change has an inherited `Users` ACE; creation-only would leave all of them open | implementer-default |
-| D3 | Verify-on-read failure mode | fail closed / tighten and continue / warn only | **fail closed after an attempted repair** at start; read paths fail closed without repairing | matches Unix `checkPerm`; warn-only would weaken protection (that alternative would need the owner) | implementer-default |
-| D4 | DACL shape | (a) token user only (issue wording); (b) token user + `SYSTEM` + `BUILTIN\Administrators`; protected (no inheritance from ProgramData), inheritable ACEs on directories, files inherit, explicit DACL on stand-alone files | **(b)** | equivalent of `0700`/`0600` plus root; (a) locks out an elevated operator (`nurtuo secret set`) and a later `LocalSystem` service and breaks backup; admins can take ownership anyway | **needs-owner** (security policy; deviates from "owner-only" in the issue) |
-| D5 | Interim warning "do not run standalone on a multi-user Windows host" | in this spec PR / in the implementation PR / tiny docs PR now; `SECURITY.md` / `docs/security.md` / `docs/operations.md` | **tiny docs-only PR right after this spec PR merges** (no spec needed: docs-only), in `docs/security.md` ("Secrets handling") and `docs/operations.md` (standalone section); not `SECURITY.md` (vulnerability reporting policy). This PR stays spec-only (like #70); the implementation PR replaces the warning with the new behaviour | the warning ships even if implementation slips; the risk is already public in issue #57 and gap 1 | implementer-default |
+| D1 | Helper scope | (a) one-off DACL on `secrets\` in `cmd/nurtuo`; (b) real Windows `checkPerm`/`chmodPrivate` + exported `EnsurePrivateDir` in `internal/secrets` for every private path | **(b)** | the four existing `checkPerm` call sites, the `dir` provider, `key_file` and #64 (`bundles\`, `bundle-signing.key`) get the same protection; no new package; no bundle delivery work. **Interim** placement (Łukasz, 2026-11-24); target direction is TODO(#78), a shared private-path ACL layer | implementer-default (interim) |
+| D2 | Repair existing installs at startup? | (a) only at creation; (b) verify and repair at standalone start (and store write paths) | **(b)**, never adding principals, never changing the owner, foreign owner → refuse. Repair applies only to standalone-managed paths (`secrets\`); operator-chosen paths are check-only (D9) | every install before this change has an inherited `Users` ACE; creation-only would leave all of them open | implementer-default |
+| D3 | Verify-on-read failure mode | fail closed / tighten and continue / warn only | **fail closed after an attempted repair** at standalone start; read paths and operator-chosen paths fail closed without repairing | matches Unix `checkPerm`; warn-only would weaken protection (that alternative would need the owner) | implementer-default |
+| D4 | DACL shape | (a) token user only (issue wording); (b) token user + `SYSTEM` + `BUILTIN\Administrators`; protected (no inheritance from ProgramData), inheritable ACEs on directories, files inherit, explicit DACL on stand-alone files | **(b)** | equivalent of `0700`/`0600` plus root; (a) locks out an elevated operator (`nurtuo secret set`) and a later `LocalSystem` service and breaks backup; admins can take ownership anyway | **owner: approved (b)**, Łukasz 2026-11-24 |
+| D5 | Interim warning "do not run standalone on a multi-user Windows host" | in this spec PR / in the implementation PR / tiny docs PR now; `SECURITY.md` / `docs/security.md` / `docs/operations.md` | **tiny docs-only PR right after this spec PR merges** (no spec needed: docs-only), in `docs/security.md` ("Secrets handling") and `docs/operations.md` (standalone section); not `SECURITY.md` (vulnerability reporting policy). This PR stays spec-only (like #70); the implementation PR replaces the warning with the new behaviour. **Update at approval:** the implementation PR follows immediately, so it skips a separate interim-warning PR and documents the new behaviour (Phase 3 step 3) instead | the warning ships even if implementation slips; the risk is already public in issue #57 and gap 1 | implementer-default |
 | D6 | Windows CI | (a) `//go:build windows` tests only, run manually; (b) new non-required `go-windows` job on `windows-latest` | **(b)**: `go test ./internal/secrets/... ./cmd/nurtuo/...` (without `-race`, it needs cgo) in `core/runtime`, plus the gated two-user test with `NURTUO_TEST_WINDOWS_OTHER_USER=1` | repo is public, GitHub-hosted runners are free; no Windows runner exists today (all jobs `ubuntu-latest`; the `go` job only cross-compiles `cmd/nurtuo` for Windows and never compiles Windows test files); AGENTS.md: CI changes that only add jobs need no owner | implementer-default |
-| D7 | Data root, `postgres\data`, `logs\` | (a) `secrets\` only; (b) also the data root and Postgres cluster | **(a) in this spec; (b) as a follow-up issue/spec** | the issue is about secrets; the root holds Postgres binaries (`postgres\runtime`, planting risk) and a database with users and audit, which needs its own analysis (embedded Postgres behaviour on Windows, operators reading logs) | **needs-owner** (scope) |
+| D7 | Data root, `postgres\data`, `logs\` | (a) `secrets\` only; (b) also the data root and Postgres cluster | **(a) in this spec; (b) as a follow-up issue/spec** | the issue is about secrets; the root holds Postgres binaries (`postgres\runtime`, planting risk) and a database with users and audit, which needs its own analysis (embedded Postgres behaviour on Windows, operators reading logs) | **owner: approved (a)**, Łukasz 2026-11-24; follow-up [#78](https://github.com/nurtuo/nurtuo/issues/78) |
 | D8 | Unix parity (bootstrap files unchecked; `MkdirAll` never re-modes) | change Linux/macOS too / Windows only | **Windows only**; Unix helpers keep today's semantics; Unix gap filed as follow-up | keeps the change Windows-scoped and reviewable | implementer-default |
-| D9 | Non-standalone runtime on Windows (`nurtuo run` / `nurtuo service`, `secrets.provider: dir \| encrypted-file`) | (a) repair + fail closed in `secrets.Open`; (b) read paths fail closed, no repair; (c) standalone only, distributed stays a no-op | **(a)** | read checks are shared (`checkPerm`), so (c) would need a Windows-only bypass; (b) breaks existing service installs without a fix path; (a) changes ACLs on operator-chosen paths, so it is the owner's call | **needs-owner** (scope and behaviour change for existing installs) |
+| D9 | Non-standalone runtime on Windows (`nurtuo run` / `nurtuo service`, `secrets.provider: dir \| encrypted-file`) | (a) repair + fail closed in `secrets.Open`; (b) read paths fail closed, no repair; (c) standalone only, distributed stays a no-op | draft recommended (a) | read checks are shared (`checkPerm`), so (c) would need a Windows-only bypass; (b) breaks existing service installs without a fix path; (a) changes ACLs on operator-chosen paths, so it is the owner's call | **owner: Boomi-like, closer to (b)/(c) than (a)**, Łukasz 2026-11-24. Operator-chosen paths: check and fail closed with an actionable fix error (principals, `icacls`), never repaired. Standalone-managed `secrets\`: repaired per D2. The actionable error is the fix path that (b) lacked |
 | D10 | `golang.org/x/sys/windows` | direct use / write own syscalls | **direct use** | already in `go.mod` (indirect) and in the Windows binary via `kardianos/service`; BSD-3-Clause; not a new production dependency | implementer-default |
 | D11 | Overlap with #54 | — | **none**; keep independent | control plane authorization vs runtime file ACLs | implementer-default (informational) |
 | D12 | Material already exposed on existing multi-user hosts | auto-rotate / document | **document** in release notes: rotate `admin-token`, `db-password`, connection secrets (master key rotation has no tool, gap 5 of connections-and-secrets) | no rotation tooling exists; out of scope | implementer-default |
-| D13 | Make `go-windows` a required check | yes / not now | **not now**; revisit when stable | required checks are branch protection (repository settings) | **needs-owner** (non-blocking; repo settings) |
+| D13 | Make `go-windows` a required check | yes / not now | **not now**; revisit when stable | required checks are branch protection (repository settings) | **owner: approved, not required**, Łukasz 2026-11-24; no branch-protection or repo-settings change |
 | D14 | Change `DefaultDataRoot` on Windows | keep / move to `%LOCALAPPDATA%` | **keep** | documented stable layout; profile paths do not fit a service | implementer-default |
-| D15 | Split into more than one spec? | one / several | **one spec, three phases** | one capability (Windows private ACLs); data root split out by D7 | implementer-default |
+| D15 | Split into more than one spec? | one / several | **one spec, three phases** | one capability (Windows private ACLs); data root split out by D7 (#78) | implementer-default |
 | D16 | Interaction with #64 | — | #64 calls `EnsurePrivateDir(<data-dir>\bundles)`; `bundle-signing.key` inherits from `secrets\`; no change to bundle-dir D3 | reuse, no respecification | implementer-default (informational) |
 
 ## Step plan
@@ -234,44 +265,49 @@ Recommendations are not decisions until Łukasz confirms the `needs-owner` rows.
 
 1. Add "do not run `nurtuo standalone` on a multi-user Windows host; other local users can read `%ProgramData%\Nurtuo\secrets`" to `docs/security.md` ("Secrets handling") and `docs/operations.md` (standalone section), and correct the stale "profile ACL" sentence. Verified by `node scripts/check-docs-links.mjs`. Separate tiny PR, not this one.
 
+**At approval (2026-11-24):** the implementation PR follows immediately after this spec, so it **skips** a separate interim-warning PR. It documents the new behaviour (Phase 3 step 3) instead, including the stale "profile ACL" fix. Phase 1 stays specified only as the fallback if implementation slips.
+
 ### Phase 2: Windows private-ACL helpers and standalone wiring (Closes #57 together with Phase 3)
 
 1. Characterization: add `TestDataDirsEnsureUnixModes` (Unix) asserting today's modes, and the pure `judgeDACL` table tests. Green on unchanged code (for `judgeDACL`, the function lands with its tests). Verified by `go test ./internal/secrets/... ./cmd/nurtuo/...` on Linux.
-2. Implement `privateSIDs`, ACL build/extract, `judgeDACL`, real Windows `checkPerm` and `chmodPrivate`, `createPrivateExclusive`, `EnsurePrivateDir` (`perm_windows.go`, `private_acl.go`; Unix counterparts in `perm_unix.go`). Verified by Windows unit tests (Tests) and `GOOS=windows go vet ./internal/secrets/...` on Linux.
-3. Use them in `Dir.Set`, `Encrypted.save`, `FileKeySource.Key`, `writeFileAtomic`. Verified by the existing `secrets_test.go` suite on Linux (unchanged) and Windows.
-4. Wire `DataDirs.Ensure` / `localBootstrapper.Bootstrap` / `runStandalone` (repaired-path message). Verified by `standalone_windows_test.go`.
-5. Add the `go-windows` CI job (D6). Verified by the job running green on the PR.
+2. Implement `privateSIDs`, ACL build/extract, `judgeDACL`, real Windows `checkPerm` and `chmodPrivate`, `createPrivateExclusive`, `EnsurePrivateDir` and its check-only counterpart (`perm_windows.go`, `private_acl.go`; Unix counterparts in `perm_unix.go`). These are placed in `internal/secrets` as the interim D1 location; a `TODO(#78)` comment at one obvious site (for example `EnsurePrivateDir`) is fine. Verified by Windows unit tests (Tests) and `GOOS=windows go vet ./internal/secrets/...` on Linux.
+3. Use them in `Dir.Set`, `Encrypted.save`, `FileKeySource.Key` (check-only helper, D9) and `writeFileAtomic` (`createPrivateExclusive`). Verified by the existing `secrets_test.go` suite on Linux (unchanged) and Windows.
+4. Wire `DataDirs.Ensure` / `localBootstrapper.Bootstrap` / `runStandalone` (repaired-path message) and `standaloneSecretStore` (`EnsurePrivateDir`, D2). Verified by `standalone_windows_test.go`.
+5. Add the non-required `go-windows` CI job (D6, D13; no branch-protection change). Verified by the job running green on the PR.
 
 ### Phase 3: verify everywhere and docs
 
-1. `secrets.Open` repair for `dir` / `encrypted-file` on Windows (only if D9 = (a); with (b) skip it; with (c) the spec must first be amended with a standalone-only switch for the Windows `checkPerm`). Verified by `TestOpenRepairsWindowsStore`.
+1. `secrets.Open` check-and-fail-closed for an existing operator-chosen `dir` / `encrypted-file` path and `key_file` on Windows (D9). Make **no repair**, and return an actionable error with the path, the offending SID, the allowed principals and the `icacls` / `takeown` guidance from Design step 4. Verified by `TestOpenFailsClosedOnOpenOperatorStore`.
 2. Gated two-user test (`NURTUO_TEST_WINDOWS_OTHER_USER=1`) in the `go-windows` job. Verified by the job log showing the test ran, not skipped.
 3. Docs: replace the interim warning with the new behaviour (which principals, repair message, foreign-owner refusal, rotation advice) in `docs/security.md` and `docs/operations.md`; fix the `perm_windows.go` comment; update connections-and-secrets gap 1 status via this spec's changelog; move this spec to `implemented/`. Verified by `node scripts/check-docs-links.mjs`.
 
-Phase 2 and Phase 3 step 1 must land in the same PR: the real Windows `checkPerm` also guards the distributed runtime's read paths, so shipping it without the D9 outcome would make an existing too-open Windows store fail with no repair path. Phase 3 steps 2 and 3 may follow separately. After Phase 2 (with Phase 3 step 1) fresh and existing standalone installs are private and repaired, and the system works.
+Phase 2 and Phase 3 step 1 must land in the same PR. The real Windows `checkPerm` also guards the distributed runtime's read paths. Without step 1, an existing too-open operator store would fail at the first read with a bare error, not at `Open` with the D9 fix guidance. Phase 3 steps 2 and 3 may follow separately. After Phase 2 (with Phase 3 step 1) fresh and existing standalone installs are private and repaired, and the system works.
 
 ### Deferred (not in this spec)
 
-- Data root / `postgres\data` / `logs\` (D7 follow-up).
+- Data root / `postgres\data` / `postgres\runtime` (planted binaries) / `logs\`: D7 follow-up, [#78](https://github.com/nurtuo/nurtuo/issues/78). This is the durable repo record for those ACLs.
+- Shared / dedicated private-path ACL layer (D1 target direction, TODO(#78)).
 - `bundles\` creation (#64, uses `EnsurePrivateDir`).
 - Unix bootstrap-file checks (D8 follow-up).
 
 ## Acceptance criteria
 
 - WHEN `nurtuo standalone` has started once on Windows with the default data root THEN a second, non-administrator local user cannot open `%ProgramData%\Nurtuo\secrets`, `secrets\store\master.key`, `secrets\store\secrets.enc`, `secrets\admin-token`, `secrets\db-password`, `secrets\server.key` or `secrets\client.key` for reading (`ERROR_ACCESS_DENIED`), and cannot create a file in `secrets\` or `secrets\store\`.
-- WHEN those objects are inspected THEN their DACL is protected and every allow ACE names only the token user, `SYSTEM` or `Administrators` (or the D4 outcome), and the owner is one of those.
+- WHEN those objects are inspected THEN their DACL is protected and every allow ACE names only the token user, `SYSTEM` or `BUILTIN\Administrators` (D4), and the owner is one of those.
 - WHEN an existing install has `secrets\` with inherited `Users` read access THEN the next `nurtuo standalone` start tightens it, prints each repaired path to stderr and starts normally.
 - WHEN `secrets\` or any object below it is owned by a SID outside the allowed set THEN `nurtuo standalone` exits 1 with an error naming the path and the SID, without reading or modifying the object.
 - WHEN after start an allow ACE for `Users` is added to `secrets\store\secrets.enc` THEN `nurtuo secret get` and the runtime's secret resolution fail with an error naming the path (no secret value in the message), and the next standalone start repairs it.
 - WHEN the DACL of a checked object is NULL or contains an unknown granting ACE type THEN verification fails closed.
 - WHEN `writeFileAtomic` replaces `secrets.enc` THEN the new file has the private DACL from its first instant (created with security attributes, not tightened afterwards).
 - WHEN the same code runs on Linux or macOS THEN all existing tests pass unchanged and file/directory modes and errors are as before.
-- WHEN (D9 = a) the Windows runtime starts with `secrets.provider: encrypted-file` and an existing too-open `path` THEN it is repaired, or start fails on a foreign owner.
+- WHEN (D9) the Windows runtime (or `nurtuo secret --provider dir|encrypted-file`) starts with an existing operator-chosen `path` or `key_file` that is too open or foreign-owned THEN `Open` fails closed. The error names the path and offending SID, lists the allowed principals and gives `icacls` (or `takeown`) fix guidance. The path's DACL and owner are unchanged afterwards (no repair), and no secret content is read.
+- WHEN (D9) the operator-chosen `path` does not exist yet THEN the first write creates it with the private DACL.
+- WHEN the change is merged THEN `go-windows` is not a required check and branch protection is unchanged (D13).
 - WHEN #64 calls `EnsurePrivateDir(<data-dir>\bundles)` THEN it gets `0700` on Unix and the private DACL on Windows without new helper code.
 
 ## Tests
 
-Tests ship in the same PR as the code. Windows files use `//go:build windows`; they run in the new `go-windows` job (`windows-latest`, `working-directory: core/runtime`, `go test -count=1 ./internal/secrets/... ./cmd/nurtuo/...`). Linux CI additionally compiles them with `GOOS=windows go vet ./internal/secrets/... ./cmd/nurtuo/...` (in the new job or as a step there, not in the required `go` job).
+Tests ship in the same PR as the code. Windows files use `//go:build windows`; they run in the new non-required (D13) `go-windows` job (`windows-latest`, `working-directory: core/runtime`, `go test -count=1 ./internal/secrets/... ./cmd/nurtuo/...`). Linux CI additionally compiles them with `GOOS=windows go vet ./internal/secrets/... ./cmd/nurtuo/...` (in the new job or as a step there, not in the required `go` job).
 
 | Test | What it covers | How to run | Notes |
 |---|---|---|---|
@@ -285,7 +321,8 @@ Tests ship in the same PR as the code. Windows files use `//go:build windows`; t
 | `TestEnsurePrivateDirRefusesReparsePoint` | junction (`mklink /J` via `cmd /c`) or symlink inside the tree → error | same | skip if neither can be created |
 | `TestDataDirsEnsureSecretsPrivate` in `core/runtime/cmd/nurtuo/standalone_windows_test.go` | `DataDirs.Ensure` + `localBootstrapper.Bootstrap` on a temp root: every file under `secrets\` passes `checkPerm`; second run reports no repairs | `go-windows` job | |
 | `TestStandaloneRepairsLegacySecretsACL` | pre-create `secrets\` with a `Users` ACE and an `admin-token`; Ensure repairs, prints the path, token value unchanged | same | |
-| `TestOpenRepairsWindowsStore` in `internal/secrets/perm_windows_test.go` | only if D9 = (a): `secrets.Open` on an existing too-open store dir repairs it | same | |
+| `TestOpenFailsClosedOnOpenOperatorStore` in `internal/secrets/perm_windows_test.go` | D9 (replaces the draft `TestOpenRepairsWindowsStore`). `secrets.Open` runs on an existing operator-chosen `dir` and `encrypted-file` store dir (and a `key_file`) that has a `BUILTIN\Users` ACE. It fails, and the error contains the path, `S-1-5-32-545`, the allowed principals and `icacls`. Afterwards the DACL (read back via `GetNamedSecurityInfo`) is byte-for-byte unchanged: **no repair** | same | |
+| `TestDirSetCreatesMissingOperatorDirPrivate` | D9: `Dir.Set` / `Encrypted.save` with a non-existent operator path creates it with the protected DACL; with an existing too-open path they fail closed without changing it | same | |
 | `TestOtherLocalUserCannotReadSecrets` in `internal/secrets/perm_windows_otheruser_test.go` | creates a temporary local user (`net user <random> <random-password> /add`, deleted in `t.Cleanup`), `LogonUserW` + `ImpersonateLoggedOnUser` (lazy `advapi32` procs), then: open of each named file → `ERROR_ACCESS_DENIED`; create in `secrets\` → denied; with the other user pre-creating `secrets\store\` before the first run → `EnsurePrivateDir` / `FileKeySource` fail closed on foreign owner | `go-windows` job with `NURTUO_TEST_WINDOWS_OTHER_USER=1` (runner is admin) | skipped without the variable or without admin rights; the random password is never logged |
 | `TestDataDirsEnsureUnixModes` in `cmd/nurtuo/standalone_test.go` (Unix) | characterization: `secrets` `0700`, others `0755`; an existing `0755` `secrets` is left unchanged (D8) | `cd core/runtime && go test ./cmd/nurtuo -run TestDataDirsEnsureUnixModes` | green on unchanged code |
 | existing `secrets_test.go`, `secret_test.go`, `standalone_test.go`, `standalone_e2e_test.go` | regression | `cd core/runtime && go test -race ./internal/secrets/... ./cmd/nurtuo/...` | Linux, unchanged |
@@ -298,9 +335,9 @@ Manual check before closing #57 (the issue notes the risk was never verified on 
 |---|---|---|---|---|
 | 1 | Until the implementation ships, user B on a shared Windows host reads `secrets\store\master.key` and `secrets.enc` and decrypts every connection secret, or reads `admin-token` and logs in as the bootstrap owner | critical | standalone | this spec; interim warning (Phase 1, D5) |
 | 2 | Before the first start of a fresh install, user B pre-creates `%ProgramData%\Nurtuo\secrets\store\master.key` with a known key; `FileKeySource` would use it | high | secrets | owner check in `checkPerm` / `EnsurePrivateDir` refuses foreign-owned objects (fail closed) |
-| 3 | User B reads `postgres\data` (users, password hashes, audit) or plants an executable in `postgres\runtime` that the next start runs as the Nurtuo account | high | standalone | out of scope (D7); follow-up issue for the data root |
+| 3 | User B reads `postgres\data` (users, password hashes, audit) or plants an executable in `postgres\runtime` that the next start runs as the Nurtuo account | high | standalone | out of scope (D7); follow-up [#78](https://github.com/nurtuo/nurtuo/issues/78) |
 | 4 | An install created by account A is later run by non-admin account C or a virtual service account; repair fails with access denied and standalone refuses to start | medium | standalone ops | clear error with path; documented: run as A, as administrator, or `icacls` grant; D4 (b) avoids it for admins and `SYSTEM` |
-| 5 | Repair at `secrets.Open` removes a group ACE an operator added on purpose for a distributed runtime store; the runtime then cannot read it under another account | medium | runtime | D9 owner decision; release notes; operators can use `env` |
+| 5 | An existing Windows service install has its operator-chosen `dir` / `encrypted-file` store under `ProgramData` with inherited `Users` read. After upgrade the runtime refuses to start until the operator fixes the ACL. Nurtuo does not repair it (D9) | medium | runtime | D9: actionable error with principals and `icacls` commands; release notes list it as an upgrade step; operators can use `env` |
 | 6 | Unix: an existing `secrets/` with mode `0755` or a `0644` `admin-token` is never detected (bootstrap files are not checked, `MkdirAll` never re-modes) | medium | standalone (Unix) | out of scope (D8); follow-up |
 | 7 | ACL evaluation misses a granting ACE kind (object, callback, conditional) and accepts an open DACL | medium | secrets | unknown granting ACE types fail closed; `judgeDACL` table tests |
 | 8 | The two-user test is flaky or unavailable on hosted runners (user creation policy), so the real cross-user check silently never runs | medium | CI | test logs "skipped" loudly; Phase 3 step 2 verification requires the job log; manual check before closing #57 |
@@ -311,11 +348,11 @@ Manual check before closing #57 (the issue notes the risk was never verified on 
 
 - DPAPI-protected `master.key` in `KeychainKeySource` (connections-and-secrets gap 2).
 - A `nurtuo standalone --check` that prints the ACL state without starting.
-- Apply `EnsurePrivateDir` to the whole data root once D7 is decided.
+- Apply the private-path helpers to the whole data root in the D7 follow-up [#78](https://github.com/nurtuo/nurtuo/issues/78), ideally after moving them to the shared private-path ACL layer (TODO(#78), D1 target direction).
 
 ## References
 
-- Issue #57; PR #47 (gap list); issue #64 and [runtime bundle_dir](2026-11-23-runtime-bundle-dir.md) D3; issue #54 and [workspace isolation](2026-11-22-workspace-isolation.md).
+- Issue #57; spec PR [#73](https://github.com/nurtuo/nurtuo/pull/73); D7 follow-up issue [#78](https://github.com/nurtuo/nurtuo/issues/78) (data root, `postgres\data`, `logs\`; D1 target direction); PR #47 (gap list); issue #64 and [runtime bundle_dir](2026-11-23-runtime-bundle-dir.md) D3; issue #54 and [workspace isolation](2026-11-22-workspace-isolation.md).
 - [ADR 0010](../adr/0010-connections-and-secrets.md); [connections-and-secrets](implemented/2026-11-21-connections-and-secrets.md); [runtime-cli-service-standalone](implemented/2026-11-21-runtime-cli-service-standalone.md).
 - Microsoft docs: `SetNamedSecurityInfoW`, `CreateDirectoryW` security attributes, "Default owner for objects created by members of the Administrators group" policy, ACE inheritance rules.
 - Pre-implement report: [analysis/pre-implement-windows-secrets-dacl.md](analysis/pre-implement-windows-secrets-dacl.md).
@@ -323,3 +360,4 @@ Manual check before closing #57 (the issue notes the risk was never verified on 
 ## Changelog
 
 - 2026-11-24: created as draft.
+- 2026-11-24: approved; decisions D4, D7, D9, D13 recorded (Boomi-aligned); D1 marked interim with TODO for shared ACL layer; D7 follow-up in #78. D9 amends Phase 3 step 1, the acceptance criteria and the tests: operator-chosen paths are check-and-fail-closed, never repaired (`TestOpenRepairsWindowsStore` replaced by `TestOpenFailsClosedOnOpenOperatorStore`). The implementation PR skips the separate Phase 1 interim-warning PR.

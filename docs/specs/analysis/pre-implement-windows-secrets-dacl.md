@@ -6,6 +6,16 @@
 
 Date: 2026-11-24. Analysis only. The spec's product decisions were not changed. Checked against `main` at `7953d4f`.
 
+> **Update 2026-11-24 (after the report): owner questions resolved.** The `no-go` verdict below was given because the spec was `draft` and D4, D7 and D9 were open. Łukasz has since answered all four (D4, D7, D9, D13; Boomi-aligned) and the spec is now `approved`. See the spec's Decisions section.
+>
+> - D4: running account + `SYSTEM` + `BUILTIN\Administrators`, protected DACL.
+> - D7: `secrets\` only. The data root, `postgres\data` and `logs\` are follow-up [#78](https://github.com/nurtuo/nurtuo/issues/78).
+> - D9: operator-chosen `dir` / `encrypted-file` paths are check-and-fail-closed with an actionable error and no repair; standalone `secrets\` is still repaired (D2). This resolves W1 without a standalone-only switch.
+> - D13: `go-windows` is not required, and branch protection is not changed.
+> - D1: interim placement in `internal/secrets`, with TODO(#78) for a shared private-path ACL layer.
+>
+> The remaining work is implementation. The conditional items under "During implementation" (W2, W3, I1, I2, plus I3–I5) still apply to the implementation PR. The verdict text below is kept as recorded. A re-run is expected to give `conditional`. "Next action" item 4 (separate Phase 1 PR) is superseded: the implementation PR documents the new behaviour directly (spec Phase 1 note).
+
 ## Blockers
 
 - Status is `draft`. The readiness gate cannot pass until the owner approves it.
