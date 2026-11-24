@@ -18,7 +18,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-  "grpcio-tools>=1.85.3",
+  # Exact pin: the committed stubs must match this codegen version; grpcio-tools 1.85.4 emits different output (gen_proto.py --check fails).
+  "grpcio-tools==1.85.3",
   "pytest>=8",
   "mypy>=1.10",
   "ruff>=0.5",
