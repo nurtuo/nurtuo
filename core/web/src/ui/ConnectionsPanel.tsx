@@ -145,7 +145,7 @@ export function ConnectionsPanel({ api, workspaceId, items, onChanged, onClose }
     }
     setBusy(true);
     try {
-      await api.putConnection(workspaceId, id, { connector, settings, credentials });
+      await api.putConnection(workspaceId, id, { connector, settings, ...(Object.keys(credentials).length > 0 ? { credentials } : {}) });
       await onChanged();
       setRemoved(false);
       setValues((p) => ({ ...p, password: "", token: "", apiKeyValue: "" }));
