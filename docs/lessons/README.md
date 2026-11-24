@@ -44,3 +44,4 @@ topics: ["contracts", "sftp", "migrations"]
 Row shape: `- [Title](slug.md) — area:a,b; package:x,y; topic:p,q`
 
 - [Do not name a proto message Descriptor](proto-message-name-descriptor-breaks-csharp.md) — area:contracts,ci; package:proto,bridges; topic:proto,csharp,compatibility
+- [Run golangci-lint locally, as CI does, before pushing Go changes](run-golangci-lint-before-pushing-go.md) — area:ci,testing; package:core,sdk,connectors; topic:golangci-lint,errcheck,staticcheck,go-check
