@@ -611,11 +611,12 @@ approval.
   [backward-compatibility-contract](2026-11-22-backward-compatibility-contract.md) (control plane env
   and standalone layout classes).
 - Superseded draft: [2026-11-22-bundle-artifact-delivery](2026-11-22-bundle-artifact-delivery.md).
-- #57 approved spec ([windows-secrets-dacl](2026-11-24-windows-secrets-dacl.md)), only for the
-  `EnsurePrivateDir` dependency; its implementation is not part of this issue.
+- #57 spec ([windows-secrets-dacl](implemented/2026-11-24-windows-secrets-dacl.md); implementation landed in [#85](https://github.com/nurtuo/nurtuo/pull/85)), only for the
+  `EnsurePrivateDir` dependency; wiring that call is this issue's step 14, not the DACL work itself.
 - Open Mercato: `code-workflow-version-pinning` (ship exactly the pinned definition that runs).
 
 ## Changelog
 
 - 2026-11-24: created as draft.
 - 2026-11-24: approved; Łukasz accepted D5, D7, D9, D11 (TS packer, opt-in NURTUO_BUNDLE_SIGNING_KEY_FILE, signed-only FetchArtifact, do not block Windows on #57). D2, D3, D6 unchanged. Merged `main` (#75 landed; #57 spec approved in #73).
+- 2026-11-24: merged `main` after #85; retargeted the #57 spec link to `docs/specs/implemented/`.
