@@ -51,11 +51,13 @@ runtime replaces the older one.
 
 ## Artifacts
 
-`bundle_digest` is an opaque digest. The runtime reads it from `bundle_dir`:
-`<hex>.json` (plain `{"flows":[...]}`, digest minus `sha256:`) or, with `trusted_keys`,
-`<sha256-of-archive>.bundle` verified for digest and Ed25519 signature. `POST /v1/components/{id}/revisions`
-accepts an optional `digest` so a revision can reference a packaged artifact digest; otherwise the
-control plane uses the sha256 of the canonical JSON content.
+`bundle_digest` identifies the local bundle. With `trusted_keys` set, the runtime verifies the
+SHA-256 and Ed25519 signature of `<hex>.bundle` in `bundle_dir`. If the file is missing or fails
+verification, the runtime requests the artifact on the same outbound mTLS connection as
+`Connect`. It caches the download under the digest after both checks pass.
 
-`FetchArtifact` is not implemented on either side: bundles are placed into `bundle_dir` out of band
-(the test does this). Known gaps are listed in the interop test report.
+When signing is enabled, the control plane advertises the signed archive's SHA-256 for derived
+revisions and serves it only to runtimes whose desired state references it. A revision submitted
+with an explicit `digest` still requires a manually placed archive. Runtimes with empty
+`trusted_keys` read local `<hex>.json` files only. See the distributed setup steps in
+[operations.md](operations.md#enable-signing-for-distributed-runtimes).

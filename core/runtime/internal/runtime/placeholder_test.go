@@ -67,15 +67,20 @@ func TestNoBundleDirNeverRunning(t *testing.T) {
 type placeholderGateway struct {
 	gatewayv1.UnimplementedRuntimeGatewayServiceServer
 	statuses chan *gatewayv1.DeploymentStatus
+	digest   string
 }
 
 func (g *placeholderGateway) Connect(stream gatewayv1.RuntimeGatewayService_ConnectServer) error {
 	if _, err := stream.Recv(); err != nil { // hello
 		return err
 	}
+	digest := g.digest
+	if digest == "" {
+		digest = "sha256:aa"
+	}
 	err := stream.Send(&gatewayv1.ConnectResponse{Msg: &gatewayv1.ConnectResponse_DesiredState{DesiredState: &gatewayv1.DesiredState{
 		Revision:    1,
-		Deployments: []*gatewayv1.Deployment{{DeploymentId: "d1", BundleDigest: "sha256:aa"}},
+		Deployments: []*gatewayv1.Deployment{{DeploymentId: "d1", BundleDigest: digest}},
 	}}})
 	if err != nil {
 		return err
@@ -86,7 +91,11 @@ func (g *placeholderGateway) Connect(stream gatewayv1.RuntimeGatewayService_Conn
 			return err
 		}
 		if x, ok := m.Msg.(*gatewayv1.ConnectRequest_DeploymentStatus); ok {
-			g.statuses <- x.DeploymentStatus
+			select {
+			case g.statuses <- x.DeploymentStatus:
+			case <-stream.Context().Done():
+				return stream.Context().Err()
+			}
 		}
 	}
 }

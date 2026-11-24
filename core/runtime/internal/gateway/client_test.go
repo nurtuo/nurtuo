@@ -3,6 +3,7 @@
 package gateway_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -11,20 +12,24 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"io"
 	"math/big"
 	"net"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
 	"github.com/nurtuo/nurtuo/core/runtime/internal/gateway"
@@ -446,4 +451,77 @@ func TestLatestDesiredStateWins(t *testing.T) {
 	if want := []string{"sha256:r1", "sha256:r3"}; !slices.Equal(bd.applied, want) {
 		t.Fatalf("applied = %v, want %v", bd.applied, want)
 	}
+}
+
+func (*fakeServer) FetchArtifact(req *gatewayv1.FetchArtifactRequest, stream gatewayv1.RuntimeGatewayService_FetchArtifactServer) error {
+	if req.GetDigest() != "artifact" {
+		return status.Error(codes.NotFound, "artifact unavailable")
+	}
+	for _, part := range []string{"first", "second"} {
+		if err := stream.Send(&gatewayv1.FetchArtifactResponse{Data: []byte(part)}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func TestFetchArtifact(t *testing.T) {
+	lis := bufconn.Listen(1 << 20)
+	fs := newFakeServer()
+	gs := grpc.NewServer()
+	gatewayv1.RegisterRuntimeGatewayServiceServer(gs, fs)
+	go func() { _ = gs.Serve(lis) }()
+	t.Cleanup(gs.Stop)
+	var dials atomic.Int32
+	c := gateway.NewClient(gateway.Config{
+		Target:  "passthrough:///bufnet",
+		Handler: &supervisor.Handler{S: supervisor.New(&fakeDeployer{})},
+		DialOpts: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+				dials.Add(1)
+				return lis.DialContext(ctx)
+			}),
+		},
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	assertDisconnected := func() {
+		t.Helper()
+		if _, err := c.FetchArtifact(ctx, "artifact", io.Discard, 11); err == nil || err.Error() != "gateway: not connected" {
+			t.Fatalf("expected disconnected error, got %v", err)
+		}
+	}
+	assertDisconnected()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = c.Run(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	select {
+	case <-fs.hellos:
+	case <-ctx.Done():
+		t.Fatal("Connect did not send Hello")
+	}
+	var dst bytes.Buffer
+	if n, err := c.FetchArtifact(ctx, "artifact", &dst, 11); err != nil || n != 11 || dst.String() != "firstsecond" {
+		t.Fatalf("fetch bytes=%d data=%q err=%v", n, dst.String(), err)
+	}
+	dst.Reset()
+	if n, err := c.FetchArtifact(ctx, "artifact", &dst, 10); err == nil || !strings.Contains(err.Error(), "larger than 10 bytes") || n != 5 || dst.String() != "first" {
+		t.Fatalf("limited fetch bytes=%d data=%q err=%v", n, dst.String(), err)
+	}
+	if _, err := c.FetchArtifact(ctx, "missing", io.Discard, 11); status.Code(err) != codes.NotFound {
+		t.Fatalf("expected NotFound, got %v", err)
+	}
+	if n := dials.Load(); n != 1 {
+		t.Fatalf("Connect and FetchArtifact used %d dials, want 1", n)
+	}
+	cancel()
+	<-done
+	assertDisconnected()
 }

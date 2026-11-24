@@ -92,6 +92,7 @@ func startControlPlane(t *testing.T, restPort, gatewayPort int, extraEnv ...stri
 	node := requireNode(t)
 	cmd := exec.Command(node, filepath.Join(here(), "testdata", "run-gateway.mjs"))
 	cmd.Env = append(os.Environ(), "CERT_DIR="+certsDir(), fmt.Sprintf("REST_PORT=%d", restPort), fmt.Sprintf("GATEWAY_PORT=%d", gatewayPort))
+	cmd.Env = append(cmd.Env, "NURTUO_BUNDLE_SIGNING_KEY_FILE=")
 	cmd.Env = append(cmd.Env, extraEnv...)
 	cp := &controlPlane{cmd: cmd, stderr: &syncBuf{}, done: make(chan struct{})}
 	cmd.Stderr = cp.stderr
@@ -251,6 +252,11 @@ type runtimeProc struct {
 // decoupled so tests can present rt-2's cert while claiming rt-1). signed selects trusted_keys mode.
 func startRuntime(t *testing.T, cp *controlPlane, runtimeID, certName, backendURL string, signed bool, sharedBundles ...string) *runtimeProc {
 	t.Helper()
+	return startRuntimeWithKey(t, cp, runtimeID, certName, backendURL, signed, nil, sharedBundles...)
+}
+
+func startRuntimeWithKey(t *testing.T, cp *controlPlane, runtimeID, certName, backendURL string, signed bool, trustedKey ed25519.PublicKey, sharedBundles ...string) *runtimeProc {
+	t.Helper()
 	dir := t.TempDir()
 	p := &runtimeProc{bundles: filepath.Join(dir, "bundles"), httpAddr: freeAddr(t), done: make(chan error, 1), logs: &syncBuf{}}
 	if len(sharedBundles) > 0 {
@@ -260,7 +266,9 @@ func startRuntime(t *testing.T, cp *controlPlane, runtimeID, certName, backendUR
 	cfg := rt.Config{RuntimeID: runtimeID, ControlPlaneURL: cp.gatewayAddr(),
 		CertFile: filepath.Join(certsDir(), certName+".pem"), KeyFile: filepath.Join(certsDir(), certName+".key"),
 		CAFile: filepath.Join(certsDir(), "ca.pem"), ServerName: "localhost", BundleDir: p.bundles, HTTPAddr: p.httpAddr}
-	if signed {
+	if trustedKey != nil {
+		cfg.TrustedKeys = []string{bundle.EncodePublicKey(trustedKey)}
+	} else if signed {
 		var err error
 		p.pub, p.priv, err = bundle.GenerateKey()
 		must(t, err)

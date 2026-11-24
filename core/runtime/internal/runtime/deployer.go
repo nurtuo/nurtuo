@@ -48,41 +48,57 @@ func DirBundleSource(dir string) BundleSource {
 // files are never read. With no keys every bundle is rejected.
 func SignedBundleSource(dir string, keys []ed25519.PublicKey) BundleSource {
 	return func(_ context.Context, digest string) ([]byte, error) {
-		name := strings.TrimPrefix(digest, "sha256:")
-		if len(name) != 64 || strings.Trim(name, "0123456789abcdef") != "" {
-			return nil, fmt.Errorf("deployer: invalid bundle digest %q", digest)
-		}
-		data, err := os.ReadFile(filepath.Join(dir, name+".bundle"))
+		name, err := signedBundleName(digest)
 		if err != nil {
 			return nil, err
 		}
-		if sum := sha256.Sum256(data); hex.EncodeToString(sum[:]) != name {
-			return nil, fmt.Errorf("deployer: bundle content does not match digest %s", digest)
-		}
-		var b *bundle.Bundle
-		verr := errors.New("deployer: no trusted keys configured")
-		for _, k := range keys {
-			if b, verr = bundle.Verify(data, k); verr == nil {
-				break
-			}
-		}
-		if verr != nil {
-			return nil, fmt.Errorf("deployer: bundle %s rejected: %w", digest, verr)
-		}
-		var flows, conns []json.RawMessage
-		for _, c := range b.Manifest.Components {
-			switch c.Kind {
-			case "flow":
-				flows = append(flows, json.RawMessage(b.Files[c.Path]))
-			case connections.Kind:
-				conns = append(conns, json.RawMessage(b.Files[c.Path]))
-			}
-		}
-		if len(flows) == 0 {
-			return nil, fmt.Errorf("deployer: bundle %s contains no flows", digest)
-		}
-		return json.Marshal(map[string]any{"flows": flows, "connections": conns})
+		return readSignedBundle(filepath.Join(dir, name+".bundle"), digest, name, keys)
 	}
+}
+
+func signedBundleName(digest string) (string, error) {
+	name := strings.TrimPrefix(digest, "sha256:")
+	if len(name) != 64 || strings.Trim(name, "0123456789abcdef") != "" {
+		return "", fmt.Errorf("deployer: invalid bundle digest %q", digest)
+	}
+	return name, nil
+}
+
+func readSignedBundle(path, digest, name string, keys []ed25519.PublicKey) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if sum := sha256.Sum256(data); !matchesBundleDigest(sum[:], name) {
+		return nil, fmt.Errorf("deployer: bundle content does not match digest %s", digest)
+	}
+	var b *bundle.Bundle
+	verr := errors.New("deployer: no trusted keys configured")
+	for _, k := range keys {
+		if b, verr = bundle.Verify(data, k); verr == nil {
+			break
+		}
+	}
+	if verr != nil {
+		return nil, fmt.Errorf("deployer: bundle %s rejected: %w", digest, verr)
+	}
+	var flows, conns []json.RawMessage
+	for _, c := range b.Manifest.Components {
+		switch c.Kind {
+		case "flow":
+			flows = append(flows, json.RawMessage(b.Files[c.Path]))
+		case connections.Kind:
+			conns = append(conns, json.RawMessage(b.Files[c.Path]))
+		}
+	}
+	if len(flows) == 0 {
+		return nil, fmt.Errorf("deployer: bundle %s contains no flows", digest)
+	}
+	return json.Marshal(map[string]any{"flows": flows, "connections": conns})
+}
+
+func matchesBundleDigest(sum []byte, name string) bool {
+	return hex.EncodeToString(sum) == name
 }
 
 // BundleContent is the decoded, validated content of a bundle.

@@ -12,8 +12,15 @@ const certDir = process.env.CERT_DIR;
 if (!certDir) throw new Error("CERT_DIR is required");
 const f = (n) => readFileSync(join(certDir, n));
 
+const signingKeyFile = process.env.NURTUO_BUNDLE_SIGNING_KEY_FILE;
+let signingKey;
+if (signingKeyFile) {
+  const { loadSigningKey } = await import(pathToFileURL(join(dist, "bundle.js")).href);
+  signingKey = loadSigningKey(signingKeyFile);
+}
+
 const repo = new MemoryRepository();
-const gw = new Gateway(repo, { log: (m) => console.error(`gateway: ${m}`), idleTimeoutMs: Number(process.env.IDLE_TIMEOUT_MS ?? 0) });
+const gw = new Gateway(repo, { signingKey, log: (m) => console.error(`gateway: ${m}`), idleTimeoutMs: Number(process.env.IDLE_TIMEOUT_MS ?? 0) });
 gw.startOutboxPublisher(100);
 const gwServer = createGatewayServer(gw, { cert: f("server.pem"), key: f("server.key"), ca: f("ca.pem") });
 const rest = createHttpServer(repo, { auth: "disabled" }); // test launcher only: auth is covered in control-plane tests

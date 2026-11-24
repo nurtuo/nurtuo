@@ -158,7 +158,11 @@ func TestSignedBundleRejections(t *testing.T) {
 	// Valid signature from a key that is not trusted.
 	_, other, err := bundle.GenerateKey()
 	must(t, err)
-	e.gw.setDesired(1, dep("untrusted", e.putSigned(t, other, employeeFlow)))
+	untrusted := e.putSigned(t, other, employeeFlow)
+	wrongKey, err := os.ReadFile(filepath.Join(e.bundles, strings.TrimPrefix(untrusted, "sha256:")+".bundle"))
+	must(t, err)
+	e.gw.serveArtifact(untrusted, wrongKey)
+	e.gw.setDesired(1, dep("untrusted", untrusted))
 	if st := e.gw.statusFor(t, "untrusted", "error"); !strings.Contains(st.Message, "rejected") {
 		t.Fatalf("message %q", st.Message)
 	}
@@ -166,23 +170,30 @@ func TestSignedBundleRejections(t *testing.T) {
 	// Content that does not match the digest (tampered after signing).
 	d := e.putSigned(t, nil, employeeFlow)
 	p := filepath.Join(e.bundles, strings.TrimPrefix(d, "sha256:")+".bundle")
-	raw, _ := os.ReadFile(p)
+	raw, err := os.ReadFile(p)
+	must(t, err)
 	raw[len(raw)/2] ^= 0xff
 	must(t, os.WriteFile(p, raw, 0o600))
+	e.gw.serveArtifact(d, raw)
 	e.gw.setDesired(2, dep("tampered", d))
-	if st := e.gw.statusFor(t, "tampered", "error"); !strings.Contains(st.Message, "digest") {
+	if st := e.gw.statusFor(t, "tampered", "error"); !strings.Contains(st.Message, "fetched artifact does not match digest") {
 		t.Fatalf("message %q", st.Message)
 	}
 
 	// Tampered AND re-addressed under its own hash: the signature check must still reject it.
 	d2 := e.writeBundle(t, raw)
+	e.gw.serveArtifact(d2, raw)
 	e.gw.setDesired(3, dep("readdressed", d2))
-	e.gw.statusFor(t, "readdressed", "error")
+	if st := e.gw.statusFor(t, "readdressed", "error"); !strings.Contains(st.Message, "rejected") {
+		t.Fatalf("message %q", st.Message)
+	}
 
 	// A plain JSON bundle is never accepted in trusted_keys mode.
 	must(t, os.WriteFile(filepath.Join(e.bundles, strings.Repeat("a", 64)+".json"), []byte(employeeFlow), 0o600))
 	e.gw.setDesired(4, dep("plain", "sha256:"+strings.Repeat("a", 64)))
-	e.gw.statusFor(t, "plain", "error")
+	if st := e.gw.statusFor(t, "plain", "error"); !strings.Contains(st.Message, "control plane does not implement FetchArtifact") {
+		t.Fatalf("message %q", st.Message)
+	}
 
 	if !refused(e.httpAddr) {
 		t.Fatal("a rejected bundle started a listener")

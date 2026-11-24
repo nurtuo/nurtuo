@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"time"
 
@@ -76,6 +77,7 @@ func RunWith(ctx context.Context, cfg Config, o Options) error {
 	if log == nil {
 		log = slog.Default()
 	}
+	var client *gateway.Client
 	dep := o.Deployer
 	var cmds map[string]supervisor.CommandFunc
 	if dep == nil {
@@ -86,7 +88,10 @@ func RunWith(ctx context.Context, cfg Config, o Options) error {
 			if keys, err := cfg.trustedKeys(); err != nil {
 				return err
 			} else if len(keys) > 0 {
-				src = SignedBundleSource(cfg.BundleDir, keys)
+				cleanArtifactTemps(cfg.BundleDir, log)
+				src = FetchingBundleSource(cfg.BundleDir, func(ctx context.Context, digest string, w io.Writer, limit int64) (int64, error) {
+					return client.FetchArtifact(ctx, digest, w, limit)
+				}, keys)
 			}
 			eng := o.Engine
 			if eng == nil {
@@ -138,7 +143,7 @@ func RunWith(ctx context.Context, cfg Config, o Options) error {
 	gc.Handler = h
 	gc.Logger = log
 	log.Info("runtime starting", "runtime_id", cfg.RuntimeID, "control_plane", cfg.ControlPlaneURL)
-	client := gateway.NewClient(gc)
+	client = gateway.NewClient(gc)
 	h.Report = client.ReportStatus // pause/resume report deployment state changes
 	err = client.Run(ctx)
 	log.Info("runtime stopped")
