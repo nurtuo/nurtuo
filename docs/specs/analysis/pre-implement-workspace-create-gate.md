@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Pre-implement: Gate `POST /v1/workspaces` behind `instance:workspace_create`
 
-**Readiness:** no-go
+**Readiness:** no-go (original verdict, kept as history; see [Addendum](#addendum-2026-11-24-owner-decisions-recorded))
 **Spec:** docs/specs/2026-11-24-workspace-create-gate.md
 
 Date: 2026-11-24. Analysis only. The spec's product decisions were not changed. One factual correction was
@@ -105,3 +105,20 @@ Readiness: no-go
 Report: docs/specs/analysis/pre-implement-workspace-create-gate.md
 Spec: docs/specs/2026-11-24-workspace-create-gate.md
 ```
+
+## Addendum 2026-11-24: owner decisions recorded
+
+Łukasz answered all five `needs-owner` decisions on 2026-11-24 (all recommendations, aligned with Boomi):
+D1, D2, D3, D9, D12 are recorded in the spec's Decisions table and the spec is `Status: approved`. The two
+blockers above are resolved; the original no-go verdict stands as the state before approval.
+
+- D1 keeps the env-var admin set (`NURTUO_INSTANCE_ADMINS` plus bootstrap email) but marks it **temporary for
+  phase 1**; the DB-backed instance-role model is tracked in [#77](https://github.com/nurtuo/nurtuo/issues/77),
+  and the implementation must carry a grep-able `TODO(#77)` at the env-var admin check.
+- D2: the implementation PR gets the `needs-owner-review` label.
+- D9 resolves the warning about scope beyond #54 (the `member.add` guard is in scope).
+- D12 resolves the "residual escalation" item as accepted: no destructive migration, audit queries in the
+  release note, fixed by #55.
+
+No product decision was changed by this addendum. Remaining work is the implementation of #54 on a `feat/`
+branch (`Closes #54`); re-run pre-implement on that branch before coding.

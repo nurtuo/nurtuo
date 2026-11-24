@@ -4,6 +4,8 @@
 Status: draft. Date: 2026-11-22.
 
 > Phase 1 (workspace creation gate, #54) is specified in `docs/specs/2026-11-24-workspace-create-gate.md` (2026-11-24), which Extends this spec.
+>
+> The DB-backed `instance_roles` model from gap 4 is tracked in #77 (not in #55); phase 1 uses a temporary env-var admin list (decision D1 of the phase-1 spec).
 
 ## TLDR
 
