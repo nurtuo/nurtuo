@@ -89,6 +89,8 @@ func RunWith(ctx context.Context, cfg Config, o Options) error {
 		}
 		defer unlock()
 		stateDir = d
+	} else {
+		warnNoStateDir(log)
 	}
 	dep := o.Deployer
 	var cmds map[string]supervisor.CommandFunc
@@ -122,8 +124,6 @@ func RunWith(ctx context.Context, cfg Config, o Options) error {
 				}
 				qb = pq
 				defer closeQ() // runs after ed.Shutdown (deferred later below)
-			} else {
-				warnNoStateDir(log)
 			}
 			ed := NewEngineDeployer(eng, qb, src)
 			res, lg, err := newResolver(cfg, o, log)

@@ -188,3 +188,43 @@ func TestPerKeyOrderingAcrossSharedListeners(t *testing.T) {
 		t.Fatalf("same-key delivery ran on listener %d, want 2", r.listener)
 	}
 }
+
+func TestDeliveryContinuesDuringSubscriptionManagement(t *testing.T) {
+	b, err := New(Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+	for _, ordering := range []queue.Ordering{"", queue.OrderingPerKey} {
+		name := "jobs" + string(ordering)
+		if err := b.Ensure(t.Context(), queue.QueueDef{Name: name, Ordering: ordering}); err != nil {
+			t.Fatal(err)
+		}
+		received := make(chan error, 1)
+		_, err := b.Subscribe(t.Context(), name, queue.SubOpts{}, func(ctx context.Context, d queue.Delivery) {
+			received <- d.Ack(ctx)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		func() {
+			b.mu.Lock()
+			defer b.mu.Unlock()
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			// Publish directly so only delivery is exercised while management is locked.
+			if _, err := b.js.PublishMsg(toNATS(subject(name), queue.Message{Key: "key"}), nats.Context(ctx)); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case err := <-received:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-ctx.Done():
+				t.Fatalf("delivery for ordering %q blocked on the management lock", ordering)
+			}
+		}()
+	}
+}

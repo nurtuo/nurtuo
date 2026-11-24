@@ -45,6 +45,7 @@ type Supervisor struct {
 	mu         sync.Mutex // guards revision, reconciled and last; held only briefly, never across deployer calls
 	revision   uint64
 	reconciled bool
+	syncRevDir func(string) error
 	revPath    string            // when set, the applied revision is persisted here
 	last       map[string]string // deployment -> last reported state
 }
@@ -164,7 +165,7 @@ func (s *Supervisor) Reconcile(ctx context.Context, revision uint64, desired []D
 		return errors.Join(errs...)
 	}
 	if s.revPath != "" {
-		if err := saveRevision(s.revPath, revision); err != nil {
+		if err := saveRevision(s.revPath, revision, s.syncRevDir); err != nil {
 			// Leave the advertised revision unchanged so the control plane retries.
 			return fmt.Errorf("persist revision %d: %w", revision, err)
 		}

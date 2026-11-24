@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -66,7 +67,7 @@ func TestLoadConfigStateDir(t *testing.T) {
 	p := filepath.Join(dir, "runtime.yaml")
 	for name, tc := range map[string]struct{ extra, want string }{
 		"unset":    {"", ""},
-		"absolute": {"state_dir: " + filepath.ToSlash(filepath.Join(dir, "st")) + "\n", filepath.Join(dir, "st")},
+		"absolute": {"state_dir: " + strconv.Quote(filepath.Join(dir, "st")) + "\n", filepath.Join(dir, "st")},
 		"relative": {"state_dir: st\n", filepath.Join(dir, "st")},
 	} {
 		if err := os.WriteFile(p, []byte(body+tc.extra), 0o600); err != nil {
@@ -81,11 +82,12 @@ func TestLoadConfigStateDir(t *testing.T) {
 		}
 	}
 	j := filepath.Join(dir, "runtime.json")
-	js := `{"runtime_id":"r","control_plane_url":"cp:1","cert_file":"/c","key_file":"/k","ca_file":"/ca","state_dir":"/var/lib/x"}`
+	stateDir := filepath.Join(dir, "state")
+	js := `{"runtime_id":"r","control_plane_url":"cp:1","cert_file":"/c","key_file":"/k","ca_file":"/ca","state_dir":` + strconv.Quote(stateDir) + `}`
 	if err := os.WriteFile(j, []byte(js), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if c, err := LoadConfig(j); err != nil || c.StateDir != "/var/lib/x" {
+	if c, err := LoadConfig(j); err != nil || c.StateDir != stateDir {
 		t.Fatalf("json: %+v %v", c, err)
 	}
 }
@@ -163,16 +165,19 @@ func (s *syncBuf) Write(p []byte) (int, error) { s.mu.Lock(); defer s.mu.Unlock(
 func (s *syncBuf) String() string              { s.mu.Lock(); defer s.mu.Unlock(); return s.b.String() }
 
 func TestRunWithoutStateDirWarns(t *testing.T) {
-	buf := &syncBuf{}
 	cfg := baseCfg()
+	for _, bundleDir := range []string{"", t.TempDir()} {
+		cfg.BundleDir = bundleDir
+		buf := &syncBuf{}
+		log := slog.New(slog.NewTextHandler(buf, nil))
+		if err := runBriefly(t, cfg, Options{Logger: log, Gateway: unreachableGateway}); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(buf.String(), "state_dir is not set") {
+			t.Fatalf("missing startup warning with bundle_dir %q:\n%s", bundleDir, buf.String())
+		}
+	}
 	cfg.BundleDir = t.TempDir()
-	log := slog.New(slog.NewTextHandler(buf, nil))
-	if err := runBriefly(t, cfg, Options{Logger: log, Gateway: unreachableGateway}); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(buf.String(), "state_dir is not set") {
-		t.Fatalf("missing startup warning in log:\n%s", buf.String())
-	}
 
 	// With state_dir set there is no warning, and the JetStream directory is created.
 	buf2 := &syncBuf{}

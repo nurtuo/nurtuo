@@ -38,7 +38,7 @@ Facts from the code: `natsjs.Options.StoreDir` already exists (empty means a tem
 
 1. **State directory.** The runtime gets one state directory, set by the optional `state_dir` key. Standalone sets it to `<data-dir>/runtime`; `service install` sets it to the OS data root. JetStream uses `<state_dir>/jetstream`; the revision lives in `<state_dir>/revision`. Directory mode 0700, files 0600 (as `secrets/` in standalone). The directory is created if missing. (D1)
 2. **Queue backend.** In `RunWith`, when `bundle_dir` is set and `state_dir` is set, build `natsjs.New(Options{StoreDir: ...})` instead of `memory.New()` and pass it to `NewEngineDeployer`; close it after `ed.Shutdown`. Streams are durable, so unacked messages are redelivered after restart through the existing `AckWait` mechanism. When `state_dir` is unset, keep `memory.New()` and log a startup warning that queued messages and the applied revision do not survive a restart. (D2)
-3. **Applied revision.** After a successful `Reconcile`, the supervisor writes the revision atomically (write temp file in the same directory, fsync, rename). On start it is loaded and returned by `Revision()` for `Hello`. A missing file means 0; a corrupt file is an error and start fails (D4). With `state_dir` unset the revision stays in memory only (D2). A crash between a successful apply and the write leaves the older revision, so the control plane resends and the idempotent reconcile reapplies it (at-least-once, cheap).
+3. **Applied revision.** After a successful `Reconcile`, the supervisor checkpoints the applied revision atomically (write and fsync a temp file in the same directory, rename, and sync the directory except on Windows). Startup loads the checkpoint. A missing file means 0 and a corrupt file fails startup (D4). A fresh process sends revision 0 in `Hello` so the control plane can replay desired state and the runtime can rebuild its listeners. After a successful reconcile in this process, subsequent reconnects advertise its live applied revision. With `state_dir` unset the revision stays in memory only (D2).
 4. **No fallback.** When `state_dir` is set and the state directory or JetStream cannot be opened, `RunWith` returns an error (the OS service then exits non-zero and is restarted, see [service exit on runtime failure](2026-11-24-service-exit-on-runtime-fail.md)). It never silently uses `memory.New()`. (D3)
 5. **Existing in-memory queues.** There is nothing to migrate: in-memory messages are lost at the first restart onto the new backend.
 
@@ -47,7 +47,7 @@ Facts from the code: `natsjs.Options.StoreDir` already exists (empty means a tem
 | Contract | Change | Stability |
 |---|---|---|
 | `runtime.yaml` key `state_dir` | new, optional (D1, D2) | stable once shipped |
-| `Hello.revision` | now survives restart (value semantics unchanged) | stable |
+| `Hello.revision` | 0 until this process successfully reconciles, then its live applied revision on reconnect | stable |
 | On-disk layout `<state_dir>/jetstream`, `<state_dir>/revision` | new | internal (format may change; not for operators to edit) |
 
 No proto change. The new config key is an operator-facing contract; its name and optionality were approved as D1 and D2.
@@ -116,3 +116,4 @@ None blocking. All owner decisions are resolved (see Decisions).
 - 2026-11-24: created (draft) for issue #63.
 - 2026-11-24: approved; decisions D1–D4 recorded (Łukasz accepted all recommendations).
 - 2026-11-24: implementation (issue #63). Deviation from the design text: JetStream does not lock its store directory, so the runtime adds its own `<state_dir>/lock`.
+- 2026-11-24: implementation deviation from the original Design §3. The persisted checkpoint is loaded and validated at startup. A fresh process advertises 0 to request desired-state replay because its listeners must be rebuilt. The D4 checkpoint and corruption handling are unchanged.

@@ -47,17 +47,18 @@ type Options struct {
 
 // Backend is the embedded JetStream queue backend.
 type Backend struct {
-	srv     *server.Server
-	nc      *nats.Conn
-	js      nats.JetStreamContext
-	tmpDir  string
-	mu      sync.Mutex
-	defs    map[string]queue.QueueDef
-	subs    map[*subscription]struct{}
-	redeliv map[string]uint64
-	lanes   map[laneKey]*keyLane
-	ackWait time.Duration
-	advSub  *nats.Subscription
+	srv        *server.Server
+	nc         *nats.Conn
+	js         nats.JetStreamContext
+	tmpDir     string
+	mu         sync.Mutex
+	defs       map[string]queue.QueueDef
+	subs       map[*subscription]struct{}
+	deliveryMu sync.Mutex // guards redelivery counts, ordering lanes and ordered consumer members
+	redeliv    map[string]uint64
+	lanes      map[laneKey]*keyLane
+	ackWait    time.Duration
+	advSub     *nats.Subscription
 }
 
 var _ queue.QueueBackend = (*Backend)(nil)
@@ -307,16 +308,16 @@ type orderedConsumer struct {
 }
 
 func (c *orderedConsumer) dispatch(m *nats.Msg, b *Backend) {
-	b.mu.Lock()
+	b.deliveryMu.Lock()
 	if len(c.members) == 0 {
-		b.mu.Unlock()
+		b.deliveryMu.Unlock()
 		_ = m.Nak()
 		return
 	}
 	s := c.members[c.next%len(c.members)]
 	c.next = c.next%len(c.members) + 1
 	s.dispatch(m)
-	b.mu.Unlock()
+	b.deliveryMu.Unlock()
 }
 
 type subscription struct {
@@ -333,11 +334,6 @@ type subscription struct {
 }
 
 func (s *subscription) attach() error {
-	cb := func(m *nats.Msg) {
-		s.b.mu.Lock()
-		defer s.b.mu.Unlock()
-		s.dispatch(m)
-	}
 	stream := streamName(s.name)
 	// Serialize consumer setup when listeners start concurrently. Explicit creation
 	// keeps the durable alive when any one subscriber pauses or closes.
@@ -351,13 +347,14 @@ func (s *subscription) attach() error {
 		for other := range s.b.subs {
 			if other.name == s.name && other.durable == s.durable && other.ordered != nil {
 				s.sub, s.ordered = other.sub, other.ordered
+				s.b.deliveryMu.Lock()
 				s.ordered.members = append(s.ordered.members, s)
+				s.b.deliveryMu.Unlock()
 				s.b.subs[s] = struct{}{}
 				return nil
 			}
 		}
-		ordered = &orderedConsumer{}
-		cb = func(m *nats.Msg) { ordered.dispatch(m, s.b) }
+		ordered = &orderedConsumer{members: []*subscription{s}}
 	}
 	info, err := s.b.js.ConsumerInfo(stream, s.durable)
 	switch {
@@ -380,6 +377,24 @@ func (s *subscription) attach() error {
 	if err != nil {
 		return fmt.Errorf("natsjs: configure consumer: %w", err)
 	}
+	// Gate only this callback until the broker confirms the binding.
+	ready := make(chan struct{})
+	bound := false
+	defer close(ready)
+	cb := func(m *nats.Msg) {
+		<-ready
+		if !bound {
+			_ = m.Nak()
+			return
+		}
+		if ordered != nil {
+			ordered.dispatch(m, s.b)
+			return
+		}
+		s.b.deliveryMu.Lock()
+		defer s.b.deliveryMu.Unlock()
+		s.dispatch(m)
+	}
 	sub, err := s.b.js.QueueSubscribe(subject(s.name), info.Config.DeliverGroup, cb,
 		nats.Bind(stream, s.durable), nats.ManualAck())
 	if err != nil {
@@ -390,10 +405,8 @@ func (s *subscription) attach() error {
 		return err
 	}
 	s.sub, s.ordered = sub, ordered
-	if ordered != nil {
-		ordered.members = append(ordered.members, s)
-	}
 	s.b.subs[s] = struct{}{}
+	bound = true
 	return nil
 }
 
@@ -418,7 +431,7 @@ func (s *subscription) waitPushBound(want bool) error {
 	}
 }
 
-// dispatch runs on the NATS callback goroutine with b.mu held. It enqueues
+// dispatch runs on the NATS callback goroutine with deliveryMu held. It enqueues
 // keyed handlers in delivery order; MaxAckPending bounds server-side concurrency.
 func (s *subscription) dispatch(m *nats.Msg) {
 	d := &delivery{s: s, m: m, msg: fromHeader(m.Header, m.Data)}
@@ -444,16 +457,16 @@ func (s *subscription) dispatch(m *nats.Msg) {
 	go func() {
 		run()
 		for {
-			s.b.mu.Lock()
+			s.b.deliveryMu.Lock()
 			if len(lane.pending) == 0 {
 				delete(s.b.lanes, key)
-				s.b.mu.Unlock()
+				s.b.deliveryMu.Unlock()
 				return
 			}
 			next := lane.pending[0]
 			lane.pending[0] = nil
 			lane.pending = lane.pending[1:]
-			s.b.mu.Unlock()
+			s.b.deliveryMu.Unlock()
 			next()
 		}
 	}()
@@ -499,6 +512,8 @@ func (s *subscription) release() *nats.Subscription {
 	sub, ordered := s.sub, s.ordered
 	s.sub, s.ordered = nil, nil
 	if ordered != nil {
+		s.b.deliveryMu.Lock()
+		defer s.b.deliveryMu.Unlock()
 		ordered.members = slices.DeleteFunc(ordered.members, func(other *subscription) bool { return other == s })
 		if len(ordered.members) > 0 {
 			return nil
@@ -593,9 +608,9 @@ func (b *Backend) Stats(_ context.Context, name string) (queue.QueueStats, error
 	if st.Depth > 0 && si.State.Msgs > 0 {
 		st.OldestMessageAge = time.Since(si.State.FirstTime)
 	}
-	b.mu.Lock()
+	b.deliveryMu.Lock()
 	st.Redeliveries = b.redeliv[name]
-	b.mu.Unlock()
+	b.deliveryMu.Unlock()
 	if di, err := b.js.StreamInfo(dlqStream(name)); err == nil {
 		st.DeadLetterDepth = di.State.Msgs
 	}

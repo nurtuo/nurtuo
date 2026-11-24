@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -32,7 +33,7 @@ func LoadRevision(path string) (uint64, error) {
 }
 
 // saveRevision writes the revision atomically: temp file in the same directory, fsync, rename.
-func saveRevision(path string, rev uint64) error {
+func saveRevision(path string, rev uint64, syncDir func(string) error) error {
 	dir := filepath.Dir(path)
 	f, err := os.CreateTemp(dir, ".revision-*")
 	if err != nil {
@@ -62,11 +63,21 @@ func saveRevision(path string, rev uint64) error {
 		return err
 	}
 	ok = true
-	if d, err := os.Open(dir); err == nil { // best effort: persist the rename itself
-		_ = d.Sync()
-		_ = d.Close()
+	if runtime.GOOS != "windows" {
+		if err := syncDir(dir); err != nil {
+			return fmt.Errorf("sync revision directory %s: %w", dir, err)
+		}
 	}
 	return nil
+}
+
+func syncRevisionDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = d.Close() }()
+	return d.Sync()
 }
 
 // NewPersistent is New with the applied revision stored in path: it is loaded now (corrupt file =
@@ -79,5 +90,6 @@ func NewPersistent(d Deployer, path string) (*Supervisor, error) {
 	s := New(d)
 	s.revision = rev
 	s.revPath = path
+	s.syncRevDir = syncRevisionDir
 	return s, nil
 }

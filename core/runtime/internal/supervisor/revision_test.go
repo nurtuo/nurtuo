@@ -38,6 +38,9 @@ func TestAppliedRevisionSurvivesRestart(t *testing.T) {
 	if s2.Revision() != 5 {
 		t.Fatalf("revision after restart = %d, want 5", s2.Revision())
 	}
+	if got := (&Handler{S: s2}).Revision(); got != 0 {
+		t.Fatalf("Hello revision after restart = %d, want 0", got)
+	}
 	if fi, err := os.Stat(path); err != nil || fi.Mode().Perm()&0o077 != 0 && !isWindows() {
 		t.Fatalf("revision file mode: %v %v", fi, err)
 	}
@@ -110,3 +113,35 @@ func TestPersistFailureIsReported(t *testing.T) {
 }
 
 func isWindows() bool { return os.PathSeparator == '\\' }
+
+func TestRevisionDirectorySyncFailure(t *testing.T) {
+	if isWindows() {
+		t.Skip("directory sync is skipped on Windows")
+	}
+	dir := t.TempDir()
+	s, err := NewPersistent(newFakeDeployer(), filepath.Join(dir, RevisionFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	syncErr := errors.New("directory sync failed")
+	s.syncRevDir = func(path string) error {
+		if path != dir {
+			t.Errorf("sync directory = %q, want %q", path, dir)
+		}
+		return syncErr
+	}
+	if err := s.Reconcile(t.Context(), 5, nil, nil); !errors.Is(err, syncErr) {
+		t.Fatalf("reconcile error = %v, want %v", err, syncErr)
+	}
+	h := &Handler{S: s}
+	if got := h.Revision(); got != 0 {
+		t.Fatalf("Hello revision after sync failure = %d, want 0", got)
+	}
+	s.syncRevDir = syncRevisionDir
+	if err := s.Reconcile(t.Context(), 5, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.Revision(); got != 5 {
+		t.Fatalf("Hello revision after retry = %d, want 5", got)
+	}
+}
