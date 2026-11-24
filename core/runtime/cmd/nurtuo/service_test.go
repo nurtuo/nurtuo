@@ -177,15 +177,16 @@ func TestDefaultServiceStateDir(t *testing.T) {
 
 func TestEnsureStateDirConfigured(t *testing.T) {
 	dir := t.TempDir()
+	want := filepath.Join(dir, "state")
 	y := filepath.Join(dir, "runtime.yaml")
 	base := "runtime_id: r\ncontrol_plane_url: cp:1\ncert_file: /c\nkey_file: /k\nca_file: /ca"
 	if err := os.WriteFile(y, []byte(base), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if added, err := ensureStateDirConfigured(y, "/var/lib/nurtuo", false); err != nil || !added {
+	if added, err := ensureStateDirConfigured(y, want, false); err != nil || !added {
 		t.Fatalf("yaml: added=%v err=%v", added, err)
 	}
-	if c, err := runtime.LoadConfig(y); err != nil || c.StateDir != "/var/lib/nurtuo" {
+	if c, err := runtime.LoadConfig(y); err != nil || c.StateDir != want {
 		t.Fatalf("yaml reload: %+v %v", c, err)
 	}
 	if added, err := ensureStateDirConfigured(y, "/other", true); err != nil || added {
@@ -197,10 +198,10 @@ func TestEnsureStateDirConfigured(t *testing.T) {
 	if err := os.WriteFile(j, []byte(js), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if added, err := ensureStateDirConfigured(j, "/var/lib/nurtuo", false); err != nil || !added {
+	if added, err := ensureStateDirConfigured(j, want, false); err != nil || !added {
 		t.Fatalf("json: added=%v err=%v", added, err)
 	}
-	if c, err := runtime.LoadConfig(j); err != nil || c.StateDir != "/var/lib/nurtuo" {
+	if c, err := runtime.LoadConfig(j); err != nil || c.StateDir != want {
 		t.Fatalf("json reload: %+v %v", c, err)
 	}
 }
