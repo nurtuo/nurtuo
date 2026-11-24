@@ -4,6 +4,8 @@ package secrets
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -80,7 +82,9 @@ func (d *Dir) Set(_ context.Context, name string, v Secret) error {
 	if v.Reveal() == "" {
 		return errors.New("secret value is empty")
 	}
-	if err := os.MkdirAll(d.Path, 0o700); err != nil {
+	// Operator-chosen path: a missing directory is created private; an existing one is only
+	// checked, never re-ACLed (D9).
+	if err := ensurePrivateDirNoRepair(d.Path); err != nil {
 		return err
 	}
 	if err := d.checkDir(); err != nil {
@@ -120,15 +124,23 @@ func (d *Dir) List(context.Context) ([]string, error) {
 	return sorted(out), nil
 }
 
-// writeFileAtomic writes data to a 0600 temp file in the same directory and renames it over path.
+// afterPrivateCreate is a test seam: it runs right after writeFileAtomic created its temp file and
+// before any byte is written.
+var afterPrivateCreate func(path string)
+
+// writeFileAtomic writes data to a private temp file in the same directory and renames it over
+// path. The temp file is private from its creation (0600 on Unix, protected DACL on Windows), and
+// the rename keeps its permissions.
 func writeFileAtomic(path string, data []byte) error {
-	f, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
+	f, tmp, err := createPrivateTemp(filepath.Dir(path))
 	if err != nil {
 		return err
 	}
-	tmp := f.Name()
 	defer func() { _ = os.Remove(tmp) }()
-	if err := chmodPrivate(tmp); err != nil {
+	if afterPrivateCreate != nil {
+		afterPrivateCreate(tmp)
+	}
+	if err := chmodPrivate(tmp); err != nil { // Unix: exactly 0600 whatever the umask
 		_ = f.Close()
 		return err
 	}
@@ -144,4 +156,21 @@ func writeFileAtomic(path string, data []byte) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// createPrivateTemp creates a new private ".tmp-<random>" file in dir.
+func createPrivateTemp(dir string) (*os.File, string, error) {
+	for range 100 {
+		b := make([]byte, 8)
+		if _, err := rand.Read(b); err != nil {
+			return nil, "", err
+		}
+		p := filepath.Join(dir, ".tmp-"+hex.EncodeToString(b))
+		f, err := createPrivateExclusive(p)
+		if errors.Is(err, fs.ErrExist) {
+			continue
+		}
+		return f, p, err
+	}
+	return nil, "", fmt.Errorf("create temp file in %s: too many collisions", dir)
 }

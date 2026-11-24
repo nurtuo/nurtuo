@@ -83,6 +83,14 @@ func secretMain(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "nurtuo secret: %v\n", err)
 		return 1
 	}
+	if cfgPath == "" && provider == "" && path == "" {
+		// The standalone store is Nurtuo-managed: repair its secrets directory like
+		// `nurtuo standalone` does (D2). Only when it exists or on `set`, which creates it anyway.
+		if err := prepareStandaloneSecrets(filepath.Dir(cfg.Path), action == "set", stderr); err != nil {
+			_, _ = fmt.Fprintf(stderr, "nurtuo secret: %v\n", err)
+			return 1
+		}
+	}
 	store, err := secrets.Open(cfg)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "nurtuo secret: %v\n", err)
@@ -118,6 +126,24 @@ func secretsConfig(cfgPath, provider, path, keyFile string) (secrets.Config, err
 		cfg = secrets.Config{Provider: secrets.ProviderEncryptedFile, Path: standaloneSecretStore(root)}
 	}
 	return cfg, cfg.Validate()
+}
+
+// prepareStandaloneSecrets runs secrets.EnsurePrivateDir on the standalone secrets directory when
+// it exists or create is set, and reports repaired paths on stderr.
+func prepareStandaloneSecrets(dir string, create bool, stderr io.Writer) error {
+	if _, err := os.Lstat(dir); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if !create {
+			return nil
+		}
+	}
+	repaired, err := secrets.EnsurePrivateDir(dir)
+	for _, p := range repaired {
+		_, _ = fmt.Fprintln(stderr, "nurtuo secret: tightened permissions on", p)
+	}
+	return err
 }
 
 // standaloneSecretStore is the user-secret store inside a standalone data root; it is a
