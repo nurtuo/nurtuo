@@ -99,7 +99,13 @@ the runtime in the foreground.) The contract is experimental.
 ```sh
 nurtuo flow run <flow.json> [--connection <file>]... [--set key=value]... [--secrets-dir <dir>]
                 [--known-hosts <file>] [--insecure-host-key] [--json] [--timeout <duration>]
+                [--max-output-bytes N] [--max-documents N]
 ```
+
+The optional output limits must be positive. `--max-output-bytes` bounds returned decoded payload
+and temporary spill writes. JSON output also accounts for encoding and metadata. `--max-documents`
+bounds the number of returned documents. An overflow fails with `output_too_large` in JSON mode
+and emits no partial result.
 
 Example: read `/downloads/version.txt` from a private SFTP server
 (`examples/flows/sftp-download.flow.json`, `examples/connections/sftp.connection.json`):

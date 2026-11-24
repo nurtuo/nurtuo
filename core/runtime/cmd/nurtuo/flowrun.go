@@ -40,7 +40,7 @@ const (
 	exitStopped = 3 // the flow ended in a Stop step with a status
 )
 
-const flowRunUsage = "Usage: nurtuo flow run <flow.json> [--connection <file>]... [--set key=value]... [--secrets-dir <dir>] [--known-hosts <file>] [--insecure-host-key] [--json] [--timeout <duration>]"
+const flowRunUsage = "Usage: nurtuo flow run <flow.json> [--connection <file>]... [--set key=value]... [--secrets-dir <dir>] [--known-hosts <file>] [--insecure-host-key] [--json] [--timeout <duration>] [--max-output-bytes N] [--max-documents N]"
 
 // flowRunError is an error with its exit code and a machine-readable code for --json.
 type flowRunError struct {
@@ -106,14 +106,16 @@ func execErr(format string, a ...any) *flowRunError {
 
 // flowRunOptions are the parsed flags of "nurtuo flow run".
 type flowRunOptions struct {
-	flowPath    string
-	connections []string
-	set         map[string]string
-	secretsDir  string
-	knownHosts  string
-	insecure    bool
-	json        bool
-	timeout     time.Duration
+	flowPath       string
+	connections    []string
+	set            map[string]string
+	secretsDir     string
+	knownHosts     string
+	insecure       bool
+	json           bool
+	timeout        time.Duration
+	maxOutputBytes int64
+	maxDocuments   int
 }
 
 // parseFlowRunArgs parses flags and the single <flow.json> positional, in any order.
@@ -141,6 +143,8 @@ func parseFlowRunArgs(args []string) (*flowRunOptions, error) {
 	fs.BoolVar(&o.insecure, "insecure-host-key", false, "")
 	fs.BoolVar(&o.json, "json", false, "")
 	fs.DurationVar(&o.timeout, "timeout", 0, "")
+	fs.Int64Var(&o.maxOutputBytes, "max-output-bytes", 0, "")
+	fs.IntVar(&o.maxDocuments, "max-documents", 0, "")
 	var positional []string
 	rest := args
 	for {
@@ -160,6 +164,18 @@ func parseFlowRunArgs(args []string) (*flowRunOptions, error) {
 		return o, usageErr("expected one <flow.json>, got %d arguments", len(positional))
 	case o.timeout < 0:
 		return o, usageErr("--timeout must not be negative")
+	}
+	var badLimit bool
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "max-documents":
+			badLimit = badLimit || o.maxDocuments <= 0
+		case "max-output-bytes":
+			badLimit = badLimit || o.maxOutputBytes <= 0 || o.maxOutputBytes > (1<<60)
+		}
+	})
+	if badLimit {
+		return o, usageErr("output limits must be positive and within range")
 	}
 	o.flowPath = positional[0]
 	return o, nil
@@ -482,11 +498,19 @@ func flowRun(args []string, stdout, stderr io.Writer, reg *connhost.Registry) in
 	mgr.Commit(prepared)
 
 	eng := engine.New()
+	eng.MaxReturnedDocuments = opts.maxDocuments
+	eng.MaxReturnedBytes = opts.maxOutputBytes
+	if opts.maxOutputBytes > 0 {
+		eng.Spool = docs.NewSpool(docs.SpoolConfig{DiskBudget: opts.maxOutputBytes})
+	}
 	eng.Registry.RegisterConnectorLookup(mgr) // start is a pass-through when no runner is registered
 	in := docs.NewSet(docs.New("flow-run", opts.set, nil))
 	res, err := eng.Run(ctx, f, in, engine.NewProcess(nil))
 	if res != nil {
 		defer func() { _ = res.Returned.Close(); _ = res.Failed.Close() }()
+	}
+	if eng.Spool.DiskBudgetExceeded() || errors.Is(err, engine.ErrReturnLimit) {
+		return fail(withSteps(outputTooLarge(), res))
 	}
 	if err != nil {
 		switch {
@@ -517,16 +541,39 @@ func flowRun(args []string, stdout, stderr io.Writer, reg *connhost.Registry) in
 		}
 		return fail(withSteps(fe, res))
 	}
-	if err := writeOutput(stdout, res, opts.json); err != nil {
+	if err := writeOutput(stdout, res, opts); err != nil {
+		if errors.Is(err, errOutputTooLarge) {
+			return fail(withSteps(outputTooLarge(), res))
+		}
 		return fail(execErr("write output: %v", err))
 	}
 	return exitOK
 }
 
+var errOutputTooLarge = errors.New("output exceeds the byte or document limit")
+
+func outputTooLarge() *flowRunError {
+	return &flowRunError{exit: exitExec, code: "output_too_large", msg: errOutputTooLarge.Error()}
+}
+
 // writeOutput prints the returned documents: raw payload bytes, or the JSON envelope.
-func writeOutput(stdout io.Writer, res *engine.Result, asJSON bool) error {
+func writeOutput(stdout io.Writer, res *engine.Result, opts *flowRunOptions) error {
 	ret := res.Returned
-	if asJSON {
+	if opts.maxDocuments > 0 && ret.Len() > opts.maxDocuments {
+		return errOutputTooLarge
+	}
+	if opts.maxOutputBytes > 0 {
+		var total int64
+		for i := 0; i < ret.Len(); i++ {
+			if p := ret.At(i).Payload(); p != nil {
+				if p.Size() > opts.maxOutputBytes-total {
+					return errOutputTooLarge
+				}
+				total += p.Size()
+			}
+		}
+	}
+	if opts.json {
 		type docOut struct {
 			ID         string            `json:"id"`
 			Properties map[string]string `json:"properties"`
@@ -537,17 +584,50 @@ func writeOutput(stdout io.Writer, res *engine.Result, asJSON bool) error {
 			Documents []docOut  `json:"documents"`
 			Steps     []stepOut `json:"steps"`
 		}{Status: 200, Documents: []docOut{}, Steps: aggregateSteps(res.Trace)}
+		var wireBytes int64
+		if opts.maxOutputBytes > 0 {
+			envelope, err := json.Marshal(out)
+			if err != nil {
+				return err
+			}
+			wireBytes = int64(len(envelope)) + 1 // terminating newline
+		}
+		// The decoded limit remains available for payload. Wire overhead, including
+		// metadata and JSON escapes, is independently bounded.
+		wireLimit := opts.maxOutputBytes + (opts.maxOutputBytes+2)/3 + 128*1024
 		for _, d := range ret.Docs() {
+			props := d.Props
+			if props == nil {
+				props = map[string]string{}
+			}
+			if opts.maxOutputBytes > 0 {
+				// Reject oversized metadata before allocating an escaped JSON copy.
+				metadataBytes := int64(len(d.ID))
+				for key, value := range props {
+					metadataBytes += int64(len(key)) + int64(len(value))
+				}
+				if metadataBytes > wireLimit-wireBytes {
+					return errOutputTooLarge
+				}
+				wireBytes++ // document separator
+				metadata, err := json.Marshal(docOut{ID: d.ID, Properties: props})
+				if err != nil {
+					return err
+				}
+				wireBytes += int64(len(metadata))
+				if p := d.Payload(); p != nil {
+					wireBytes += 4 * ((p.Size() + 2) / 3)
+				}
+				if wireBytes > wireLimit {
+					return errOutputTooLarge
+				}
+			}
 			var b []byte
 			if p := d.Payload(); p != nil {
 				var err error
 				if b, err = p.Bytes(); err != nil {
 					return err
 				}
-			}
-			props := d.Props
-			if props == nil {
-				props = map[string]string{}
 			}
 			out.Documents = append(out.Documents, docOut{ID: d.ID, Properties: props, Payload: base64.StdEncoding.EncodeToString(b)})
 		}

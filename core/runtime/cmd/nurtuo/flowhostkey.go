@@ -74,5 +74,8 @@ func scanHostKey(ctx context.Context, address string) (scannedHostKey, error) {
 		_ = client.Close()
 		err = errors.New("server did not present a host key")
 	}
+	if ctx.Err() != nil {
+		return scannedHostKey{}, ctx.Err()
+	}
 	return scannedHostKey{}, err
 }

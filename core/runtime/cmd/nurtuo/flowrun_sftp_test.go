@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
@@ -528,5 +529,102 @@ func TestFlowHostKeyScan(t *testing.T) {
 	}
 	if len(result.Keys) != 1 || result.Keys[0] != expected {
 		t.Fatalf("scanned %+v, want %+v", result.Keys, expected)
+	}
+}
+
+func TestFlowRunSFTPOutputLimit(t *testing.T) {
+	fx := startSFTPFixture(t)
+	fx.seed(t, "/downloads/large", strings.Repeat("x", 2<<20))
+	env := newSFTPEnv(t, fx, "password")
+	code, out, stderr := runFlow(t, nil, env.args("--json", "--set", "path=/downloads/large", "--max-output-bytes", "65536", "--max-documents", "20")...)
+	if code != exitExec || out != "" || !strings.Contains(stderr, "output_too_large") {
+		t.Fatalf("expected atomic output overflow; exit %d, stdout bytes %d, stderr %s", code, len(out), stderr)
+	}
+}
+
+func TestFlowHostKeyScanSendsNoAuth(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := ssh.NewSignerFromKey(privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := make(chan string, 1)
+	cfg := &ssh.ServerConfig{
+		PasswordCallback: func(_ ssh.ConnMetadata, _ []byte) (*ssh.Permissions, error) {
+			return nil, errors.New("denied")
+		},
+		AuthLogCallback: func(_ ssh.ConnMetadata, method string, _ error) {
+			select {
+			case auth <- method:
+			default:
+			}
+		}}
+	cfg.AddHostKey(signer)
+	done := make(chan error, 1)
+	go func() {
+		conn, err := l.Accept()
+		if err == nil {
+			defer func() { _ = conn.Close() }()
+			_, _, _, err = ssh.NewServerConn(conn, cfg)
+		}
+		done <- err
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if key, err := scanHostKey(ctx, l.Addr().String()); err != nil || key.Fingerprint != ssh.FingerprintSHA256(signer.PublicKey()) {
+		t.Fatalf("scan got %+v, error %v", key, err)
+	}
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("SSH handshake unexpectedly completed")
+		}
+	case <-ctx.Done():
+		t.Fatal("scan did not close the SSH socket")
+	}
+	select {
+	case method := <-auth:
+		t.Fatalf("scan attempted %s authentication", method)
+	default:
+	}
+}
+
+func TestFlowHostKeyScanClosesSilentPeerOnDeadline(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+	done := make(chan error, 1)
+	go func() {
+		conn, err := l.Accept()
+		if err == nil {
+			defer func() { _ = conn.Close() }()
+			if err = conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err == nil {
+				_, err = io.Copy(io.Discard, conn)
+			}
+		}
+		done <- err
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	if _, err := scanHostKey(ctx, l.Addr().String()); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("scan error = %v, want deadline exceeded", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("waiting for EOF: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("silent peer socket stayed open")
 	}
 }
