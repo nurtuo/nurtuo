@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -250,6 +251,48 @@ func TestDefaultDataRoot(t *testing.T) {
 	}
 	if _, err := DefaultDataRoot("linux", env(nil)); err == nil {
 		t.Error("want error with no env")
+	}
+}
+
+// TestDataDirsEnsureUnixModes characterizes the Unix layout modes, which the Windows DACL work
+// must not change (D8): secrets 0700, the rest 0755, and an existing secrets dir is not re-moded.
+func TestDataDirsEnsureUnixModes(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("POSIX modes; Windows is covered by standalone_windows_test.go")
+	}
+	d := NewDataDirs(t.TempDir())
+	if err := d.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	mode := func(p string) os.FileMode {
+		fi, err := os.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fi.Mode().Perm()
+	}
+	if m := mode(d.Secrets); m != 0o700 {
+		t.Fatalf("secrets mode %#o, want 0700", m)
+	}
+	for _, p := range []string{d.Postgres, d.PGRun, d.PGCache, d.Logs} {
+		if m := mode(p); m&^0o755 != 0 {
+			t.Fatalf("%s mode %#o, want at most 0755 (umask may clear bits)", p, m)
+		}
+	}
+	// An existing 0755 secrets dir is left unchanged (MkdirAll never re-modes).
+	d2 := NewDataDirs(t.TempDir())
+	if err := os.MkdirAll(d2.Secrets, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(d2.Secrets, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repaired, err := d2.EnsureReport()
+	if err != nil || repaired != nil {
+		t.Fatalf("repaired=%v err=%v", repaired, err)
+	}
+	if m := mode(d2.Secrets); m != 0o755 {
+		t.Fatalf("existing secrets re-moded to %#o", m)
 	}
 }
 
