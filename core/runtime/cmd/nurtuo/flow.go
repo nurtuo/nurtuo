@@ -21,6 +21,13 @@ func flowMain(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "host-key" {
 		return flowHostKey(args[1:], stdout, stderr)
 	}
+	if len(args) > 0 && args[0] == "run-pinned" {
+		registry, err := pinnedConnectors()
+		if err != nil {
+			return reportError(stderr, wantsJSON(args[1:]), execErr("test run dial enforcement unavailable"))
+		}
+		return flowRun(args[1:], stdout, stderr, registry)
+	}
 	if len(args) < 1 || args[0] != "run" {
 		_, _ = fmt.Fprint(stderr, flowUsage)
 		return exitUsage

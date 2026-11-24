@@ -49,7 +49,7 @@ func TestTxOptions(t *testing.T) {
 func TestQueryRunsInReadOnlyTxAndRollsBack(t *testing.T) {
 	ro := &pgconn.PgError{Code: "25006", Message: "cannot execute INSERT in a read-only transaction", Detail: "host=db.internal"}
 	b := &fakeBeginner{tx: &fakeTx{err: ro}}
-	o := runReadOnly(context.Background(), b, &inDoc{id: "0", data: []byte(`{"sql":"insert into t values (1)"}`)}, 10, "pw")
+	o := runReadOnly(context.Background(), b, &inDoc{id: "0", data: []byte(`{"sql":"insert into t values (1)"}`)}, 10, 0, "pw")
 	if len(b.opts) != 1 || b.opts[0].AccessMode != pgx.ReadOnly {
 		t.Fatalf("expected one READ ONLY BeginTx, got %+v", b.opts)
 	}

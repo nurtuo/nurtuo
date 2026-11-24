@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -43,7 +44,7 @@ test("argv array, minimal env, HOME and TMPDIR in the temp dir, secret as NURTUO
     assert.ok(info.argv.includes("path=/a b.txt"));
     assert.ok(!info.argv.includes("--insecure-host-key"));
     assert.match(info.argv[info.argv.indexOf("--timeout") + 1], /^\d+ms$/);
-    assert.equal(info.env.NURTUO_SECRET_C1_PASSWORD, PW, "prefix present exactly once");
+    assert.equal(info.env.NURTUO_SECRET_C1_PASSWORD, createHash("sha256").update(PW).digest("hex"), "prefix present exactly once");
     assert.equal(info.env.NURTUO_SECRET_NURTUO_SECRET_C1_PASSWORD, undefined);
     assert.equal(info.env.NURTUO_AUTH_SECRET, undefined);
     assert.equal(info.env.DATABASE_URL, undefined);
@@ -53,7 +54,7 @@ test("argv array, minimal env, HOME and TMPDIR in the temp dir, secret as NURTUO
     assert.equal(info.env.HOME, info.env.TMPDIR);
     assert.deepEqual(info.files, ["c1.connection.json", "flow.json"]);
     assert.deepEqual(leftovers(), [], "temp dir removed");
-    assert.ok(!JSON.stringify(r.body).includes(PW) || r.body.documents, "no secret in the envelope outside the echoed env");
+    assert.ok(!JSON.stringify(info).includes(PW));
   } finally { delete process.env.NURTUO_AUTH_SECRET; delete process.env.DATABASE_URL; }
 });
 
@@ -294,4 +295,13 @@ test("a stored credential from a different destination, field or connection neve
   await expectUnbound("c2");
   assert.equal(queries, 0);
   assert.equal(connections, 0, "an unauthorized TCP peer must receive zero authentication attempts");
+});
+
+test("a document containing a stored credential is withheld atomically", async () => {
+  const { run } = await world();
+  const result = (await run({ mode: "text", text: PW })).body;
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "credential_in_result");
+  assert.equal(result.documents, undefined);
+  assert.ok(!JSON.stringify(result).includes(PW));
 });

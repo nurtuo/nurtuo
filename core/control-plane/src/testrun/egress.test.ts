@@ -44,7 +44,7 @@ test("host resolving to a private address is refused before spawn; the allow swi
   assert.equal(existsSync(pidfile), false, "no process may be spawned");
 });
 
-test("non-sftp connectors and mutating operations are refused before spawn; GET/get/QUERY/query pass; connection is required", async () => {
+test("non-allowlisted connectors and mutating operations are refused before spawn; GET/get/QUERY/query pass; connection is required", async () => {
   const { run } = await runWorld();
   const pidfile = join(mkdtempSync(join(tmpdir(), "pid-")), "pid");
   const input = { properties: { pidfile } };
@@ -52,8 +52,8 @@ test("non-sftp connectors and mutating operations are refused before spawn; GET/
     const r = await run({ flow: flowOf("c1", op), input });
     assert.equal(r.status, 400, op); assert.equal(j(r).error.code, "not_allowed_in_test_run", op);
   }
-  const http = await run({ flow: flowOf("c1", "GET", "http"), input });
-  assert.equal(j(http).error.code, "not_allowed_in_test_run");
+  const unsupported = await run({ flow: flowOf("c1", "GET", "nats"), input });
+  assert.equal(j(unsupported).error.code, "not_allowed_in_test_run");
   for (const op of ["GET", "get", "Get", "QUERY", "query"]) assert.equal((await run({ flow: flowOf("c1", op) })).status, 200, op);
   rmSync(pidfile, { force: true });
   const noConn = flowOf(); delete (noConn.steps[1]!.config as any).connection;

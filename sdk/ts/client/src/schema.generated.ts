@@ -639,7 +639,7 @@ export interface paths {
         put?: never;
         /**
          * @description EXPERIMENTAL. Runs an inline `nurtuo.flow/v1` document synchronously through `nurtuo flow run` against
-         *     workspace connections (sftp GET/QUERY only). A failed or stopped run is a 200 result, not an API error.
+         *     workspace connections (SFTP GET/QUERY, HTTP GET and PostgreSQL QUERY). A failed or stopped run is a 200 result, not an API error.
          *     Errors: 400 `invalid_flow`, `not_allowed_in_test_run`, `connection_required`, `host_not_allowed`;
          *     404 `connection_not_found`; 409 `secret_missing`, `credential_unbound`, `dial_enforcement_unavailable`; 429 `too_many_runs`; 503 `test_run_unavailable`. Session users only.
          */

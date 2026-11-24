@@ -251,6 +251,29 @@ jobs:
             echo "NURTUO_FLOW_RUN_EXPECT=$expect"
             echo "NURTUO_SECRET_SFTP_PASSWORD=$pw"
           } >> "$GITHUB_ENV"
+      - name: Start PostgreSQL employee fixture
+        run: |
+          admin_pw="$(openssl rand -hex 16)"
+          reader_pw="$(openssl rand -hex 16)"
+          echo "::add-mask::$admin_pw"
+          echo "::add-mask::$reader_pw"
+          docker run -d --name nurtuo-e2e-postgres -p 127.0.0.1::5432 -e POSTGRES_PASSWORD="$admin_pw" postgres:16-alpine
+          port="$(docker port nurtuo-e2e-postgres 5432/tcp | head -n1 | sed 's/.*://')"
+          for i in $(seq 1 60); do
+            docker exec nurtuo-e2e-postgres pg_isready -h 127.0.0.1 -U postgres && break
+            sleep 1
+          done
+          docker exec -i nurtuo-e2e-postgres psql -U postgres -v ON_ERROR_STOP=1 <<SQL
+          CREATE TABLE employee (id integer PRIMARY KEY, first_name text, last_name text);
+          INSERT INTO employee VALUES (7, 'Ada', 'Lovelace');
+          CREATE ROLE employee_reader LOGIN PASSWORD '$reader_pw';
+          GRANT SELECT ON employee TO employee_reader;
+          ALTER ROLE employee_reader SET default_transaction_read_only = on;
+          SQL
+          {
+            echo "NURTUO_E2E_POSTGRES_PORT=$port"
+            echo "NURTUO_E2E_POSTGRES_PASSWORD=$reader_pw"
+          } >> "$GITHUB_ENV"
       - name: Build control plane and test the real runner
         run: |
           pnpm --filter @nurtuo/control-plane... run build
@@ -267,9 +290,9 @@ jobs:
             core/web/test-results
           retention-days: 5
           if-no-files-found: ignore
-      - name: Remove SFTP container
+      - name: Remove connector fixtures
         if: always()
-        run: docker rm -f nurtuo-e2e-sftp
+        run: docker rm -f nurtuo-e2e-sftp nurtuo-e2e-postgres
 
   bridge-python:
     runs-on: ubuntu-latest

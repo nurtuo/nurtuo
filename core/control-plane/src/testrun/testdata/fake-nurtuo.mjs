@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Fake `nurtuo` for runner tests. Behaviour is chosen with `--set mode=<x>` (the child's environment is
 // minimal by design, so an env var cannot select it). Prints canned `nurtuo flow run --json` shapes.
+import { createHash } from "node:crypto";
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 
 const argv = process.argv.slice(2);
@@ -29,7 +30,9 @@ const hang = () => setInterval(() => {}, 1000);
 switch (props.mode ?? "echo") {
   case "echo": {
     const tmp = process.env.TMPDIR;
-    const info = { argv, env: process.env, cwd: process.cwd(), files: readdirSync(tmp).sort() };
+    const env = { ...process.env };
+    for (const [key, value] of secretEnv) env[key] = createHash("sha256").update(value).digest("hex");
+    const info = { argv, env, cwd: process.cwd(), files: readdirSync(tmp).sort() };
     process.stdout.write(JSON.stringify({ status: 200, documents: [doc("flow-run.out", JSON.stringify(info), { path: props.path ?? "" })], steps: allOk }) + "\n");
     break;
   }

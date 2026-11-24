@@ -147,11 +147,12 @@ explicit ACLs ([spec](specs/implemented/2026-11-24-windows-secrets-dacl.md), iss
 - **Canvas Run (experimental).** The control plane keeps workspace secrets in process memory only
   (write-only API, lost on restart, single replica) and hands them to a short-lived
   `nurtuo flow run` child as `NURTUO_SECRET_<NAME>` variables in a from-scratch environment (no
-  control-plane secrets, `HOME` and `TMPDIR` in a per-run 0700 temp dir). Test runs allow `sftp` with
-  `GET`/`QUERY` only and refuse hosts that resolve to loopback, private, link-local or metadata
+  control-plane secrets, `HOME` and `TMPDIR` in a per-run 0700 temp dir). Test runs allow SFTP `GET`/`QUERY`, HTTP `GET` and
+  PostgreSQL `QUERY`. They refuse hosts that resolve to loopback, private, link-local or metadata
   addresses unless the operator sets `NURTUO_TEST_RUN_ALLOW_PRIVATE=1` (dangerous: lets any editor
   probe the control plane's network). Every dial uses a vetted IP address. Credentials are bound to
-  the connection incarnation, logical destination, user, credential fields and pinned fingerprint.
+  the connection incarnation, logical destination, and connector-specific authentication and trust
+  settings. HTTP redirects are disabled during Test Run.
   Rebinding requires fresh credential entry. A stored `known_hosts` connection is refused before
   dialing. Canvas Run requires a POSIX control-plane host. See
   [the credential binding spec](specs/2026-11-24-operation-limits-and-credential-binding.md).
@@ -159,7 +160,7 @@ explicit ACLs ([spec](specs/implemented/2026-11-24-windows-secrets-dacl.md), iss
 ## Connector security notes
 
 - **PostgreSQL: arbitrary SQL.** The SQL text comes from the input document and runs with the
-  database user's privileges; there is no read-only mode. Use a least-privilege role and restrict
+  database user's privileges. QUERY uses a database read-only transaction. Use a least-privilege role and restrict
   who can author flows and feed documents. Full text in [connectors/postgres.md](connectors/postgres.md).
 - **HTTP: SSRF.** `baseUrl` and `openApiUrl` are fetched from the runtime's network position,
   including internal addresses and metadata endpoints, and private ranges are not blocked. Only

@@ -83,3 +83,21 @@ test("invalid_flow is a 400 with diagnostics; a failed run is still 200", async 
   const failed = await w.run({ mode: "fail" });
   assert.equal(failed.status, 200); assert.equal(j(failed).status, "failed");
 });
+
+test("network connector Test Run policy checks operations and saved connection type", async () => {
+  const w = await world();
+  const run = (connector: string, operation: string, connection = "c1") => {
+    const flow = flowOf(connection);
+    flow.steps[1]!.config = { connector, operation, connection };
+    return w.call("POST", `/v1/workspaces/${w.ws.id}/test-runs`, { ...w.as, body: { flow } });
+  };
+
+  for (const [connector, operation] of [["http", "CREATE"], ["postgres", "EXECUTE"]]) {
+    assert.equal(j(await run(connector!, operation!)).error.code, "not_allowed_in_test_run");
+  }
+  for (const [connector, operation] of [["http", "GET"], ["postgres", "QUERY"]]) {
+    const r = await run(connector!, operation!);
+    assert.equal(r.status, 400);
+    assert.equal(j(r).error.code, "connection_type_mismatch");
+  }
+});

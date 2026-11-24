@@ -186,7 +186,7 @@ export function ConnectionsPanel({ api, workspaceId, items, onChanged, onClose }
           else setId(e.target.value);
         }} /></label>
         <label className="field"><span>Connector</span>
-          <select value={connector} disabled={!!existing} onChange={(e) => changeType(e.target.value as Connector)}>
+          <select aria-label="Connector" value={connector} disabled={!!existing} onChange={(e) => changeType(e.target.value as Connector)}>
             <option value="sftp">SFTP</option>
             <option value="http">HTTP</option>
             <option value="postgres">PostgreSQL</option>

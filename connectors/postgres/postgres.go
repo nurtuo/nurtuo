@@ -53,6 +53,13 @@ const maxPools = 8
 
 // Connector implements connector.Connector for PostgreSQL.
 type Connector struct {
+	// ConfigurePool optionally sets host-provided connection policy before the pool opens.
+	// Set it before using the connector.
+	ConfigurePool func(*pgxpool.Config) error
+	// MaxQueryResultBytes optionally bounds the encoded rows buffered for one input document.
+	// Set it before using the connector.
+	MaxQueryResultBytes int
+
 	mu    sync.Mutex
 	pools map[string]*poolEntry
 	tick  uint64
@@ -96,6 +103,11 @@ func (c *Connector) pool(ctx context.Context, cc *connectorv1.ConnectionConfig) 
 		pc, err := cfg.poolConfig()
 		if err != nil {
 			return nil, cfg, nil, err
+		}
+		if c.ConfigurePool != nil {
+			if err := c.ConfigurePool(pc); err != nil {
+				return nil, cfg, nil, errors.New(redact(err.Error(), cfg.Password))
+			}
 		}
 		p, err := pgxpool.NewWithConfig(ctx, pc)
 		if err != nil {
@@ -345,9 +357,9 @@ recv:
 			sctx, cancel := context.WithTimeout(ctx, timeout)
 			var o docOutcome
 			if isQuery {
-				o = runReadOnly(sctx, pool, d, maxRows, cfg.Password)
+				o = runReadOnly(sctx, pool, d, maxRows, c.MaxQueryResultBytes, cfg.Password)
 			} else {
-				o = runStatement(sctx, pool, d, false, maxRows, cfg.Password)
+				o = runStatement(sctx, pool, d, false, maxRows, c.MaxQueryResultBytes, cfg.Password)
 			}
 			cancel()
 			if err := send(d, o); err != nil {
@@ -372,7 +384,7 @@ recv:
 		failedAt := -1
 		for i, d := range docs {
 			sctx, cancel := context.WithTimeout(ctx, timeout)
-			o := runStatement(sctx, t, d, isQuery, maxRows, cfg.Password)
+			o := runStatement(sctx, t, d, isQuery, maxRows, c.MaxQueryResultBytes, cfg.Password)
 			cancel()
 			outcomes[i] = o
 			if o.status != connectorv1.DocumentStatus_DOCUMENT_STATUS_SUCCESS {
@@ -419,13 +431,13 @@ type beginner interface {
 
 // runReadOnly runs one document in its own READ ONLY transaction and always rolls it back (a
 // QUERY must not change anything, so there is nothing to commit).
-func runReadOnly(ctx context.Context, b beginner, d *inDoc, maxRows int, secret string) docOutcome {
+func runReadOnly(ctx context.Context, b beginner, d *inDoc, maxRows, maxBytes int, secret string) docOutcome {
 	t, err := b.BeginTx(ctx, txOptions(true))
 	if err != nil {
 		st, msg := MapError(err, secret)
 		return docOutcome{status: st, message: "transaction not started: " + msg}
 	}
-	o := runStatement(ctx, t, d, true, maxRows, secret)
+	o := runStatement(ctx, t, d, true, maxRows, maxBytes, secret)
 	_ = t.Rollback(context.WithoutCancel(ctx))
 	return o
 }
@@ -435,7 +447,7 @@ type querier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
-func runStatement(ctx context.Context, q querier, d *inDoc, isQuery bool, maxRows int, secret string) docOutcome {
+func runStatement(ctx context.Context, q querier, d *inDoc, isQuery bool, maxRows, maxBytes int, secret string) docOutcome {
 	sql, args, err := ParseStatement(d.data)
 	if err != nil {
 		st, msg := MapError(err, secret)
@@ -452,7 +464,7 @@ func runStatement(ctx context.Context, q querier, d *inDoc, isQuery bool, maxRow
 	for _, f := range rows.FieldDescriptions() {
 		cols = append(cols, f.Name)
 	}
-	n := 0
+	n, size := 0, 0
 	for rows.Next() {
 		n++
 		if !isQuery {
@@ -467,6 +479,11 @@ func runStatement(ctx context.Context, q querier, d *inDoc, isQuery bool, maxRow
 		if err == nil {
 			var doc []byte
 			if doc, err = RowToDocument(cols, vals); err == nil {
+				if maxBytes > 0 && len(doc) > maxBytes-size {
+					return docOutcome{status: connectorv1.DocumentStatus_DOCUMENT_STATUS_APPLICATION_ERROR,
+						message: "query rows exceed the test run buffer limit"}
+				}
+				size += len(doc)
 				out.rows = append(out.rows, doc)
 				continue
 			}
