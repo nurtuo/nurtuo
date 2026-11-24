@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createHandler, digestOf } from "./api.js";
+import type { AddressInfo } from "node:net";
+import { MAX_BODY_BYTES, createHandler, createHttpServer, digestOf } from "./api.js";
 import { MemoryRepository } from "./memory-repository.js";
 
 function setup() {
@@ -99,4 +100,66 @@ test("undeploy removes the component from desired state and enqueues a change", 
   assert.deepEqual(asAny(r.body).items, {});
   assert.equal((await call("DELETE", `/v1/runtimes/rt1/deployments/${id}`)).status, 404);
   assert.equal((await repo.listOutbox({ unpublishedOnly: true })).length, 2);
+});
+
+test("no-auth mode answers 404 (not 405) for workspace routes, including the canvas Run routes", async () => {
+  const { call } = setup();
+  for (const [m, p] of [
+    ["GET", "/v1/workspaces/w1/connections"], ["PUT", "/v1/workspaces/w1/connections/c1"], ["GET", "/v1/workspaces/w1/secrets"],
+    ["PUT", "/v1/workspaces/w1/secrets/s"], ["POST", "/v1/workspaces/w1/test-runs"], ["GET", "/v1/workspaces/w1/members"],
+  ] as const) {
+    const r = await call(m, p, {});
+    assert.equal(r.status, 404, `${m} ${p}`);
+    assert.equal(asAny(r.body).error.code, "not_found");
+  }
+  // an unknown method on a known legacy resource is still 405
+  assert.equal((await call("PUT", "/v1/components")).status, 405);
+});
+
+async function serve(opts: Parameters<typeof createHttpServer>[1]) {
+  const srv = createHttpServer(new MemoryRepository(), opts);
+  await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
+  return { srv, base: `http://127.0.0.1:${(srv.address() as AddressInfo).port}` };
+}
+
+test("body over 1 MiB is 413 before parsing; a body under the limit still works", async () => {
+  const { srv, base } = await serve({ auth: "disabled" });
+  try {
+    // not JSON on purpose: a parse error (400) would mean the limit was applied after parsing
+    const big = await fetch(`${base}/v1/components`, { method: "POST", headers: { "content-type": "application/json" }, body: "x".repeat(MAX_BODY_BYTES + 1) });
+    assert.equal(big.status, 413);
+    assert.equal(asAny(await big.json()).error.code, "payload_too_large");
+    const ok = await fetch(`${base}/v1/components`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "small" }) });
+    assert.equal(ok.status, 201);
+  } finally { srv.close(); srv.closeAllConnections(); }
+});
+
+test("request close aborts ApiRequest.signal", async () => {
+  const { setup: authSetup } = await import("./auth/test-util.js");
+  const w = authSetup();
+  const { ws } = await w.owner("o@x.io", "ws-a");
+  void ws;
+  let seen: AbortSignal | undefined;
+  let aborted!: () => void;
+  const abortedP = new Promise<void>((r) => { aborted = r; });
+  let entered!: () => void;
+  const enteredP = new Promise<void>((r) => { entered = r; });
+  const { createAuthHook } = await import("./auth/middleware.js");
+  const hook = createAuthHook({
+    service: w.service,
+    extraEndpoints: { "connection.list": async (c) => { seen = c.signal; entered(); c.signal?.addEventListener("abort", aborted); await new Promise((r) => setTimeout(r, 3000)); return { status: 200, body: { items: [] } }; } },
+  });
+  const { srv, base } = await serve({ auth: hook });
+  try {
+    const login = await fetch(`${base}/v1/auth/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: "o@x.io", password: (await import("./auth/test-util.js")).PASSWORD }) });
+    const cookie = /__Host-nurtuo_session=[^;]+/.exec(String(login.headers.get("set-cookie")))![0];
+    const ac = new AbortController();
+    const p = fetch(`${base}/v1/workspaces/${ws.id}/connections`, { headers: { cookie }, signal: ac.signal }).catch(() => undefined);
+    await enteredP;
+    assert.equal(seen?.aborted, false);
+    ac.abort();
+    await p;
+    await Promise.race([abortedP, new Promise((_, rej) => setTimeout(() => rej(new Error("signal not aborted")), 2000))]);
+    assert.equal(seen?.aborted, true);
+  } finally { srv.close(); srv.closeAllConnections(); }
 });

@@ -9,13 +9,22 @@ import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createHttpServer, type HandlerOptions } from "./api.js";
 import { AuthService, MemoryAuthRepository, PgAuthRepository, createAuthHook, type AuthRepository } from "./auth/index.js";
+import { MemoryConnectionRepository, type ConnectionRepository } from "./connections/repository.js";
+import { PgConnectionRepository } from "./connections/pg-repository.js";
+import { connectionEndpoints } from "./connections/routes.js";
+import { MemorySecretStore } from "./connections/secrets.js";
 import { MemoryRepository } from "./memory-repository.js";
+import { testRunEndpoints } from "./testrun/routes.js";
+import { TestRunner } from "./testrun/runner.js";
+import { RunLimiter } from "./testrun/semaphore.js";
 import { PgRepository, migrate, type Db } from "./pg-repository.js";
 import type { Repository } from "./repository.js";
 
 const insecure = process.env.NURTUO_INSECURE_NO_AUTH === "1";
 let repo: Repository = new MemoryRepository();
 let authRepo: AuthRepository = new MemoryAuthRepository();
+let connections: ConnectionRepository = new MemoryConnectionRepository();
+const secrets = new MemorySecretStore(); // in-memory only in this slice: values are lost on restart
 if (process.env.DATABASE_URL) {
   const mod = "pg"; // resolved at runtime so the package is optional for tests
   const pg = (await import(mod)) as { default: { Pool: new (o: { connectionString: string }) => Db } };
@@ -23,6 +32,7 @@ if (process.env.DATABASE_URL) {
   await migrate(pool, fileURLToPath(new URL("../migrations", import.meta.url)));
   repo = new PgRepository(pool);
   authRepo = new PgAuthRepository(pool);
+  connections = new PgConnectionRepository(pool);
 }
 
 let opts: HandlerOptions;
@@ -42,7 +52,14 @@ if (insecure) {
     await service.bootstrap(process.env.NURTUO_BOOTSTRAP_EMAIL, process.env.NURTUO_BOOTSTRAP_PASSWORD);
     console.log(`bootstrap owner ensured: ${process.env.NURTUO_BOOTSTRAP_EMAIL}`);
   }
-  opts = { auth: createAuthHook({ service, trustProxy: process.env.NURTUO_TRUST_PROXY === "1", onAuditError: (e) => console.error("audit write failed", e) }) };
+  const runner = new TestRunner({ connections, secrets, limiter: new RunLimiter(), bin: process.env.NURTUO_FLOW_RUN_BIN, allowPrivate: process.env.NURTUO_TEST_RUN_ALLOW_PRIVATE === "1" });
+  opts = {
+    auth: createAuthHook({
+      service, trustProxy: process.env.NURTUO_TRUST_PROXY === "1", onAuditError: (e) => console.error("audit write failed", e),
+      extraEndpoints: { ...connectionEndpoints({ connections, secrets }), ...testRunEndpoints(runner) },
+      onWorkspaceDeleted: async (id) => { await connections.purge(id); await secrets.purge(id); },
+    }),
+  };
 }
 const port = Number(process.env.PORT ?? 8080);
 createHttpServer(repo, opts).listen(port, () => console.log(`nurtuo-control-plane listening on :${port}`));

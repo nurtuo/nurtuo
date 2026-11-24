@@ -100,6 +100,15 @@ What is **not** covered:
 - Standalone secrets (CA and leaf keys, `db-password`, `admin-token`) live as files under
   `<data-dir>/secrets`; the embedded database connection uses `sslmode=disable` on loopback.
 - Do not log full bundle or connection documents.
+- **Canvas Run (experimental).** The control plane keeps workspace secrets in process memory only
+  (write-only API, lost on restart, single replica) and hands them to a short-lived
+  `nurtuo flow run` child as `NURTUO_SECRET_<NAME>` variables in a from-scratch environment (no
+  control-plane secrets, `HOME` and `TMPDIR` in a per-run 0700 temp dir). Test runs allow `sftp` with
+  `GET`/`QUERY` only and refuse hosts that resolve to loopback, private, link-local or metadata
+  addresses unless the operator sets `NURTUO_TEST_RUN_ALLOW_PRIVATE=1` (dangerous: lets any editor
+  probe the control plane's network). DNS rebinding between the check and the child's dial is not
+  prevented. `hostKeyPolicy: insecure` cannot be stored. Not supported on Windows control-plane hosts
+  (503). See [the spec](specs/2026-11-23-canvas-run.md).
 
 ## Connector security notes
 

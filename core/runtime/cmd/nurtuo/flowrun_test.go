@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/nurtuo/nurtuo/core/runtime/internal/connhost"
+	"github.com/nurtuo/nurtuo/core/runtime/internal/engine"
 	"github.com/nurtuo/nurtuo/sdk/go/connector"
 )
 
@@ -398,4 +399,150 @@ func TestFlowRunStdoutStderrSeparation(t *testing.T) {
 	if code != 1 || out != "" || errs == "" {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, out, errs)
 	}
+}
+
+type jsonSteps struct {
+	Steps []struct {
+		ID      string `json:"id"`
+		Kind    string `json:"kind"`
+		In      int    `json:"in"`
+		Out     int    `json:"out"`
+		Failed  int    `json:"failed"`
+		Dropped int    `json:"dropped"`
+	} `json:"steps"`
+	Error struct{ Code, Message string } `json:"error"`
+}
+
+func TestFlowRunJSONSteps(t *testing.T) {
+	code, out, errs, _ := stubRun(t, stubSettings("payload", `"hello"`), "--json")
+	if code != 0 || errs != "" {
+		t.Fatalf("code=%d stderr=%q", code, errs)
+	}
+	var env jsonSteps
+	if err := json.Unmarshal([]byte(out), &env); err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, s := range env.Steps {
+		ids = append(ids, s.ID+":"+s.Kind)
+	}
+	if got := strings.Join(ids, ","); got != "start:start,call:connector,done:returnDocuments" {
+		t.Fatalf("steps = %s", got)
+	}
+	if s := env.Steps[2]; s.In != 1 || s.Out != 1 || s.Failed != 0 {
+		t.Fatalf("returnDocuments step = %+v", s)
+	}
+	t.Run("raw output unchanged", func(t *testing.T) {
+		code, out, _, _ := stubRun(t, stubSettings("payload", `"hello"`))
+		if code != 0 || out != "hello" {
+			t.Fatalf("code=%d stdout=%q", code, out)
+		}
+	})
+}
+
+func TestAggregateSteps(t *testing.T) {
+	got := aggregateSteps([]engine.StepTrace{
+		{StepID: "a", Kind: "start", In: 1, Out: 1},
+		{StepID: "b", Kind: "connector", In: 1, Out: 1},
+		{StepID: "b", Kind: "connector", In: 2, Out: 1, Failed: 1, Dropped: 1},
+	})
+	if len(got) != 2 || got[0].ID != "a" || got[1] != (stepOut{ID: "b", Kind: "connector", In: 3, Out: 2, Failed: 1, Dropped: 1}) {
+		t.Fatalf("got %+v", got)
+	}
+	if aggregateSteps(nil) == nil {
+		t.Fatal("must be a non-nil slice")
+	}
+}
+
+func TestFlowRunJSONErrorSteps(t *testing.T) {
+	t.Run("failed document", func(t *testing.T) {
+		code, _, errs, _ := stubRun(t, stubSettings("mode", `"failure"`), "--json", "--set", "path=/nope.txt")
+		var e jsonSteps
+		if err := json.Unmarshal([]byte(errs), &e); err != nil || code != 1 || e.Error.Code != "execution" {
+			t.Fatalf("code=%d err=%v stderr=%q", code, err, errs)
+		}
+		failed := 0
+		for _, s := range e.Steps {
+			if s.ID == "call" {
+				failed = s.Failed
+			}
+		}
+		if failed != 1 {
+			t.Fatalf("call.failed = %d; steps=%+v", failed, e.Steps)
+		}
+	})
+	t.Run("stop", func(t *testing.T) {
+		f := writeTemp(t, t.TempDir(), "f.json", `{"schema":"nurtuo.flow/v1","id":"s","name":"s","revision":1,"steps":[
+ {"id":"start","kind":"start","config":{"type":"manual"}},
+ {"id":"halt","kind":"stop","config":{"status":404}}],"edges":{"start:default":"halt"}}`)
+		code, _, errs := runFlow(t, nil, f, "--json")
+		var e jsonSteps
+		if err := json.Unmarshal([]byte(errs), &e); err != nil || code != 3 || e.Error.Code != "stopped" || len(e.Steps) != 2 || e.Steps[1].ID != "halt" {
+			t.Fatalf("code=%d err=%v stderr=%q", code, err, errs)
+		}
+	})
+	t.Run("timeout", func(t *testing.T) {
+		code, _, errs, _ := stubRun(t, stubSettings("mode", `"block"`), "--json", "--timeout", "100ms")
+		var e jsonSteps
+		if err := json.Unmarshal([]byte(errs), &e); err != nil || code != 1 || e.Steps == nil {
+			t.Fatalf("code=%d err=%v stderr=%q", code, err, errs)
+		}
+	})
+}
+
+func TestFlowRunJSONNoStepsBeforeEngine(t *testing.T) {
+	cases := map[string]func(t *testing.T) string{
+		"validation": func(t *testing.T) string {
+			_, _, errs := runFlow(t, nil, filepath.Join(t.TempDir(), "absent.json"), "--json")
+			return errs
+		},
+		"prepare failure": func(t *testing.T) string {
+			_, _, errs, _ := stubRun(t, stubSettings("mode", `"testfail"`), "--json")
+			return errs
+		},
+		"missing secret": func(t *testing.T) string {
+			t.Setenv("NURTUO_SECRET_STUB_PASSWORD", "")
+			_, _, errs, _ := stubRun(t, stubSettings("password", `"secret://stub_password"`), "--json")
+			return errs
+		},
+	}
+	for name, run := range cases {
+		t.Run(name, func(t *testing.T) {
+			errs := run(t)
+			if !strings.HasPrefix(errs, `{"error":`) || strings.Contains(errs, `"steps"`) {
+				t.Fatalf("stderr = %q", errs)
+			}
+		})
+	}
+}
+
+// TestFlowRunErrorMessages pins the message shapes the control plane parses (canvas-run spec, Phase 3 step 8).
+func TestFlowRunErrorMessages(t *testing.T) {
+	t.Run("timeout is execution", func(t *testing.T) {
+		_, _, errs, _ := stubRun(t, stubSettings("mode", `"block"`), "--json", "--timeout", "100ms")
+		var e jsonSteps
+		_ = json.Unmarshal([]byte(errs), &e)
+		if e.Error.Code != "execution" || !strings.HasPrefix(e.Error.Message, "timed out after ") {
+			t.Fatalf("stderr = %q", errs)
+		}
+	})
+	t.Run("stop", func(t *testing.T) {
+		f := writeTemp(t, t.TempDir(), "f.json", `{"schema":"nurtuo.flow/v1","id":"s","name":"s","revision":1,"steps":[
+ {"id":"start","kind":"start","config":{"type":"manual"}},
+ {"id":"halt","kind":"stop","config":{"status":404,"message":"gone"}}],"edges":{"start:default":"halt"}}`)
+		_, _, errs := runFlow(t, nil, f, "--json")
+		var e jsonSteps
+		_ = json.Unmarshal([]byte(errs), &e)
+		if e.Error.Code != "stopped" || e.Error.Message != "flow stopped with status 404: gone" {
+			t.Fatalf("stderr = %q", errs)
+		}
+	})
+	t.Run("prepare failure names the connection", func(t *testing.T) {
+		_, _, errs, _ := stubRun(t, stubSettings("mode", `"testfail"`), "--json")
+		var e jsonSteps
+		_ = json.Unmarshal([]byte(errs), &e)
+		if e.Error.Code != "execution" || !strings.Contains(e.Error.Message, `connection "s" (stub): test failed:`) {
+			t.Fatalf("stderr = %q", errs)
+		}
+	})
 }

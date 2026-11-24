@@ -118,7 +118,7 @@ nurtuo flow run examples/flows/sftp-download.flow.json \
 | `--secrets-dir <dir>` | Reads secrets from files (dir mode 0700, files 0600) in addition to the environment `NURTUO_SECRET_<NAME>` (checked first). Secrets are never accepted as arguments. |
 | `--known-hosts <file>` | known_hosts file used to verify SFTP host keys. For `known_hosts` connections the order is: this flag, then inline `settings.knownHosts` in the connection file, then `~/.ssh/known_hosts`; an empty result is exit 1. `hostKeyPolicy: fingerprint` ignores it. |
 | `--insecure-host-key` | Skips SFTP host key verification (prints a warning on stderr). The only way to skip it: a connection file with `hostKeyPolicy: insecure` and no flag exits 2 without connecting. |
-| `--json` | stdout is `{"status": 200, "documents": [{"id", "properties", "payload"}]}` (`payload` is base64); stderr errors are JSON. |
+| `--json` | stdout is `{"status": 200, "documents": [{"id", "properties", "payload"}], "steps": [{"id", "kind", "in", "out", "failed", "dropped"}]}` (`payload` is base64; `steps` has one entry per executed step id, counters summed, in first-seen order); stderr errors are JSON `{"error": {"code", "message"}}`, plus the same `steps` when the engine ran (failed documents, stop, timeout), and none for errors before the engine (usage, validation, connection test). Consumers must ignore unknown fields. |
 | `--timeout <d>` | Bounds the whole run, for example `30s`. |
 
 stdout is exactly the payload bytes of the single returned document (no added newline). Errors go to
@@ -134,6 +134,13 @@ needs `--json`.
 
 A flow can contain mutating operations (SFTP `DELETE`/`RENAME`, SQL writes): run only flows you
 trust with real credentials.
+
+### `nurtuo flow host-key` (experimental)
+
+`nurtuo flow host-key <host> [--port N] [--timeout 10s] --json` prints the SHA-256 fingerprint
+and type of the SSH host key negotiated by the SFTP connector defaults. The scan stops before
+authentication. Compare the fingerprint with the value published by the server administrator
+before trusting it.
 
 ## Shell completion
 

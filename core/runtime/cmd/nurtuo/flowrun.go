@@ -47,6 +47,47 @@ type flowRunError struct {
 	exit int
 	code string
 	msg  string
+	// steps is the per-step trace, set only when the engine ran (--json errors carry it).
+	steps []stepOut
+}
+
+// stepOut is one entry of the additive "steps" array in the --json output (canvas-run spec D16).
+type stepOut struct {
+	ID      string `json:"id"`
+	Kind    string `json:"kind"`
+	In      int    `json:"in"`
+	Out     int    `json:"out"`
+	Failed  int    `json:"failed"`
+	Dropped int    `json:"dropped"`
+}
+
+// aggregateSteps sums the engine trace per step id, in first-seen order (a step visited twice by
+// two branches sums its counters). It returns a non-nil slice so the JSON key is always an array.
+func aggregateSteps(trace []engine.StepTrace) []stepOut {
+	out := []stepOut{}
+	idx := map[string]int{}
+	for _, t := range trace {
+		i, ok := idx[t.StepID]
+		if !ok {
+			i = len(out)
+			idx[t.StepID] = i
+			out = append(out, stepOut{ID: t.StepID, Kind: t.Kind})
+		}
+		out[i].In += t.In
+		out[i].Out += t.Out
+		out[i].Failed += t.Failed
+		out[i].Dropped += t.Dropped
+	}
+	return out
+}
+
+// withSteps returns a copy of err carrying the trace of res (when the engine produced one).
+func withSteps(err *flowRunError, res *engine.Result) *flowRunError {
+	cp := *err
+	if res != nil {
+		cp.steps = aggregateSteps(res.Trace)
+	}
+	return &cp
 }
 
 func (e *flowRunError) Error() string { return e.msg }
@@ -245,7 +286,12 @@ func reportError(stderr io.Writer, asJSON bool, err error) int {
 		fe = &flowRunError{exit: exitExec, code: "execution", msg: err.Error()}
 	}
 	if asJSON {
-		b, _ := json.Marshal(map[string]any{"error": map[string]string{"code": fe.code, "message": fe.msg}})
+		body := map[string]any{"code": fe.code, "message": fe.msg}
+		payload := map[string]any{"error": body}
+		if fe.steps != nil {
+			payload["steps"] = fe.steps
+		}
+		b, _ := json.Marshal(payload)
 		_, _ = fmt.Fprintf(stderr, "%s\n", b)
 	} else {
 		_, _ = fmt.Fprintf(stderr, "nurtuo: %s\n", fe.msg)
@@ -445,11 +491,11 @@ func flowRun(args []string, stdout, stderr io.Writer, reg *connhost.Registry) in
 	if err != nil {
 		switch {
 		case errors.Is(err, context.DeadlineExceeded):
-			return fail(execErr("timed out after %s", opts.timeout))
+			return fail(withSteps(execErr("timed out after %s", opts.timeout), res))
 		case errors.Is(err, context.Canceled):
-			return fail(execErr("interrupted"))
+			return fail(withSteps(execErr("interrupted"), res))
 		}
-		return fail(execErr("%v", err))
+		return fail(withSteps(execErr("%v", err), res))
 	}
 	if n := res.Failed.Len(); n > 0 {
 		var msgs []string
@@ -462,23 +508,24 @@ func flowRun(args []string, stdout, stderr io.Writer, reg *connhost.Registry) in
 				msgs = append(msgs, m)
 			}
 		}
-		return fail(execErr("%d document(s) failed: %s", n, strings.Join(msgs, "; ")))
+		return fail(withSteps(execErr("%d document(s) failed: %s", n, strings.Join(msgs, "; ")), res))
 	}
 	if res.Stop != nil && res.Stop.Status != 0 {
 		fe := &flowRunError{exit: exitStopped, code: "stopped", msg: fmt.Sprintf("flow stopped with status %d", res.Stop.Status)}
 		if res.Stop.Message != "" {
 			fe.msg += ": " + res.Stop.Message
 		}
-		return fail(fe)
+		return fail(withSteps(fe, res))
 	}
-	if err := writeOutput(stdout, res.Returned, opts.json); err != nil {
+	if err := writeOutput(stdout, res, opts.json); err != nil {
 		return fail(execErr("write output: %v", err))
 	}
 	return exitOK
 }
 
 // writeOutput prints the returned documents: raw payload bytes, or the JSON envelope.
-func writeOutput(stdout io.Writer, ret *docs.Set, asJSON bool) error {
+func writeOutput(stdout io.Writer, res *engine.Result, asJSON bool) error {
+	ret := res.Returned
 	if asJSON {
 		type docOut struct {
 			ID         string            `json:"id"`
@@ -486,9 +533,10 @@ func writeOutput(stdout io.Writer, ret *docs.Set, asJSON bool) error {
 			Payload    string            `json:"payload"` // base64
 		}
 		out := struct {
-			Status    int      `json:"status"`
-			Documents []docOut `json:"documents"`
-		}{Status: 200, Documents: []docOut{}}
+			Status    int       `json:"status"`
+			Documents []docOut  `json:"documents"`
+			Steps     []stepOut `json:"steps"`
+		}{Status: 200, Documents: []docOut{}, Steps: aggregateSteps(res.Trace)}
 		for _, d := range ret.Docs() {
 			var b []byte
 			if p := d.Payload(); p != nil {

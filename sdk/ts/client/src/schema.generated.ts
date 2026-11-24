@@ -128,6 +128,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/runtimes/{id}/deployments/{componentId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+                componentId: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** @description Removes the component from the runtime desired state (bumps the generation) and returns the pending deployment record. */
+        delete: operations["undeployComponent"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/deployments": {
         parameters: {
             query?: never;
@@ -182,10 +202,602 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Password login. Sets the session cookie. Failed attempts are rate limited per IP (429) and lock the account after repeated failures (429 with Retry-After). */
+        post: operations["login"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["logout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["me"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/oidc/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Starts the OIDC authorization-code flow with PKCE (S256). Redirects to the IdP. */
+        get: operations["oidcLogin"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/oidc/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["oidcCallback"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/saml/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Not implemented (501). See docs/auth.md. */
+        get: operations["samlLogin"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/saml/acs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Not implemented (501). See docs/auth.md. */
+        post: operations["samlAcs"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/saml/metadata": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Not implemented (501). See docs/auth.md. */
+        get: operations["samlMetadata"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/scim/v2/Users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Not implemented (501). See docs/auth.md. */
+        get: operations["scimListUsers"];
+        put?: never;
+        /** @description Not implemented (501). See docs/auth.md. */
+        post: operations["scimCreateUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/scim/v2/Users/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        /** @description Not implemented (501). See docs/auth.md. */
+        get: operations["scimGetUser"];
+        /** @description Not implemented (501). See docs/auth.md. */
+        put: operations["scimReplaceUser"];
+        post?: never;
+        /** @description Not implemented (501). See docs/auth.md. */
+        delete: operations["scimDeleteUser"];
+        options?: never;
+        head?: never;
+        /** @description Not implemented (501). See docs/auth.md. */
+        patch: operations["scimPatchUser"];
+        trace?: never;
+    };
+    "/v1/scim/v2/Groups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Not implemented (501). See docs/auth.md. */
+        get: operations["scimListGroups"];
+        put?: never;
+        /** @description Not implemented (501). See docs/auth.md. */
+        post: operations["scimCreateGroup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/roles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Built-in roles and the permissions matrix (resource:action). */
+        get: operations["listRoles"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Workspaces the session user belongs to. Session users only. */
+        get: operations["listWorkspaces"];
+        put?: never;
+        /** @description Creates a workspace; the caller becomes its owner. Session users only. */
+        post: operations["createWorkspace"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{ws}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+            };
+            cookie?: never;
+        };
+        /** @description Non-members get 404, not 403, so workspace existence is not disclosed. */
+        get: operations["getWorkspace"];
+        put?: never;
+        post?: never;
+        /** @description Owner only. */
+        delete: operations["deleteWorkspace"];
+        options?: never;
+        head?: never;
+        patch: operations["updateWorkspace"];
+        trace?: never;
+    };
+    "/v1/workspaces/{ws}/members": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+            };
+            cookie?: never;
+        };
+        get: operations["listMembers"];
+        put?: never;
+        /** @description Adds a member (creating the account when the email is new and a password is supplied). A caller can only grant roles whose permissions it holds itself (403 role_escalation otherwise). */
+        post: operations["addMember"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{ws}/members/{userId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+                userId: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** @description Revokes the member's API tokens in this workspace. The last owner cannot be removed (409). */
+        delete: operations["removeMember"];
+        options?: never;
+        head?: never;
+        /** @description Both the member's current role and the new role must be within the caller's own permissions. The last owner cannot be demoted (409). */
+        patch: operations["updateMemberRole"];
+        trace?: never;
+    };
+    "/v1/workspaces/{ws}/tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+            };
+            cookie?: never;
+        };
+        /** @description Own tokens; all tokens of the workspace with token:revoke_any. The secret is never returned. */
+        get: operations["listTokens"];
+        put?: never;
+        /** @description Scopes must be a subset of the caller's own permissions (403 scope_exceeds_permissions). The plaintext token is returned once. Tokens created by tokens never outlive their parent. */
+        post: operations["createToken"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{ws}/tokens/{tokenId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+                tokenId: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** @description Revoking another user's token needs token:revoke_any. */
+        delete: operations["revokeToken"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{ws}/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+            };
+            cookie?: never;
+        };
+        /** @description Append-only audit log, newest first. Cursor pagination via nextCursor. */
+        get: operations["queryAudit"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{ws}/connections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+            };
+            cookie?: never;
+        };
+        /**
+         * @description EXPERIMENTAL (canvas Run). Workspace connections. Secret fields are shown only as `secret://<name>`;
+         *     `secrets` reports whether each referenced secret is `set` or `missing`.
+         */
+        get: operations["listConnections"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{ws}/connections/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        /** @description EXPERIMENTAL. A connection of another workspace answers 404, like a missing one. */
+        get: operations["getConnection"];
+        /**
+         * @description EXPERIMENTAL. Creates (201) or replaces (200) a connection. Secret fields must be `secret://<name>`
+         *     references (400 `literal_secret`); `hostKeyPolicy: insecure` is 400 `insecure_host_key_not_allowed`;
+         *     missing host-key material is 400 `host_key_required`; a connector other than `sftp` is 400 `not_allowed_in_test_run`.
+         */
+        put: operations["putConnection"];
+        post?: never;
+        /** @description EXPERIMENTAL. */
+        delete: operations["deleteConnection"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{ws}/connections/host-key-scan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description EXPERIMENTAL. Fetches the SSH host key negotiated by SFTP without authentication or persistence. */
+        post: operations["scanConnectionHostKey"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{ws}/secrets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+            };
+            cookie?: never;
+        };
+        /** @description EXPERIMENTAL. Secret names and update times only; values are never readable. Session users only. */
+        get: operations["listSecrets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{ws}/secrets/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+                name: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * @description EXPERIMENTAL. Write-only; the value is held in the control-plane process memory (lost on restart) and never returned.
+         *     409 `secret_name_collision` when another name maps to the same environment variable. Session users only.
+         */
+        put: operations["putSecret"];
+        post?: never;
+        /** @description EXPERIMENTAL. Session users only. */
+        delete: operations["deleteSecret"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{ws}/test-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * @description EXPERIMENTAL. Runs an inline `nurtuo.flow/v1` document synchronously through `nurtuo flow run` against
+         *     workspace connections (sftp GET/QUERY only). A failed or stopped run is a 200 result, not an API error.
+         *     Errors: 400 `invalid_flow`, `not_allowed_in_test_run`, `connection_required`, `host_not_allowed`;
+         *     404 `connection_not_found`; 409 `secret_missing`; 429 `too_many_runs`; 503 `test_run_unavailable`. Session users only.
+         */
+        post: operations["createTestRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        ErrorBody: {
+            error?: {
+                code?: string;
+                message?: string;
+            };
+        };
+        /** @enum {string} */
+        Role: "owner" | "admin" | "editor" | "viewer" | "deployer" | "runtime";
+        Workspace: {
+            id?: string;
+            slug?: string;
+            name?: string;
+            /** Format: date-time */
+            createdAt?: string;
+        };
+        LoginResult: {
+            user?: Record<string, never>;
+            csrfToken?: string;
+            /** Format: date-time */
+            expiresAt?: string;
+        };
+        TokenCreated: {
+            id?: string;
+            name?: string;
+            prefix?: string;
+            scopes?: string[];
+            /** Format: date-time */
+            expiresAt?: string;
+            /** @description Shown once */
+            token?: string;
+        };
+        AuditEntry: {
+            id?: string;
+            seq?: number;
+            /** Format: date-time */
+            ts?: string;
+            workspaceId?: string | null;
+            /** @enum {string} */
+            actorType?: "user" | "token" | "anonymous";
+            actorId?: string | null;
+            action?: string;
+            resource?: string;
+            resourceId?: string | null;
+            beforeHash?: string | null;
+            afterHash?: string | null;
+            ip?: string | null;
+            requestId?: string;
+            status?: number;
+            metadata?: Record<string, never>;
+        };
+        AuditPage: {
+            items?: components["schemas"]["AuditEntry"][];
+            nextCursor?: string | null;
+        };
+        Connection: {
+            id?: string;
+            connector?: string;
+            /** @description Secret fields hold secret:// references only */
+            settings?: Record<string, never>;
+            secrets?: {
+                [key: string]: "set" | "missing";
+            };
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        ConnectionList: {
+            items?: components["schemas"]["Connection"][];
+        };
+        TestRunResult: {
+            runId?: string;
+            /** @enum {string} */
+            status?: "succeeded" | "failed" | "stopped";
+            durationMs?: number;
+            steps?: {
+                id?: string;
+                kind?: string;
+                /** @enum {string} */
+                status?: "ok" | "error" | "stopped" | "not_run";
+                in?: number;
+                out?: number;
+                failed?: number;
+                dropped?: number;
+            }[];
+            documents?: {
+                id?: string;
+                properties?: {
+                    [key: string]: string;
+                };
+                size?: number;
+                /** @description base64 */
+                payload?: string;
+            }[];
+            error?: {
+                code?: string;
+                message?: string;
+            };
+            stop?: {
+                status?: number;
+                message?: string;
+            };
+        };
         /** @enum {string} */
         ComponentKind: "flow" | "map" | "connector" | "script";
         /** @enum {string} */
@@ -256,6 +868,43 @@ export interface components {
         };
     };
     responses: {
+        /** @description Missing, invalid, expired or revoked credentials */
+        Unauthenticated: {
+            headers: {
+                "WWW-Authenticate"?: string;
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorBody"];
+            };
+        };
+        /** @description Authenticated but not permitted (missing permission, role escalation, wrong workspace, CSRF) */
+        Forbidden: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorBody"];
+            };
+        };
+        /** @description Planned feature, not implemented yet */
+        NotImplemented: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorBody"];
+            };
+        };
+        /** @description Request body larger than 1 MiB (`payload_too_large`); applies to every `/v1/` route */
+        PayloadTooLarge: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorBody"];
+            };
+        };
         /** @description Error */
         Error: {
             headers: {
@@ -273,6 +922,8 @@ export interface components {
     };
     parameters: {
         Id: string;
+        /** @description Workspace id or slug */
+        Ws: string;
     };
     requestBodies: never;
     headers: never;
@@ -298,6 +949,8 @@ export interface operations {
                     "application/json": components["schemas"]["ComponentList"];
                 };
             };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
         };
     };
     createComponent: {
@@ -323,6 +976,8 @@ export interface operations {
                 };
             };
             400: components["responses"]["Error"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
             409: components["responses"]["Error"];
         };
     };
@@ -346,6 +1001,8 @@ export interface operations {
                     "application/json": components["schemas"]["Component"];
                 };
             };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["Error"];
         };
     };
@@ -367,6 +1024,8 @@ export interface operations {
                 };
                 content?: never;
             };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["Error"];
             409: components["responses"]["Error"];
         };
@@ -397,6 +1056,8 @@ export interface operations {
                     "application/json": components["schemas"]["Component"];
                 };
             };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["Error"];
         };
     };
@@ -422,6 +1083,8 @@ export interface operations {
                     };
                 };
             };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["Error"];
         };
     };
@@ -439,6 +1102,8 @@ export interface operations {
                 "application/json": {
                     /** @description Opaque component document */
                     content: Record<string, never>;
+                    /** @description Optional externally computed digest (e.g. of a signed bundle); defaults to sha256 of the canonical JSON */
+                    digest?: string;
                 };
             };
         };
@@ -453,6 +1118,8 @@ export interface operations {
                 };
             };
             400: components["responses"]["Error"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["Error"];
         };
     };
@@ -477,6 +1144,8 @@ export interface operations {
                     "application/json": components["schemas"]["Revision"];
                 };
             };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["Error"];
         };
     };
@@ -502,6 +1171,8 @@ export interface operations {
                     };
                 };
             };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
         };
     };
     registerRuntime: {
@@ -535,6 +1206,8 @@ export interface operations {
                 };
             };
             400: components["responses"]["Error"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
         };
     };
     getRuntime: {
@@ -557,6 +1230,8 @@ export interface operations {
                     "application/json": components["schemas"]["Runtime"];
                 };
             };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["Error"];
         };
     };
@@ -580,6 +1255,34 @@ export interface operations {
                     "application/json": components["schemas"]["DesiredState"];
                 };
             };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["Error"];
+        };
+    };
+    undeployComponent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+                componentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Deployment"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["Error"];
         };
     };
@@ -606,6 +1309,8 @@ export interface operations {
                     };
                 };
             };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
         };
     };
     deploy: {
@@ -640,6 +1345,8 @@ export interface operations {
                 };
             };
             400: components["responses"]["Error"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["Error"];
         };
     };
@@ -663,6 +1370,8 @@ export interface operations {
                     "application/json": components["schemas"]["Deployment"];
                 };
             };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["Error"];
         };
     };
@@ -694,7 +1403,987 @@ export interface operations {
                 };
             };
             400: components["responses"]["Error"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["Error"];
+        };
+    };
+    login: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    email: string;
+                    password: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Logged in */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LoginResult"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            429: components["responses"]["Error"];
+        };
+    };
+    logout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Session revoked */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    me: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    oidcLogin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Redirect to the identity provider */
+            302: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["Error"];
+        };
+    };
+    oidcCallback: {
+        parameters: {
+            query?: {
+                code?: string;
+                state?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Logged in */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LoginResult"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    samlLogin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            501: components["responses"]["NotImplemented"];
+        };
+    };
+    samlAcs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            501: components["responses"]["NotImplemented"];
+        };
+    };
+    samlMetadata: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            501: components["responses"]["NotImplemented"];
+        };
+    };
+    scimListUsers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            501: components["responses"]["NotImplemented"];
+        };
+    };
+    scimCreateUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            501: components["responses"]["NotImplemented"];
+        };
+    };
+    scimGetUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            501: components["responses"]["NotImplemented"];
+        };
+    };
+    scimReplaceUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            501: components["responses"]["NotImplemented"];
+        };
+    };
+    scimDeleteUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            501: components["responses"]["NotImplemented"];
+        };
+    };
+    scimPatchUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            501: components["responses"]["NotImplemented"];
+        };
+    };
+    scimListGroups: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            501: components["responses"]["NotImplemented"];
+        };
+    };
+    scimCreateGroup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            501: components["responses"]["NotImplemented"];
+        };
+    };
+    listRoles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    listWorkspaces: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    createWorkspace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    slug: string;
+                    name: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Workspace"];
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Error"];
+        };
+    };
+    getWorkspace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Workspace"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["Error"];
+        };
+    };
+    deleteWorkspace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["Error"];
+        };
+    };
+    updateWorkspace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    name?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Workspace"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["Error"];
+        };
+    };
+    listMembers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["Error"];
+        };
+    };
+    addMember: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    email: string;
+                    role: components["schemas"]["Role"];
+                    password?: string;
+                    displayName?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Role changed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Added */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    removeMember: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+                userId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    updateMemberRole: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+                userId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    role: components["schemas"]["Role"];
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    listTokens: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["Error"];
+        };
+    };
+    createToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    name: string;
+                    scopes: string[];
+                    expiresInSeconds?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenCreated"];
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["Error"];
+        };
+    };
+    revokeToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+                tokenId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Revoked */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["Error"];
+        };
+    };
+    queryAudit: {
+        parameters: {
+            query?: {
+                actor?: string;
+                action?: string;
+                resource?: string;
+                resourceId?: string;
+                status?: number;
+                from?: string;
+                to?: string;
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditPage"];
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["Error"];
+        };
+    };
+    listConnections: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectionList"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["Error"];
+        };
+    };
+    getConnection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Connection"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["Error"];
+        };
+    };
+    putConnection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @example sftp */
+                    connector: string;
+                    settings: Record<string, never>;
+                };
+            };
+        };
+        responses: {
+            /** @description Replaced */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Connection"];
+                };
+            };
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Connection"];
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["Error"];
+            413: components["responses"]["PayloadTooLarge"];
+        };
+    };
+    deleteConnection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["Error"];
+        };
+    };
+    scanConnectionHostKey: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    host: string;
+                    /** @default 22 */
+                    port?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Negotiated host key first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        keys: {
+                            type: string;
+                            fingerprintSha256: string;
+                        }[];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["Error"];
+            413: components["responses"]["PayloadTooLarge"];
+            429: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    listSecrets: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items?: {
+                            name?: string;
+                            /** Format: date-time */
+                            updatedAt?: string;
+                        }[];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["Error"];
+        };
+    };
+    putSecret: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    value: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Stored */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            413: components["responses"]["PayloadTooLarge"];
+        };
+    };
+    deleteSecret: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["Error"];
+        };
+    };
+    createTestRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    flow: Record<string, never>;
+                    input?: {
+                        properties?: {
+                            [key: string]: string;
+                        };
+                    };
+                    /** @default 30000 */
+                    timeoutMs?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TestRunResult"];
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            413: components["responses"]["PayloadTooLarge"];
+            429: components["responses"]["Error"];
+            503: components["responses"]["Error"];
         };
     };
 }

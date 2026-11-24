@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Spec: canvas Run (test-run a flow from the canvas against a real connection)
 
-Status: approved. Date: 2026-11-23. Approved by Łukasz on 2026-11-23 18:30 (Europe/Warsaw): decisions D1–D16 accepted as recommended.
+Status: in progress (implementation: [#87](https://github.com/nurtuo/nurtuo/issues/87), see [Implementation Status](#implementation-status)). Date: 2026-11-23. Approved by Łukasz on 2026-11-23 18:30 (Europe/Warsaw): decisions D1–D16 accepted as recommended.
 
 Extends: [canvas-editor](implemented/2026-11-21-canvas-editor.md) (test mode, Epic 10),
 [connections-and-secrets](implemented/2026-11-21-connections-and-secrets.md),
@@ -29,7 +29,7 @@ process per run (Decision D7).
 
 | | |
 |---|---|
-| Pull requests | spec: https://github.com/nurtuo/nurtuo/pull/68; implementation PRs follow. Depends on https://github.com/nurtuo/nurtuo/pull/51 (`nurtuo flow run`, open) and https://github.com/nurtuo/nurtuo/pull/53 (`web-e2e` job, open); its spec https://github.com/nurtuo/nurtuo/pull/50 is merged (`d5adeeb`); `AGENTS.md` is https://github.com/nurtuo/nurtuo/pull/49 (open) |
+| Pull requests | spec: https://github.com/nurtuo/nurtuo/pull/68 (merged); implementation issue https://github.com/nurtuo/nurtuo/issues/87, implementation PRs follow. **Dependencies satisfied (merged):** https://github.com/nurtuo/nurtuo/pull/51 (`nurtuo flow run`; Phases 1, 3, 5 and decision D7 build on it), https://github.com/nurtuo/nurtuo/pull/53 (`web-e2e` job; Phase 6), https://github.com/nurtuo/nurtuo/pull/49 (`AGENTS.md`) and the flow-run spec https://github.com/nurtuo/nurtuo/pull/50 (`d5adeeb`). Nothing is blocked on an open PR any more |
 | ADRs | [ADR 0010](../adr/0010-connections-and-secrets.md) (connections and secrets), [ADR 0005](../adr/0005-set-at-a-time-engine-with-per-document-status.md) (per-document status), [ADR 0009](../adr/0009-outbound-only-runtime-gateway.md) (gateway; not used here) |
 | Issues | https://github.com/nurtuo/nurtuo/issues/54, https://github.com/nurtuo/nurtuo/issues/55 (workspace isolation), https://github.com/nurtuo/nurtuo/issues/56 (standalone handshake, bypassed) |
 | Code (existing) | `core/web/src/ui/{App,Canvas,ConfigDialog}.tsx`, `core/web/src/model/*.ts`, `core/control-plane/src/{api,main}.ts`, `core/control-plane/src/auth/{middleware,policy,permissions,endpoints}.ts`, `core/control-plane/openapi.yaml`, `core/runtime/internal/engine/interp.go`, `core/runtime/cmd/nurtuo/standalone.go`, `connectors/sftp/{config,sftp}.go`, `core/runtime/internal/secrets/env.go`; on PR #51: `core/runtime/cmd/nurtuo/{flow,flowrun}.go`, `core/web/e2e/flow-run-export.spec.ts` |
@@ -456,6 +456,15 @@ of this spec is that request.
 - `nurtuo flow run --json`: additive keys; consumers must ignore unknown fields.
 - Canvas: offline behaviour unchanged; "Save flow" output unchanged.
 - Downgrade: the `connections` table and permissions remain; an older control plane ignores them.
+- **D9 status code change (404 instead of 405).** Before this change the legacy `route()` answered
+  405 `method_not_allowed` for any `/v1/workspaces/<id>/...` path when the auth module did not serve
+  it, which is the case under `NURTUO_INSECURE_NO_AUTH=1`. Those paths now answer 404 `not_found`
+  (the bare `/v1/workspaces` and every other resource keep their previous answers). A client that
+  relied on 405 for these dev-only paths sees 404; with auth enabled nothing changes. Covered by
+  `api.test.ts` "no-auth mode answers 404 (not 405) for workspace routes".
+- **D16 CLI contract change.** `nurtuo flow run --json` gains the additive `steps` array (success
+  envelope and JSON error when the engine ran). The flow-run spec and `docs/cli.md` are updated in
+  the same change (implementation PR for #87).
 
 ## Security
 
@@ -486,8 +495,8 @@ of this spec is that request.
 ## Step plan
 
 Phases are independently shippable stories; each step leaves the system working and names its
-verification. Prerequisites: PR #51 merged (Phases 1, 3, 5); PR #53 merged (Phase 6). Phase 2 has no
-prerequisite. PR #50 (the `nurtuo flow run` spec) is already on `main`.
+verification. Prerequisites (all satisfied, merged): PR #51 (Phases 1, 3, 5), PR #53 (Phase 6), PR #50 (the
+`nurtuo flow run` spec) and PR #49 (`AGENTS.md`). Phase 2 has no prerequisite.
 
 ### Phase 1: per-step status in `nurtuo flow run --json` (Go, `core/runtime`)
 
@@ -749,7 +758,23 @@ egress, secrets in the control plane), `docs/getting-started.md` (Run in the can
 - PRs: https://github.com/nurtuo/nurtuo/pull/49 (AGENTS.md), https://github.com/nurtuo/nurtuo/pull/50, https://github.com/nurtuo/nurtuo/pull/51, https://github.com/nurtuo/nurtuo/pull/53
 - Open Mercato: `integration-secret-credential-editing` (write-only credential fields), `tenant-ownership-and-module-acl-authorization`.
 
+## Implementation Status
+
+| Phase | Status | Date | Notes |
+|-------|--------|------|-------|
+| Phase 1: per-step status in `nurtuo flow run --json` | Done | 2026-11-24 | `TestFlowRunJSONSteps`, `TestFlowRunJSONErrorSteps`, `TestFlowRunJSONNoStepsBeforeEngine`, `TestFlowRunErrorMessages`; flow-run spec and `docs/cli.md` updated |
+| Phase 2: connections and secrets API | Done | 2026-11-24 | permissions + `0104`, `0300`, 1 MiB limit, signal, `extraEndpoints`, routes, OpenAPI, client regenerated. No `.changeset` tooling exists in the repo yet, so no changeset file was added |
+| Phase 3: test-run endpoint | Done | 2026-11-24 | `TestRunner`, egress, limiter, `NURTUO_FLOW_RUN_BIN` from `nurtuo standalone`; real-binary test ran against `atmoz/sftp` locally |
+| Phase 4: canvas connections, Run, results (paste host key) | Done | 2026-11-24 | Vitest + mocked-API Playwright |
+| Phase 5: TOFU host-key scan | Done | 2026-11-24 | CLI negotiation, workspace endpoint and explicit trust in the canvas |
+| Phase 6: Playwright e2e in CI | In progress | 2026-11-24 | The `web-e2e` job runs the gated canvas suite with the pinned SFTP fixture |
+
+Finding from the real-binary run: against `atmoz/sftp` the connector negotiated the **RSA** host key
+(not ECDSA as assumed in the Tests section); this is why the scan must report the key the connector
+negotiates (Phase 5), and why the e2e fingerprint must not come from `ssh-keyscan -t ecdsa|ed25519`.
+
 ## Changelog
 
 - 2026-11-23: created as draft
 - 2026-11-23: approved; decisions D1–D16 recorded; pre-implement findings F1–F15 resolved
+- 2026-11-24: implementation started (#87): Phases 1-4 and the gated e2e spec; Recenzent follow-ups on #68 applied (dependency status, D16 docs, D9 compatibility note, analysis readiness)

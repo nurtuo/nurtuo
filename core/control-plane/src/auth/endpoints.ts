@@ -25,6 +25,8 @@ export type EndpointResult = ApiResponse & { audit?: AuditDetail };
 export interface EndpointCtx {
   req: ApiRequest; principal: Principal | null; params: Record<string, string>; query: Record<string, string>;
   workspace?: Workspace; ip: string | null; requestId: string; service: AuthService; oidc?: OidcSetup;
+  /** Aborted when the HTTP client disconnects before the response is sent. */
+  signal?: AbortSignal;
 }
 export type Endpoint = (c: EndpointCtx) => Promise<EndpointResult>;
 

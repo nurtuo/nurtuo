@@ -3,7 +3,10 @@
 package main
 
 import (
+	"bytes"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/json"
 	"encoding/pem"
@@ -43,7 +46,7 @@ func startSFTPFixture(t *testing.T) *sftpFixture {
 }
 
 // startSFTPFixtureWith lets the caller replace handlers of the in-memory server (e.g. to stall reads).
-func startSFTPFixtureWith(t *testing.T, wrap func(*pkgsftp.Handlers)) *sftpFixture {
+func startSFTPFixtureWith(t *testing.T, wrap func(*pkgsftp.Handlers), extraKeys ...ssh.Signer) *sftpFixture {
 	t.Helper()
 	_, hostPriv, _ := ed25519.GenerateKey(rand.Reader)
 	hostSigner, err := ssh.NewSignerFromKey(hostPriv)
@@ -74,6 +77,9 @@ func startSFTPFixtureWith(t *testing.T, wrap func(*pkgsftp.Handlers)) *sftpFixtu
 		},
 	}
 	cfg.AddHostKey(hostSigner)
+	for _, key := range extraKeys {
+		cfg.AddHostKey(key)
+	}
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -102,7 +108,7 @@ func (fx *sftpFixture) seed(t *testing.T, p, content string) {
 	t.Helper()
 	c, err := ssh.Dial("tcp", net.JoinHostPort(fx.host, fx.port), &ssh.ClientConfig{
 		User: sftpTestUser, Auth: []ssh.AuthMethod{ssh.Password(sftpTestPassword)},
-		HostKeyCallback: ssh.FixedHostKey(fx.hostKey),
+		HostKeyCallback: ssh.FixedHostKey(fx.hostKey), HostKeyAlgorithms: []string{fx.hostKey.Type()},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -487,4 +493,40 @@ func TestFlowRunHostKeyPrecedence(t *testing.T) {
 			t.Fatalf("code=%d stdout=%q", code, out)
 		}
 	})
+}
+
+func TestFlowHostKeyScan(t *testing.T) {
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := ssh.NewSignerFromKey(privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fx := startSFTPFixtureWith(t, nil, signer)
+	var expected scannedHostKey
+	client, err := ssh.Dial("tcp", net.JoinHostPort(fx.host, fx.port), &ssh.ClientConfig{
+		User: sftpTestUser, Auth: []ssh.AuthMethod{ssh.Password(sftpTestPassword)},
+		HostKeyCallback: func(_ string, _ net.Addr, key ssh.PublicKey) error {
+			expected = scannedHostKey{Type: key.Type(), Fingerprint: ssh.FingerprintSHA256(key)}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = client.Close()
+
+	var out, stderr bytes.Buffer
+	if code := flowMain([]string{"host-key", fx.host, "--port", fx.port, "--json"}, &out, &stderr); code != 0 {
+		t.Fatalf("exit %d: %s", code, &stderr)
+	}
+	var result struct{ Keys []scannedHostKey }
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Keys) != 1 || result.Keys[0] != expected {
+		t.Fatalf("scanned %+v, want %+v", result.Keys, expected)
+	}
 }

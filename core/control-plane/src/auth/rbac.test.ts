@@ -2,10 +2,11 @@
 // Role x route matrix, privilege escalation, cross-workspace isolation.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ROLES, type Role } from "./permissions.js";
+import { ROLES, ROLE_PERMISSIONS, type Role } from "./permissions.js";
 import { POLICIES } from "./policy.js";
 import { PASSWORD, j, setup } from "./test-util.js";
 
+const EDIT: Role[] = ["owner", "admin", "editor"];
 const ALL: Role[] = ["owner", "admin", "editor", "viewer", "deployer", "runtime"];
 // Independent, hand-written expectation (NOT derived from permissions.ts) of who may call what.
 const EXPECT: Record<string, Role[]> = {
@@ -24,6 +25,11 @@ const EXPECT: Record<string, Role[]> = {
   "member.add": ["owner", "admin"], "member.update_role": ["owner", "admin"], "member.remove": ["owner", "admin"],
   "token.list": ["owner", "admin", "editor", "deployer"], "token.create": ["owner", "admin", "editor", "deployer"], "token.revoke": ["owner", "admin", "editor", "deployer"],
   "audit.query": ["owner", "admin"],
+  // canvas Run (docs/specs/2026-11-23-canvas-run.md D6); the secret and test-run routes are userOnly
+  "connection.list": ["owner", "admin", "editor", "viewer", "deployer"], "connection.get": ["owner", "admin", "editor", "viewer", "deployer"],
+  "connection.put": EDIT, "connection.delete": EDIT, "connection.host_key_scan": EDIT,
+  "secret.list": ["owner", "admin", "editor", "viewer", "deployer"], "secret.put": EDIT, "secret.delete": EDIT,
+  "test_run.execute": EDIT,
 };
 
 function concretePath(pattern: string, ws: string) {
@@ -34,6 +40,8 @@ const bodyFor = (action: string) =>
   : action === "member.update_role" ? { role: "viewer" }
   : action === "workspace.update" ? { name: "n" }
   : action === "token.create" ? { name: "n", scopes: ["component:read"] }
+  : action === "secret.put" ? { value: "v" }
+  : action === "connection.put" ? { connector: "sftp", settings: {} }
   : {};
 
 test("role x route matrix: every permission-gated route, every role", async () => {
@@ -42,10 +50,15 @@ test("role x route matrix: every permission-gated route, every role", async () =
   for (const role of ROLES) {
     for (const pol of gated) {
       // fresh world per call: destructive routes (workspace delete, member remove) must not affect the next one
-      const { call, owner, member } = setup();
+      const { call, owner, member, login } = setup();
       const { ws } = await owner("owner@x.io", "ws-a");
       const { token } = await member(ws.id, `${role}@x.io`, role);
-      const r = await call(pol.method, concretePath(pol.pattern, ws.id), { token: token.raw, body: bodyFor(pol.action), ws: pol.workspace === "context" ? ws.id : undefined });
+      // userOnly routes refuse API tokens for every role (checked below); drive them with a session.
+      const sess = pol.userOnly ? await login(`${role}@x.io`) : undefined;
+      const r = pol.userOnly
+        ? await call(pol.method, concretePath(pol.pattern, ws.id), { cookie: sess!.cookie, csrf: sess!.csrf, body: bodyFor(pol.action) })
+        : await call(pol.method, concretePath(pol.pattern, ws.id), { token: token.raw, body: bodyFor(pol.action), ws: pol.workspace === "context" ? ws.id : undefined });
+      if (pol.userOnly) assert.equal((await call(pol.method, concretePath(pol.pattern, ws.id), { token: token.raw, body: bodyFor(pol.action) })).status, 403, `${role} token on userOnly ${pol.pattern}`);
       const allowed = EXPECT[pol.action]!.includes(role);
       if (allowed) assert.ok(r.status !== 403 && r.status !== 401, `${role} should reach ${pol.method} ${pol.pattern} but got ${r.status} ${JSON.stringify(r.body)}`);
       else assert.equal(r.status, 403, `${role} must be denied ${pol.method} ${pol.pattern}, got ${r.status}`);
@@ -236,4 +249,10 @@ test("cross-workspace access is denied for users and tokens", async () => {
   const bRaw = j(bTok).token as string;
   assert.equal((await call("GET", "/v1/components", { token: bRaw, ws: A.ws.id })).status, 403);
   assert.equal((await call("GET", `/v1/workspaces/${A.ws.id}`, { token: bRaw })).status, 404);
+});
+
+test("runtime role holds no connection, secret or test_run permission; connection:read is widely held", () => {
+  for (const p of ROLE_PERMISSIONS.runtime) assert.ok(!/^(connection|secret|test_run):/.test(p), p);
+  for (const r of ["owner", "admin", "editor", "viewer", "deployer"] as Role[]) assert.ok(ROLE_PERMISSIONS[r].includes("connection:read"), r);
+  for (const r of ["viewer", "deployer"] as Role[]) for (const p of ["connection:write", "connection:delete", "secret:write", "secret:delete", "test_run:execute"] as const) assert.ok(!ROLE_PERMISSIONS[r].includes(p), `${r} ${p}`);
 });

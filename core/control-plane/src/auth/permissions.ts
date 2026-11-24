@@ -3,7 +3,7 @@
 // of truth; migrations/0103_auth_seed_roles.sql mirrors it as reference data and a test fails on drift.
 // Everything here is free (no feature gating): all roles ship in the AGPL core.
 
-export const RESOURCES = ["component", "runtime", "deployment", "workspace", "member", "token", "audit"] as const;
+export const RESOURCES = ["component", "runtime", "deployment", "workspace", "member", "token", "audit", "connection", "secret", "test_run"] as const;
 export type Resource = (typeof RESOURCES)[number];
 
 export const ACTIONS: Record<Resource, readonly string[]> = {
@@ -14,6 +14,10 @@ export const ACTIONS: Record<Resource, readonly string[]> = {
   member: ["read", "manage"],
   token: ["create", "read", "revoke", "revoke_any"],
   audit: ["read"],
+  connection: ["read", "write", "delete"],
+  // Secret values are write-only: there is no secret:read of values (listing returns names only, under connection:read).
+  secret: ["write", "delete"],
+  test_run: ["execute"],
 };
 
 export type Permission = `${Resource}:${string}`;
@@ -25,14 +29,15 @@ export const ROLES = ["owner", "admin", "editor", "viewer", "deployer", "runtime
 export type Role = (typeof ROLES)[number];
 export const isRole = (s: unknown): s is Role => typeof s === "string" && (ROLES as readonly string[]).includes(s);
 
-const VIEW: Permission[] = ["component:read", "runtime:read", "deployment:read", "workspace:read", "member:read"];
+const VIEW: Permission[] = ["component:read", "runtime:read", "deployment:read", "workspace:read", "member:read", "connection:read"];
+const CANVAS_RUN: Permission[] = ["connection:write", "connection:delete", "secret:write", "secret:delete", "test_run:execute"];
 const OWN_TOKENS: Permission[] = ["token:create", "token:read", "token:revoke"];
 
 export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   owner: ALL_PERMISSIONS,
   // admin: everything except deleting the workspace (=> cannot grant or touch owners, see canGrant).
   admin: ALL_PERMISSIONS.filter((p) => p !== "workspace:delete"),
-  editor: [...VIEW, "component:write", "component:delete", ...OWN_TOKENS],
+  editor: [...VIEW, "component:write", "component:delete", ...CANVAS_RUN, ...OWN_TOKENS],
   viewer: VIEW,
   deployer: [...VIEW, "deployment:create", ...OWN_TOKENS],
   // machine role: a runtime/gateway registering itself, reading desired state and reporting status.
@@ -42,7 +47,7 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
 export const ROLE_DESCRIPTIONS: Record<Role, string> = {
   owner: "Full control including deleting the workspace and managing owners",
   admin: "Manage members, tokens, components and deployments; cannot delete the workspace or grant owner",
-  editor: "Create and edit components and revisions",
+  editor: "Create and edit components and revisions, manage connections and secrets, test-run flows",
   viewer: "Read-only access",
   deployer: "Read-only plus create deployments",
   runtime: "Machine role for runtimes and gateways",
