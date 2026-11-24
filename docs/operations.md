@@ -89,7 +89,7 @@ YAML, or JSON when the file extension is `.json`. Loaded by `LoadConfig`; relati
 | `bundle_dir` | no | directory of bundle files; when empty the runtime still connects but cannot run anything: it logs a warning and reports every deployment as `error` ("no bundle_dir configured"), never `running` |
 | `trusted_keys` | no | list of hex Ed25519 public keys. When set, `bundle_dir` holds signed `<sha256>.bundle` archives that are digest-checked and signature-verified before use, and plain `.json` bundles are **not** accepted |
 | `http_addr` | no | listen address of HTTP-trigger listeners; default `127.0.0.1:0` (random loopback port). On a non-loopback address a listener starts only if its `start` step sets `auth` (or `insecure: true`); see [connectors/http.md](connectors/http.md#http-listener-start-step) |
-| `secrets` | no | `{provider: env\|dir\|encrypted-file, path, key_file}`: where `secret://name` references in bundle connections are resolved. Default `env` (`NURTUO_SECRET_<NAME>`). Manage values with `nurtuo secret` |
+| `secrets` | no | `{provider: env\|dir\|encrypted-file, path, key_file}`: where `secret://name` references in bundle connections are resolved. Default `env` (`NURTUO_SECRET_<NAME>`). Manage values with `nurtuo secret`. Windows (upgrade step for service installs): an existing `path` or `key_file` must have a private DACL, or the runtime refuses to start with `icacls` fix guidance; Nurtuo does not change it ([security.md](security.md#windows-private-secrets-directory)) |
 | `connection_test` | no | `strict` (default: a failing connection `Test` fails the deployment), `warn` or `off` |
 
 ```yaml
@@ -182,13 +182,25 @@ Default data directory (`NURTUO_DATA_DIR` overrides everything):
   postgres/runtime/    extracted PostgreSQL binaries
   postgres/cache/      downloaded binary cache
   logs/control-plane.log   control plane output (also echoed to stderr)
-  secrets/             mode 0700
+  secrets/             mode 0700 (Windows: private DACL, see below)
     ca.pem             local CA (ECDSA P-256, valid 10 years)
     server.pem, server.key   control plane server certificate (2 years)
     client.pem, client.key   runtime client certificate (2 years, key mode 0600)
     db-password        random database password (mode 0600)
     admin-token        random admin token (mode 0600): control plane auth secret and password of admin@nurtuo.local
 ```
+
+On Windows, `secrets\` and everything in it get a protected DACL for the running account,
+`SYSTEM` and `BUILTIN\Administrators` only (other local users cannot read it or create files in
+it). Each `nurtuo standalone` start verifies it and tightens a too-open DACL, printing
+`standalone: tightened permissions on <path>` to stderr; an install made before this change is
+repaired this way on its first start. If an object in `secrets\` is owned by another account, the
+start is refused (exit 1) with the path and the owner SID: check the contents, then remove it or
+take ownership. If the material may have been read by other local users before the upgrade, rotate
+the connection secrets, the admin token and the database password. Details and the rules for
+operator-chosen `dir` / `encrypted-file` paths (checked, never changed, with `icacls` fix guidance):
+[security.md](security.md#windows-private-secrets-directory). The rest of the data root keeps the
+inherited ACL (issue [#78](https://github.com/nurtuo/nurtuo/issues/78)).
 
 Bootstrap is idempotent: existing secrets are reused. Certificates are issued for `localhost`,
 `127.0.0.1` and `::1`. There is no automatic renewal: when the 2-year leaf certificates expire,
