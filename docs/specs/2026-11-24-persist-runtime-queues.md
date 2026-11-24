@@ -58,7 +58,7 @@ Existing `runtime.yaml` files without `state_dir` keep working (D2): they stay o
 
 ## Security
 
-- The state directory holds queued payloads (may include customer data) and must be private: 0700 / 0600 on Unix. On Windows the DACL helpers from [Windows secrets DACL](2026-11-24-windows-secrets-dacl.md) apply once they are shared; until then the Windows limitation of that spec's gap list applies (#78 covers the data root).
+- The state directory holds queued payloads (may include customer data) and must be private: 0700 / 0600 on Unix. On Windows the DACL helpers from [Windows secrets DACL](implemented/2026-11-24-windows-secrets-dacl.md) apply once they are shared; until then the Windows limitation of that spec's gap list applies (#78 covers the data root).
 - JetStream has no network listener (`DontListen: true`), so no new port or credential.
 - Queued messages are not encrypted at rest (same as the engine's other local state). Out of scope; recorded as a risk.
 - One runtime process owns one state directory. Two processes on the same directory must fail: JetStream takes a file lock; the runtime reports the error (fail closed).
