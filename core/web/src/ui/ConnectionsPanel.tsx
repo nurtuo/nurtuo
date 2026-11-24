@@ -7,10 +7,47 @@ import { fieldsOf, type Field } from "../model/formSchema";
 // Generated from the connector's own connection schema. This slice offers password authentication
 // and a pinned host key only: no privateKey/passphrase, no `insecure`, no oneOf handling.
 const HIDDEN = new Set(["privateKey", "passphrase", "hostKeyPolicy", "knownHosts", "hostKeyFingerprint", "maxListEntries", "timeoutMs"]);
-const FIELDS: Field[] = fieldsOf(sftpSchema as Record<string, unknown>).filter((f) => !HIDDEN.has(f.name));
+const SFTP_FIELDS: Field[] = fieldsOf(sftpSchema as Record<string, unknown>).filter((f) => !HIDDEN.has(f.name));
+const POSTGRES_FIELDS = fieldsOf({
+  required: ["host", "database", "user"],
+  properties: {
+    host: { type: "string" },
+    port: { type: "integer", minimum: 1, maximum: 65535 },
+    database: { type: "string" },
+    user: { type: "string" },
+    sslMode: { enum: ["require", "verify-full", "disable"] },
+    password: { type: "string", writeOnly: true },
+  },
+});
+const HTTP_FIELDS = fieldsOf({
+  required: ["baseUrl", "username", "apiKeyName"],
+  properties: {
+    baseUrl: { type: "string" },
+    type: { enum: ["none", "basic", "bearer", "apikey"] },
+    username: { type: "string" },
+    password: { type: "string", writeOnly: true },
+    token: { type: "string", writeOnly: true },
+    apiKeyName: { type: "string" },
+    apiKeyValue: { type: "string", writeOnly: true },
+  },
+});
+type Connector = "sftp" | "http" | "postgres";
+const DEFAULTS: Record<Connector, Record<string, string>> = {
+  sftp: { port: "22" },
+  http: { type: "none" },
+  postgres: { port: "5432", sslMode: "require" },
+};
+function connectionFields(connector: Connector, mode?: string) {
+  if (connector === "sftp") return SFTP_FIELDS;
+  if (connector === "postgres") return POSTGRES_FIELDS;
+  return HTTP_FIELDS.filter(({ name }) => ["baseUrl", "type"].includes(name)
+    || (mode === "basic" && ["username", "password"].includes(name))
+    || (mode === "bearer" && name === "token")
+    || (mode === "apikey" && ["apiKeyName", "apiKeyValue"].includes(name)));
+}
 const ID_RE = /^[a-z][a-z0-9_-]*$/;
 
-/** Workspace connections: list, create/edit an SFTP connection, delete. Credential values are write-only. */
+/** Workspace connections: list, create/edit a connection, delete. Credential values are write-only. */
 export function ConnectionsPanel({ api, workspaceId, items, onChanged, onClose }: {
   api: ControlPlane;
   workspaceId: string;
@@ -19,19 +56,38 @@ export function ConnectionsPanel({ api, workspaceId, items, onChanged, onClose }
   onClose: () => void;
 }) {
   const [id, setId] = useState("");
-  const [values, setValues] = useState<Record<string, string>>({ port: "22" });
+  const [connector, setConnector] = useState<Connector>("sftp");
+  const [values, setValues] = useState<Record<string, string>>(DEFAULTS.sftp);
+  const [removed, setRemoved] = useState(false);
   const [hostKey, setHostKey] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [scanned, setScanned] = useState<{ host: string; port: string; fingerprint: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const existing = items.find((c) => c.id === id);
+  const fields = connectionFields(connector, values.type);
+  const changeType = (type: Connector) => {
+    setConnector(type);
+    setValues(DEFAULTS[type]);
+    setRemoved(false);
+    setScanned(null);
+    setHostKey("");
+    setError(null);
+  };
 
   const edit = (c: ConnectionItem) => {
     setScanned(null);
     setId(c.id);
-    const v: Record<string, string> = {};
-    for (const f of FIELDS) if (!f.writeOnly && c.settings[f.name] !== undefined) v[f.name] = String(c.settings[f.name]);
-    setValues(v); // the password field stays empty: values are never readable
+    const type = c.connector as Connector;
+    if (!Object.hasOwn(DEFAULTS, type)) return;
+    setConnector(type);
+    setRemoved(false);
+    const auth = (c.settings.auth ?? {}) as Record<string, unknown>;
+    const v = { ...DEFAULTS[type] };
+    for (const f of connectionFields(type, String(auth.type ?? "none"))) {
+      const value = (type === "http" && f.name !== "baseUrl" ? auth : c.settings)[f.name];
+      if (!f.writeOnly && value !== undefined) v[f.name] = String(value);
+    }
+    setValues(v);
     setHostKey(String(c.settings["hostKeyFingerprint"] ?? c.settings["knownHosts"] ?? ""));
     setError(null);
   };
@@ -57,28 +113,42 @@ export function ConnectionsPanel({ api, workspaceId, items, onChanged, onClose }
   const save = async () => {
     setError(null);
     if (!ID_RE.test(id)) return setError("Connection id must match ^[a-z][a-z0-9_-]*$");
-    if (!values["host"] || !values["user"]) return setError("host and user are required");
-    if (!hostKey.trim()) return setError("A host key is required: paste the server's SHA256 fingerprint or known_hosts content.");
-    const typed = FIELDS.filter((f) => f.writeOnly).map((f) => [f, values[f.name] ?? ""] as const).filter(([, v]) => v !== "");
+    if (connector === "sftp" && !hostKey.trim()) return setError("Paste the server's SHA256 fingerprint or known_hosts content.");
     const settings: Record<string, unknown> = {};
-    for (const f of FIELDS) {
-      if (f.writeOnly) continue;
-      const raw = values[f.name];
-      if (raw === undefined || raw === "") continue;
-      settings[f.name] = f.type === "integer" || f.type === "number" ? Number(raw) : raw;
+    const auth: Record<string, unknown> = {};
+    const credentials: Record<string, string | null> = {};
+    for (const f of fields) {
+      const raw = values[f.name] ?? "";
+      if (f.writeOnly) {
+        if (removed && connector === "postgres") credentials[f.name] = null;
+        else if (raw) credentials[f.name] = raw;
+        else if ((connector === "http" && !existing?.secrets[f.name]) || (connector === "sftp" && !existing)) return setError(`${f.name} is required`);
+        continue;
+      }
+      if (f.required && !raw.trim()) return setError(`${f.name} is required`);
+      if (!raw && f.name !== "rootPath") continue;
+      const target = connector === "http" && f.name !== "baseUrl" ? auth : settings;
+      target[f.name] = f.type === "integer" || f.type === "number" ? Number(raw) : raw;
     }
-    if (typed.length === 0 && !existing) return setError("password is required");
-    if (hostKey.trim().startsWith("SHA256:")) {
-      settings["hostKeyPolicy"] = "fingerprint";
-      settings["hostKeyFingerprint"] = hostKey.trim();
+    if (connector === "http") {
+      settings.auth = auth;
+      const active = fields.find((f) => f.writeOnly)?.name;
+      for (const field of Object.keys(existing?.secrets ?? {})) {
+        if (field !== active) credentials[field] = null;
+      }
     }
-    else settings["knownHosts"] = hostKey;
+    if (connector === "sftp") {
+      if (hostKey.trim().startsWith("SHA256:")) {
+        settings.hostKeyPolicy = "fingerprint";
+        settings.hostKeyFingerprint = hostKey.trim();
+      } else settings.knownHosts = hostKey;
+    }
     setBusy(true);
     try {
-      const credentials = typed.length ? Object.fromEntries(typed.map(([f, value]) => [f.name, value])) : undefined;
-      await api.putConnection(workspaceId, id, { connector: "sftp", settings, credentials });
+      await api.putConnection(workspaceId, id, { connector, settings, credentials });
       await onChanged();
-      setValues((p) => ({ ...p, password: "" }));
+      setRemoved(false);
+      setValues((p) => ({ ...p, password: "", token: "", apiKeyValue: "" }));
     } catch (e) {
       setError(e instanceof ApiError ? `${e.message} (${e.code})` : String(e));
     } finally {
@@ -109,22 +179,46 @@ export function ConnectionsPanel({ api, workspaceId, items, onChanged, onClose }
           ))}
           {items.length === 0 && <li>No connections yet.</li>}
         </ul>
-        <strong>{existing ? `Edit ${id}` : "New SFTP connection"}</strong>
-        <label className="field"><span>id *</span><input aria-label="Connection id" value={id} onChange={(e) => setId(e.target.value)} /></label>
-        {FIELDS.map((f) => (
+        <strong>{existing ? `Edit ${id}` : "New connection"}</strong>
+        <label className="field"><span>id *</span><input aria-label="Connection id" value={id} onChange={(e) => {
+          const item = items.find((c) => c.id === e.target.value);
+          if (item) edit(item);
+          else setId(e.target.value);
+        }} /></label>
+        <label className="field"><span>Connector</span>
+          <select value={connector} disabled={!!existing} onChange={(e) => changeType(e.target.value as Connector)}>
+            <option value="sftp">SFTP</option>
+            <option value="http">HTTP</option>
+            <option value="postgres">PostgreSQL</option>
+          </select>
+        </label>
+        {fields.map((f) => (
           <label className="field" key={f.name} title={f.description ?? f.name}>
             <span>{f.name}{f.required || f.writeOnly ? " *" : ""}</span>
-            <input
+            {f.type === "enum" ? (
+              <select aria-label={f.name} value={values[f.name] ?? ""} onChange={(e) => {
+                const value = e.target.value;
+                setValues((p) => f.name === "type"
+                  ? { ...p, type: value, password: "", token: "", apiKeyValue: "" }
+                  : { ...p, [f.name]: value });
+              }}>
+                {f.options?.map((option) => <option key={String(option)}>{String(option)}</option>)}
+              </select>
+            ) : <input
               aria-label={f.name}
+              disabled={f.writeOnly && removed}
               type={f.writeOnly ? "password" : f.type === "integer" || f.type === "number" ? "number" : "text"}
               autoComplete={f.writeOnly ? "new-password" : "off"}
               value={values[f.name] ?? ""}
               placeholder={f.writeOnly && existing ? "unchanged (set a new value to replace)" : ""}
               onChange={(e) => setValues((p) => ({ ...p, [f.name]: e.target.value }))}
-            />
+            />}
           </label>
         ))}
-        <fieldset>
+        {connector === "postgres" && existing?.secrets.password && (
+          <label><input type="checkbox" checked={removed} onChange={(e) => setRemoved(e.target.checked)} /> Remove stored password</label>
+        )}
+        {connector === "sftp" && <fieldset>
           <legend>Host key</legend>
           <textarea aria-label="Host key" rows={3} value={hostKey} onChange={(e) => setHostKey(e.target.value)}
             placeholder="SHA256:… or a known_hosts entry" />
@@ -139,7 +233,7 @@ export function ConnectionsPanel({ api, workspaceId, items, onChanged, onClose }
             </div>
           )}
           <small>Compare with the fingerprint published by the server's administrator. There is no option to skip verification.</small>
-        </fieldset>
+        </fieldset>}
         {error && <p className="err" role="alert">{error}</p>}
         <button disabled={busy} onClick={() => void save()}>Save connection</button>{" "}
         <button onClick={onClose}>Close</button>

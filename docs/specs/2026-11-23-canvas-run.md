@@ -88,6 +88,15 @@ that the recommendation's wording named something that does not exist, the wordi
 | D15 | How does the user give the SFTP path? | **"Input properties" in the Run dialog**, sent as the initial document's properties (same as `--set`); pre-filled with `path=` when the flow has an SFTP `GET` step; a `setProperties` step keeps working | as decided |
 | D16 | Per-step status from the engine: extend `nurtuo flow run --json`? | **Add an additive `steps` array (from `engine.Result.Trace`) to the `--json` envelope and to the JSON error object**, as a small follow-up to PR #51's experimental contract | as decided and nothing more: no further CLI fields are added; the control plane maps the CLI's existing error shapes (timeout, stop, `Prepare` failures) by code and message, with tests (F6, F7) |
 
+
+### D11 follow-up for issue #94
+
+[Issue #94](https://github.com/nurtuo/nurtuo/issues/94) extends workspace Connections and manual
+Test Run to HTTP request (GET) and PostgreSQL QUERY. The employee fixture uses an outbound HTTP
+connector step, followed by PostgreSQL and Map. The credential lifecycle and actual-dial egress
+rules in [#92](2026-11-24-operation-limits-and-credential-binding.md) apply to both connectors.
+Runs retain the existing deadlines, isolation threshold, and atomic 20-document / 1 MiB result limits.
+
 ## Open questions
 
 None blocking: Q1–Q16 are answered by D1–D16. Remaining items are non-blocking and are tracked where

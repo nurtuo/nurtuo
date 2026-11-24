@@ -8,7 +8,7 @@ import { SECRET_REF } from "./secrets.js";
 
 export const CONNECTION_ID = /^[a-z][a-z0-9_-]{0,63}$/;
 /** Connectors a workspace connection may use in this slice (canvas-run D11). */
-export const TEST_RUN_CONNECTORS = ["sftp"] as const;
+export const WORKSPACE_CONNECTORS = ["sftp", "http", "postgres"] as const;
 
 interface Schema { properties: Record<string, { writeOnly?: boolean; "x-nurtuo-secret"?: boolean; type?: string }> }
 let sftpSchema: Schema | undefined;
@@ -20,6 +20,8 @@ export function sftpConnectionSchema(): Schema {
 
 /** Fields that hold a secret (`writeOnly` or `x-nurtuo-secret` in the connector's schema). */
 export function secretFields(connector: string): string[] {
+  if (connector === "http") return ["password", "token", "apiKeyValue"];
+  if (connector === "postgres") return ["password"];
   if (connector !== "sftp") return [];
   return Object.entries(sftpConnectionSchema().properties).filter(([, p]) => p.writeOnly || p["x-nurtuo-secret"]).map(([k]) => k);
 }
@@ -33,9 +35,13 @@ export function validateConnectionId(id: string): void {
 /** Returns the settings to store (a copy), or throws a 400 ApiError with the spec's code. */
 export function validateConnection(connector: unknown, settings: unknown): Record<string, unknown> {
   if (typeof connector !== "string" || connector === "") throw bad("bad_request", "connector must be a non-empty string");
-  if (!(TEST_RUN_CONNECTORS as readonly string[]).includes(connector)) throw bad("not_allowed_in_test_run", `connector "${connector}" is not allowed in test runs (only ${TEST_RUN_CONNECTORS.join(", ")})`);
+  if (!(WORKSPACE_CONNECTORS as readonly string[]).includes(connector)) throw bad("not_allowed_in_test_run", `connector "${connector}" is not allowed in test runs (only ${WORKSPACE_CONNECTORS.join(", ")})`);
   if (!settings || typeof settings !== "object" || Array.isArray(settings)) throw bad("bad_request", "settings must be a JSON object");
   const s = { ...(settings as Record<string, unknown>) };
+  if (connector === "http" || connector === "postgres") {
+    validateNetworkSettings(connector, s);
+    return s;
+  }
   const props = sftpConnectionSchema().properties;
   for (const k of Object.keys(s)) if (!Object.hasOwn(props, k)) throw bad("bad_request", `unknown setting "${k}"`);
   const str = (k: string) => { const v = s[k]; if (v !== undefined && (typeof v !== "string")) throw bad("bad_request", `${k} must be a string`); return v as string | undefined; };
@@ -60,11 +66,52 @@ export function validateConnection(connector: unknown, settings: unknown): Recor
   return s;
 }
 
+function validateNetworkSettings(connector: string, s: Record<string, unknown>) {
+  const allowed = connector === "http" ? ["baseUrl", "auth"] : ["host", "port", "database", "user", "sslMode", "password"];
+  if (Object.keys(s).some((key) => !allowed.includes(key))) throw bad("bad_request", "unsupported connection setting");
+  if (connector === "postgres") {
+    if (typeof s.host !== "string" || !/^[a-z0-9][a-z0-9.-]{0,252}$/i.test(s.host)) throw bad("bad_request", "enter a valid database hostname or IPv4 address");
+    for (const key of ["user", "database"]) {
+      const value = s[key];
+      if (typeof value !== "string" || !value.trim() || value.includes("\0")) throw bad("bad_request", `${key} is required`);
+    }
+    if (s.port !== undefined && (!Number.isInteger(s.port) || (s.port as number) < 1 || (s.port as number) > 65535)) throw bad("bad_request", "port must be an integer between 1 and 65535");
+    if (s.sslMode !== undefined && !["disable", "require", "verify-full"].includes(String(s.sslMode))) throw bad("bad_request", "unsupported sslMode");
+  } else {
+    const url = typeof s.baseUrl === "string" ? URL.parse(s.baseUrl) : null;
+    if (!url || !["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash || !/^https?:\/\/[^/]+/i.test(String(s.baseUrl)) || /[\\\s]/.test(String(s.baseUrl))) {
+      throw bad("bad_request", "enter an HTTP(S) base URL without user information, query or fragment");
+    }
+    const auth = s.auth === undefined ? {} : s.auth;
+    if (!auth || typeof auth !== "object" || Array.isArray(auth)) throw bad("bad_request", "auth must be an object");
+    const a = auth as Record<string, unknown>;
+    if (Object.keys(a).some((key) => !["type", "username", "apiKeyName", ...secretFields(connector)].includes(key))) throw bad("bad_request", "unsupported HTTP auth setting");
+    const type = a.type ?? "none";
+    const mode = type === "basic" ? "password" : type === "bearer" ? "token" : type === "apikey" ? "apiKeyValue" : undefined;
+    if (type !== "none" && !mode) throw bad("bad_request", "unsupported HTTP authentication mode");
+    if (mode && (typeof a[mode] !== "string" || !a[mode])) throw bad("invalid_credential_set", "enter the credential for the selected authentication mode");
+    if (type === "basic" && (typeof a.username !== "string" || !a.username || /[:\x00-\x1f\x7f]/.test(a.username))) throw bad("bad_request", "enter a valid HTTP username");
+    if (type === "apikey" && (typeof a.apiKeyName !== "string" || !/^x-[a-z0-9-]+$/i.test(a.apiKeyName))) throw bad("bad_request", "enter an API key header name beginning with X-");
+    for (const field of secretFields(connector)) {
+      if (field !== mode && Object.hasOwn(a, field)) throw bad("invalid_credential_set", "remove credentials for the previous authentication mode");
+    }
+  }
+  for (const field of secretFields(connector)) {
+    const value = credentialSlots(connector, s)[field];
+    if (value !== undefined && (typeof value !== "string" || !SECRET_REF.test(value))) throw bad("literal_secret", "credential must be a server-issued secret reference");
+  }
+}
+
+export function credentialSlots(connector: string, settings: Record<string, unknown>): Record<string, unknown> {
+  return connector === "http" ? (settings.auth ?? {}) as Record<string, unknown> : settings;
+}
+
 /** Secret names referenced by settings, per field. */
 export function secretRefs(connector: string, settings: Record<string, unknown>): Array<{ field: string; name: string }> {
   const out: Array<{ field: string; name: string }> = [];
+  const slots = credentialSlots(connector, settings);
   for (const f of secretFields(connector)) {
-    const m = typeof settings[f] === "string" ? SECRET_REF.exec(settings[f] as string) : null;
+    const m = typeof slots[f] === "string" ? SECRET_REF.exec(slots[f] as string) : null;
     if (m) out.push({ field: f, name: m[1]! });
   }
   return out;

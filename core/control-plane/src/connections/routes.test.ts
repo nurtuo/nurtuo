@@ -123,3 +123,52 @@ test("ambiguous write outcomes preserve the prior or committed credential genera
   assert.equal(j(resolved).secrets.password, "set");
   assert.equal((await secrets.list(ws.id)).length, 1);
 });
+
+test("HTTP credentials stay write-only and are bound to the saved URL and auth identity", async () => {
+  const { put, get } = await world();
+  const baseUrl = "https://employees.example/api";
+  const settings = { baseUrl, auth: { type: "basic", username: "reader" } };
+  const value = "write-only-http-password";
+  const created = await put({ connector: "http", settings, credentials: { password: value } });
+  assert.equal(created.status, 201);
+  assert.equal(j(created).secrets.password, "set");
+  assert.equal(JSON.stringify(created.body).includes(value), false);
+  assert.match(j(created).settings.auth.password, /^secret:\/\/credential-/);
+  assert.deepEqual(j(await get()).settings, j(created).settings);
+
+  const keep = await put({ connector: "http", settings: {} });
+  assert.equal(keep.status, 200);
+  assert.deepEqual(j(keep).settings, j(created).settings);
+  for (const edit of [{ baseUrl: "https://other.example" }, { auth: { username: "other" } }]) {
+    const rejected = await put({ connector: "http", settings: edit });
+    assert.equal(rejected.status, 409);
+    assert.equal(j(rejected).error.code, "credential_rebind_required");
+  }
+  const injected = await put({ connector: "http", settings: { auth: { password: j(created).settings.auth.password } } });
+  assert.equal(j(injected).error.code, "secret_ref_not_allowed");
+  const removed = await put({ connector: "http", settings: { auth: { type: "none" } }, credentials: { password: null } });
+  assert.equal(removed.status, 200);
+  assert.deepEqual(j(removed).secrets, {});
+});
+
+test("PostgreSQL password follows keep, rebind and remove through the workspace API", async () => {
+  const { put, get, call, base, auth } = await world();
+  const settings = { host: "db.example", port: 5432, database: "employees", user: "reader", sslMode: "verify-full" };
+  const value = "write-only-postgres-password";
+  const created = await put({ connector: "postgres", settings, credentials: { password: value } });
+  assert.equal(created.status, 201);
+  assert.equal(j(created).secrets.password, "set");
+  const listed = await call("GET", `${base}/connections`, auth);
+  assert.deepEqual(j(listed).items, [j(created)]);
+  assert.equal(JSON.stringify(listed.body).includes(value), false);
+  assert.deepEqual(j(await get()).settings, j(created).settings);
+  for (const edit of [{ host: "other.example" }, { database: "other" }, { user: "other" }, { port: 5433 }, { sslMode: "require" }]) {
+    const rejected = await put({ connector: "postgres", settings: edit });
+    assert.equal(rejected.status, 409);
+    assert.equal(j(rejected).error.code, "credential_rebind_required");
+  }
+  const removed = await put({ connector: "postgres", settings: {}, credentials: { password: null } });
+  assert.equal(removed.status, 200);
+  assert.deepEqual(j(removed).settings, settings);
+  assert.deepEqual(j(removed).secrets, {});
+});

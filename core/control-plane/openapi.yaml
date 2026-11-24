@@ -263,7 +263,7 @@ paths:
     put:
       operationId: putConnection
       description: |
-        EXPERIMENTAL. Creates (201) or updates (200) an SFTP connection. Omitted settings are preserved.
+        EXPERIMENTAL. Creates (201) or updates (200) an SFTP, HTTP or PostgreSQL connection. Omitted settings are preserved.
         Credentials are write-only. An omitted field keeps its current version, a nonempty string sets a new
         version, and null removes it. Changes to destination, trust or authentication fields require re-entry
         of every retained credential (409 credential_rebind_required). Credential changes require a browser
@@ -277,7 +277,7 @@ paths:
               required: [connector, settings]
               properties:
                 connector: { type: string, example: sftp }
-                settings: { type: object, description: "Nonsecret settings, including a pinned fingerprint or a pasted known_hosts entry." }
+                settings: { type: object, description: "Nonsecret connector settings. HTTP auth settings are nested under auth. SFTP requires a fingerprint or a pasted known_hosts entry." }
                 credentials:
                   type: object
                   writeOnly: true
@@ -286,6 +286,8 @@ paths:
                     password: { type: string, nullable: true, writeOnly: true }
                     privateKey: { type: string, nullable: true, writeOnly: true }
                     passphrase: { type: string, nullable: true, writeOnly: true }
+                    token: { type: string, nullable: true, writeOnly: true }
+                    apiKeyValue: { type: string, nullable: true, writeOnly: true }
       responses: { "200": { description: Updated, content: { application/json: { schema: { $ref: "#/components/schemas/Connection" } } } }, "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/Connection" } } } }, "400": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" }, "413": { $ref: "#/components/responses/PayloadTooLarge" }, "404": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" }, "503": { $ref: "#/components/responses/Error" } }
     delete:
       operationId: deleteConnection
