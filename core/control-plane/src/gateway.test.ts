@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import assert from "node:assert/strict";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { after, before, test } from "node:test";
@@ -8,6 +9,8 @@ import { create } from "@bufbuild/protobuf";
 import { Code, ConnectError, createClient } from "@connectrpc/connect";
 import { createGrpcTransport } from "@connectrpc/connect-node";
 import { runtimev1 as pb } from "@nurtuo/proto";
+import { digestOf } from "./api.js";
+import { packBundle } from "./bundle.js";
 import { Gateway, createGatewayServer, runtimeIdFromCert } from "./gateway.js";
 import { MemoryRepository } from "./memory-repository.js";
 
@@ -82,6 +85,51 @@ async function eventually(fn: () => Promise<boolean>, ms = 2000) {
   while (Date.now() < end) { if (await fn()) return; await new Promise((r) => setTimeout(r, 20)); }
   assert.fail("condition not met in time");
 }
+
+test("optional bundle signing advertises stable archive digests for derived revisions", async (t) => {
+  const repo = new MemoryRepository();
+  await repo.upsertRuntime({ id: "rt", name: "rt", environment: "dev" });
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const rawPublicKey = publicKey.export({ type: "spki", format: "der" }).subarray(-32);
+  const signingKey = { privateKey, keyId: createHash("sha256").update(rawPublicKey).digest("hex").slice(0, 16) };
+
+  const derived = await repo.createComponent({ name: "Display Name", kind: "flow", description: "" });
+  const content = { z: 1, a: "flow" };
+  const derivedRev = (await repo.createRevision(derived.id, content, digestOf(content)))!;
+  await repo.deploy({ componentId: derived.id, revisionId: derivedRev.id, runtimeId: "rt" });
+
+  const external = await repo.createComponent({ name: "external", kind: "flow", description: "" });
+  const externalDigest = `sha256:${"a".repeat(64)}`;
+  const externalRev = (await repo.createRevision(external.id, {}, externalDigest))!;
+  await repo.deploy({ componentId: external.id, revisionId: externalRev.id, runtimeId: "rt" });
+
+  const invalid = await repo.createComponent({ name: "invalid", kind: "flow", description: "" });
+  const invalidRev = (await repo.createRevision(invalid.id, [], digestOf([])))!;
+  await repo.deploy({ componentId: invalid.id, revisionId: invalidRev.id, runtimeId: "rt" });
+
+  const expected = packBundle({
+    name: derived.id,
+    createdAt: derivedRev.createdAt,
+    component: { kind: "flow", id: derived.id, revision: derivedRev.number, document: content },
+  }, signingKey);
+  const archiveDigest = `sha256:${createHash("sha256").update(expected).digest("hex")}`;
+  assert.notEqual(archiveDigest, derivedRev.digest);
+
+  async function digests(gateway: Gateway) {
+    const message = await gateway.desiredStateMessage("rt");
+    return Object.fromEntries(message!.deployments.map(({ deploymentId, bundleDigest }) => [deploymentId, bundleDigest]));
+  }
+  const legacy = { [derived.id]: derivedRev.digest, [external.id]: externalDigest, [invalid.id]: invalidRev.digest };
+  assert.deepEqual(await digests(new Gateway(repo)), legacy);
+  const lookup = t.mock.method(repo, "getComponent");
+  const signing = new Gateway(repo, { signingKey });
+  const signed = { ...legacy, [derived.id]: archiveDigest };
+  assert.deepEqual(await digests(signing), signed);
+  assert.deepEqual(await digests(signing), signed);
+  // The invalid revision is retried, the derived revision is cached, and the external one is skipped.
+  assert.equal(lookup.mock.callCount(), 3);
+  assert.deepEqual(await digests(new Gateway(repo, { signingKey })), signed);
+});
 
 test("runtimeIdFromCert prefers URI SAN over CN", () => {
   assert.equal(runtimeIdFromCert({ subject: { CN: "x" } }), "x");
