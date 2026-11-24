@@ -12,8 +12,11 @@ not that step. Existing revision uploads keep working. Credential release is a s
 authorization decision. The decisive test is that **an unauthorized peer sees zero authentication
 attempts**.
 
-This spec is the written outcome of a two-expert council (Claude Opus and GPT-6.2 Astra). It needs
-Łukasz's decisions D1-D14 before any code is written, including the PR #90 rework.
+This spec is the written outcome of a two-expert council (Claude Opus and GPT-6.2 Astra). The
+council ran three rounds (Astra R1, Opus R2, Astra R3) and both experts say no further round is
+needed. Three points stay divergent and are owner decisions: the revision ceiling (D2), the
+override rule (D4) and `known_hosts` dialing (D12). Łukasz must decide D1-D14 before any code is
+written, including the PR #90 rework.
 
 ## Status and links
 
@@ -87,30 +90,34 @@ reference and drop hidden settings (Codex major).
 ## Decisions (pending)
 
 Nothing below is approved. Each item names the recommended default. Letters in brackets map to the
-council ledgers (`D-Lx` limits, `D-Sx` secrets).
+council ledgers (`D-Lx` limits, `D-Sx` secrets). The "Council" column gives the outcome after
+Round 3: **agreed**, **agreed with qualification** (the qualification is part of the recommended
+default), or **divergent** (both positions given; Łukasz decides). See the Council section for each
+V-item.
 
-| # | Question | Recommended default | Alternative |
-|---|---|---|---|
-| D1 [D-L1] | Global 1 MiB cap | Supersede it. D2's values (1 MiB body, 1 MiB/20 docs output, 30/120 s, 2/workspace, 4/instance) apply to `POST …/test-runs` only. Scan has its own small profile (4 KiB body, 10 s, shares the run limiter) | keep global cap (rejected by owner) |
-| D2 [D-L2] | Default body ceiling on revision routes | **No default byte ceiling** on `POST /v1/components/{id}/revisions`. Never a 413 on GET or list. An operator may configure a finite ceiling. Memory is protected by D14 instead | explicit 256 MiB 413 on POST (Opus Round 2, withdrawn, see V2) |
-| D3 [D-L3] | Bounded parser on body-authenticated routes | Approve in principle a bounded, memory-only parser for `POST /v1/auth/login` (and any other route whose authentication needs body fields). 64 KiB is a candidate, final value after field/encoding/client check. Handled as the compatibility contract's security exception. No blanket cap on public routes | no change (unauthenticated body stays unbounded on login) |
-| D4 [D-L4] | Configuration surface | Per-operation defaults in code, keyed by policy action and tested against OpenAPI. Operator overrides **per class** via one EXPERIMENTAL surface (name chosen by Łukasz, e.g. `NURTUO_LIMITS_FILE`), validated at startup, with units. Overrides may tighten, and may raise only within the instance's physical budget (see V3) | per-operation overrides; tighten-only |
-| D5 [D-L5] | Child output bound | Add EXPERIMENTAL `nurtuo flow run --max-output-bytes` and `--max-documents`, enforced in the child before a payload is materialized. Until it lands, #90 documents the residual risk (canvas Gaps #7) | accept the residual risk without a flag |
-| D6 [D-L6] | Revision storage redesign (L2) | Separate spec, triggered by L1 metrics or by failure to meet the memory budget. Must prove `canonicalJson` digest parity first | include in first delivery |
-| D7 [D-L7] | Rate limiting and quotas in M1 | Instance-local only: keep login throttle/lockout, add per-peer pre-auth in-flight limit (trusted-proxy identity, bounded key cardinality), keep D2 concurrency. Metrics per route template with no bodies or identifiers. No byte-rate or workspace quotas | add workspace/byte-rate quotas now |
-| D8 [D-S1] | Credential write API | Optional write-only `credentials: {password?, privateKey?, passphrase?}` member on the pending `PUT /v1/workspaces/{ws}/connections/{id}`. Credential-bearing PUT needs `connection:write` and `secret:write`. An omitted field is retained only when the binding is unchanged. A binding change without fresh values returns **409 `credential_rebind_required` before any mutation** | dedicated credential-save operation; staged two-call handle |
-| D9 [D-S2] | Free-standing `/secrets` routes | Remove `GET …/secrets`, `PUT|DELETE …/secrets/{name}` from the pending API. Connections report `secrets: {field: set|missing}`. Intentional credential removal is done on the connection with `secret:write`. Deleting a connection or workspace purges its credentials | keep them as storage that the runner never releases |
-| D10 [D-S3] | `secret://` placement | Allowed only in schema credential slots (`writeOnly` / `x-nurtuo-secret`), server-assigned for this connection and field. Elsewhere 400 `secret_ref_not_allowed` on save, and refusal at snapshot time for a malformed stored row. Applies to control-plane-managed Run connections only. Standalone providers, bundle syntax and `secret://` stay unchanged | none proposed |
-| D11 [D-S4] | `rootPath` in the binding | Not bound. Documented as a flow-path convenience, not an authorization boundary between workspace editors | bind it |
-| D12 [D-S5] | DNS rebinding / dial address | For `fingerprint` connections and scans, the runner writes the vetted IP into the child's connection file and keeps the logical host in the snapshot for binding and display. For `known_hosts`, an approved dial-address mechanism (a child flag, Ask First) or network enforcement is needed. Until then that mode is **not enabled on shared installations** (Astra) or best effort and documented (Opus). See V9 | — |
-| D13 [D-S6] | Revocation | Delete or rebind stops future acquisitions. An admitted run finishes under its D2 deadline plus 5 s teardown grace. Permission is checked and the full snapshot is acquired at admission | kill in-flight runs |
-| D14 | Large-body reservation and capacity error | A request or response above an in-memory threshold (initial 8 MiB, benchmark-gated) takes a large-body token (initial 1 per instance). If none is free before its deadline, the request gets **503 `capacity_unavailable` + `Retry-After`**. This is a new transient failure on STABLE routes, so it needs owner approval. 413 = size policy, 429 = caller quota (D2 `too_many_runs` stays 429), 503 = instance capacity | no reservation (OOM risk stays) |
+| # | Question | Council | Recommended default | Alternative |
+|---|---|---|---|---|
+| D1 [D-L1] | Global 1 MiB cap | agreed (V1) | Supersede the global Phase 2 cap and its test. D2's values (1 MiB input, 20 documents and 1 MiB total decoded output, 30/120 s, 2/workspace, 4/instance shared slots) apply to `POST …/test-runs` only. Scan has its own small profile (4 KiB body, 10 s, shares the run limiter) | keep global cap (rejected by owner) |
+| D2 [D-L2] | Default body ceiling on revision routes | **divergent** (V2) | **No default byte ceiling** on `POST /v1/components/{id}/revisions`. Never a 413 on GET or list. Revision upload and full-content readback are preserved by default. An operator may configure a documented finite ceiling. Making one an upgrade default would need a separate compatibility decision. Memory is protected by D14 instead. Position of Astra (R1, R3), adopted by the drafter | explicit 256 MiB 413 on revision POST (Opus R2; the drafter withdraws it, see V2) |
+| D3 [D-L3] | Bounded parser on body-authenticated routes | agreed (V1) | Approve in principle a bounded, memory-only parser for `POST /v1/auth/login` (and any other route whose authentication needs body fields). 64 KiB is a candidate, final value after field/encoding/client evidence. No blanket cap on public routes. Document the changed status and use the compatibility process for STABLE routes. The compatibility contract's emergency security exception applies only if its advisory and severity requirements are met | no change (unauthenticated body stays unbounded on login) |
+| D4 [D-L4] | Configuration surface | agreed with qualification; **divergent** on the override rule (V3) | Operation-specific defaults in code, keyed by policy action, method/template coverage tested against OpenAPI, server-selected profiles enforced. Operator overrides **per class** via one EXPERIMENTAL surface (name chosen by Łukasz, e.g. `NURTUO_LIMITS_FILE`), with units, scope and defaults documented and validated at startup. Overrides may tighten (explicit operator restrictions), and may raise when evidence supports it, within the instance's physical capacity (Astra R3). Size the `secret-bearing` PUT for all allowed fields in escaped wire form plus settings. Benchmark scan size, parse expansion and reservation thresholds before setting new defaults | tighten-only, except a bounded raise of the revision ceiling (Opus R2) |
+| D5 [D-L5] | Child output bound | agreed with qualification (Astra ledger) | Add EXPERIMENTAL `nurtuo flow run --max-output-bytes` and `--max-documents`, applied in the child before a whole payload is read or a result set accumulated, and counting metadata, encoded output and temporary disk. Overflow keeps the D2 failed result. Shared execution is enabled only with demonstrated producer bounds or equivalent isolation. Until it lands, #90 documents the residual risk (canvas Gaps #7) | accept the residual risk without a flag |
+| D6 [D-L6] | Revision storage redesign (L2) | agreed with qualification (Astra ledger) | Separate spec, triggered by measured demand or by failure to meet the working-set budget. Before switching it must prove digest parity against `canonicalJson` (duplicate and prototype-named keys, UTF-16 ordering, UTF-8 replacements, lone surrogates, negative zero, overflowing numbers), bounded sorting, old-row readback, atomic publication and cleanup | include in first delivery |
+| D7 [D-L7] | Rate limiting and quotas in M1 | agreed with qualification (V3, Astra ledger) | Instance-local admission and one volatile-secret owner. Keep login throttle/lockout, add a bounded per-peer pre-auth in-flight limit (trusted-proxy identity, bounded key cardinality), keep D2 concurrency. Reserve capacity for reads, writes and teardown. Metrics by operation (bytes, rates, CPU, RSS, spool, wait, rejection) with no bodies or identifiers. No byte-rate or workspace quotas; a later HA spec owns cross-replica fairness | add workspace/byte-rate quotas now |
+| D8 [D-S1] | Credential write API | agreed (V5, V7); agreed with qualification on the publication rule (V6) | Optional write-only `credentials: {password?, privateKey?, passphrase?}` member on the pending `PUT /v1/workspaces/{ws}/connections/{id}`. Credential-bearing PUT needs `connection:write` and `secret:write`, a user session, CSRF and TLS. An unchanged-binding edit needs `connection:write` only. Hidden settings and server-owned references are preserved; client-selected substitutes are rejected. An omitted field is retained only when the binding is unchanged. A binding change with retained credentials returns **409 `credential_rebind_required` before any mutation**. Publication follows the V6 rule | dedicated credential-save operation; staged two-call handle (Astra R1, superseded by Astra R3) |
+| D9 [D-S2] | Free-standing `/secrets` routes | agreed (V5) | Remove `GET …/secrets`, `PUT|DELETE …/secrets/{name}` from the pending API. Connections report `secrets: {field: set|missing}`. Intentional credential removal is specified on the connection with `secret:write`. Deleting a connection or workspace purges its credentials | keep them as storage that the runner never releases |
+| D10 [D-S3] | `secret://` placement | agreed (Astra ledger) | Allowed only in schema credential slots (`writeOnly` / `x-nurtuo-secret`), server-assigned for this connection and field. Elsewhere 400 `secret_ref_not_allowed` on save, and refusal at snapshot time for a malformed stored row. All connections are validated before any child input is released. Applies to control-plane-managed Run connections only. Standalone providers, bundle syntax and `secret://` stay unchanged | none proposed |
+| D11 [D-S4] | `rootPath` in the binding | agreed (V8) | Not bound; editors can change it. Documented as a flow-path convenience on an already authorized account, not an authorization boundary. A future subtree-authorization promise needs a separate decision | bind it |
+| D12 [D-S5] | DNS rebinding / dial address | **divergent** on `known_hosts` (V9) | Pin a vetted dial address for `fingerprint` connections and scans, keeping the logical SSH identity for the binding and known-hosts verification, with the egress check at every actual dial (scan, retries, all address families). For `known_hosts`, an approved dial-address mechanism (a child flag, Ask First) or equivalent network enforcement is needed. Until then that mode is **not enabled on shared installations** (Astra R3, recommended: best-effort preflight leaves the zero-authentication test unenforceable) | `known_hosts` enabled as best effort and documented until a dial flag is approved (Opus R2) |
+| D13 [D-S6] | Revocation | agreed (Astra ledger) | Delete or rebind revokes future acquisitions. An admitted run finishes under its D2 deadline plus bounded teardown grace (initial 5 s). Current permission is checked and the full snapshot is acquired at admission. UI logout revocation and failure reporting stay on #90 | kill in-flight runs |
+| D14 | Large-body reservation and capacity error | agreed (V4) | A request or response above an in-memory threshold (initial 8 MiB, benchmark-gated) takes a large-body token (initial 1 per instance), reserved before allocating. Aggregate small-buffer and queue occupancy are capped too, because one token alone does not bound process memory. If no token is free before the deadline, the request gets **503 `capacity_unavailable` + `Retry-After`**. This is a new transient failure on STABLE routes, so it needs owner approval. 413 = applicable size limit, 429 = caller quota (D2 `too_many_runs` stays 429; a 503 there would need an explicit amendment), 503 = instance capacity | no reservation (OOM risk stays) |
 
 ## Design
 
 ### Architecture agreed by both experts
 
-These points are agreed in Astra Round 1 and Opus Round 2 (see Council).
+These points are agreed in Astra Round 1 and Opus Round 2 and confirmed in Astra Round 3 (see
+Council).
 
 1. **One operation inventory.** Admission uses the same method plus normalized route template table
    as authorization (`POLICIES` in `auth/policy.ts`). Every OpenAPI operation has an explicit limit
@@ -175,7 +182,10 @@ replace them, and each change is recorded in the changelog.
   The database result still stays resident. The full fix is a cursor or bounded iterator with a
   consistent read snapshot that keeps the `items` envelope, order and full content, honors
   backpressure and closes on disconnect. A failure after headers are sent must abort the stream. A
-  partial list must never complete as a success. Phase L1b covers this.
+  partial list must never complete as a success. Phase L1b covers this. The memory budget also
+  accounts for the largest materialized row, concurrent small requests, retained memory-repository
+  history and slow consumers. Materialization is isolated where its measured peak cost exceeds the
+  available headroom.
 - **Webhooks** stay on the runtime listener, which already streams into the spool and HMAC-verifies
   the exact bytes before dispatch (V10).
 
@@ -191,19 +201,25 @@ replace them, and each change is recorded in the changelog.
   `binding = sha256(canonical({connector, field, incarnation, host, port, user, authMode, hostKeyPolicy, hostKeyMaterial}))`.
   Normalization covers only what the dialer and verifier both treat as equal: host lower-cased, a
   trailing dot dropped, no DNS resolution, port defaults to 22, user exact, `knownHosts` text as
-  stored. Any mismatch fails closed. The digest hashes only non-secret settings, so it may be
+  stored. Absolute DNS names are normalized only where lookup, dial and verification agree. Any
+  mismatch fails closed. The digest hashes only non-secret settings, so it may be
   audited.
 - **Publication and acquisition (V6).** A digest comparison alone is not enough. Two rotations at
   the same destination have the same digest, and a database commit followed by a map swap creates
   two visibility points. Rule: stage the new versions privately, then publish the connection
   settings together with the exact version references under a generation check (or a serialized
   writer). A run acquires one consistent generation: settings, version references and values
-  together, in one store operation. It compares the digest computed from **the exact settings it
-  writes into the child's connection file** with each version's stored digest before `reveal`. On
-  mismatch: 409 `credential_unbound`, no child, no network contact. Prior versions stay alive while
+  together, in one store operation: checking the digest and acquiring that exact version is a single
+  store operation, never a check followed by a lookup by name. It compares the digest computed from
+  **the logical identity in the snapshot from which the child's connection file is derived** with
+  each version's stored digest before `reveal`. The snapshot keeps the logical host and the vetted
+  dial address separately (D12). The logical identity is bound before the dial address is derived;
+  comparing the digest with a `fingerprint` child file after an IP was substituted would compare two
+  different hosts. On mismatch: 409 `credential_unbound`, no child, no network contact. Prior versions stay alive while
   an acquired snapshot uses them. An uncertain database outcome is resolved by reading the
   committed generation before cleanup or retry. No lock is held across network execution. An
-  optional `If-Match` on a server ETag prevents lost edits but is not needed for correctness.
+  optional `If-Match` on a server ETag prevents lost edits but is not needed for correctness:
+  internal publication stays correct when the client omits it.
 - **Edits.** A settings-only PUT with an unchanged binding needs `connection:write` and keeps every
   untouched setting (`timeoutMs`, `maxListEntries`, …) and the server-owned references. A
   client-selected substitute reference is rejected. A failed save leaves the prior settings and
@@ -336,7 +352,8 @@ backpressure, abort on mid-stream failure.
 - WHEN a scan runs THEN the peer sees zero authentication attempts, and a silent peer is closed at the
   deadline.
 - WHEN a run races an edit THEN it either uses the old consistent generation or the new one, never a
-  mix, and never reveals a credential whose digest does not match the settings written to the child.
+  mix, and never reveals a credential whose digest does not match the logical identity of the
+  snapshot from which the child's connection file is written.
 
 ## Testing
 
@@ -368,10 +385,10 @@ All tests are new. Commands: `pnpm --filter @nurtuo/control-plane run build && p
 | # | Scenario | Severity | Area | Mitigation |
 |---|---|---|---|---|
 | 1 | Before L1a, an unauthenticated client streams 2 GiB to any path and the control plane (and its gateway) is OOM-killed | high | availability | L1a first; independent of #90 |
-| 2 | With no default ceiling (D2), one authorized client posts a revision that exhausts the heap | medium | availability | D14 token bounds this to about one huge tree per process; operator ceiling; L2 |
+| 2 | With no default ceiling (D2), one authorized client posts a revision that exhausts the heap | medium | availability | D14 token limits concurrent huge trees, but one token alone does not bound process memory (Astra R3): also cap aggregate small-buffer and queue occupancy, isolate materialization above measured headroom; operator ceiling; L2 |
 | 3 | Two large uploads at once: the second gets 503 where it succeeded before | low | compatibility | D14 approval, `Retry-After`, threshold from benchmarks |
 | 4 | Host key rotates; every run fails until someone who knows the password re-enters it | low | UX | accepted cost of binding trust material; UI explains |
-| 5 | `known_hosts` connection: child re-resolves a rebinding name to `127.0.0.1` | medium | security | D12: dial address or disable on shared installations |
+| 5 | `known_hosts` connection: child re-resolves a rebinding name to `127.0.0.1` | medium | security | D12: dial address or network enforcement; recommended default disables the mode on shared installations until then |
 | 6 | Go child materializes a 4 GiB payload before the stdout cap | medium | reliability | D5 flags; otherwise documented residual risk |
 | 7 | Second control-plane replica uses a same-named local secret | medium | security | single owner in M1 (agreed item 11); HA spec |
 | 8 | Initial thresholds (8 MiB, 1 token, envelope size) are wrong for real workloads | medium | performance | benchmark-gated; metrics from L1a |
@@ -380,41 +397,46 @@ All tests are new. Commands: `pnpm --filter @nurtuo/control-plane run build && p
 ## Council
 
 Participants: GPT-6.2 Astra (OpenAI) and Claude Opus (Anthropic). GrokBot moderated. Statements:
-Round 1 Astra, Round 2 Opus. They are attached as comments to this spec's pull request and are not
-committed (the council brief excludes `council/` from the repository). Opus Round 2 concluded that
-no further round is needed.
+Round 1 Astra, Round 2 Opus, Round 3 Astra. They are attached as comments to this spec's pull
+request and are not committed (the council brief excludes `council/` from the repository). Opus
+Round 2 and Astra Round 3 both conclude that no further round is needed. Astra R3: "The remaining
+choices require Łukasz's approval or measurements. Another exchange of expert preferences would
+supply neither."
 
-**Round 3 status.** The moderator reports that Astra's Round-3 reply could not be obtained (OpenAI
-usage limit until about 19:13 Europe/Warsaw on 2026-11-24). A file `council/round-3-astra.md` is
-nevertheless present in the council working directory (dated 17:22). Its provenance has not been
-confirmed by the moderator. Below, Astra's position is the **Round 1 text**. Where the Round-3 file
-differs, its stance is quoted as "R3 (unconfirmed)". Each such entry is pending confirmation.
-The cross-provider (OpenAI) review of this spec is also pending.
+The moderator confirmed that the Round-3 statement is Astra's (GPT-6.2 Astra, run 2026-11-24
+17:20-17:22 Europe/Warsaw). The cross-provider (OpenAI) review of this spec is still pending until
+the OpenAI usage limit resets (about 19:13 Europe/Warsaw on 2026-11-24).
 
-| V | Topic | Astra position | Opus position | Recommended default |
-|---|---|---|---|---|
-| V1 | First deliverable | Round 1: admission and Run controls first, storage redesign question left open. Round-3 response pending. R3 (unconfirmed): modified agreement, L1 first, #90 security fixes proceed independently | L1 (auth before body) first, independent of #90 | Phases as above: P90 and L1a in parallel after approval (D1, D7) |
-| V2 | Revision ceiling | Round 1: "no new default byte cutoff" on existing endpoints, operator may opt in to a restrictive profile. Round-3 response pending. R3 (unconfirmed): disagrees with 256 MiB; whitespace makes wire size larger than parsed content, an aggregate list can exceed 256 MiB, a 413 on a bodyless GET is wrong | Round 2: explicit 256 MiB 413 derived from `MaxBundleSize`, `jsonb`, V8. **Revised for this draft**: the whitespace case is checkable on `main` (`JSON.parse` drops whitespace, `canonicalJson` digest unchanged), so a >256 MiB POST can succeed today and a 256 MiB cap would shrink the contract. Opus withdraws the default ceiling | No default ceiling; operator-configurable; D14 for memory (D2) |
-| V3 | Config surface | Round 1: versioned settings, profile defaults, per-operation overrides, rate and byte budgets, shared quotas for replicas. Round-3 response pending. R3 (unconfirmed): accepts code defaults plus one class-level override surface; rejects tighten-only, wants operator tuning within physical capacity | Code defaults per operation, class-level overrides only, tighten-only except a bounded revision raise, no byte or workspace quotas in M1 | Class-level surface; raise allowed within physical budget, since V2 removes the ceiling a tighten-only rule was measured against (D4) |
-| V4 | Status codes | Round 1: 413 size, 429 quota, capacity reported as a distinct transient failure. Round-3 response pending. R3 (unconfirmed): agrees; D2 run/scan concurrency stays 429 | 413 / 429 / 503 + `Retry-After` | 413 / 429 / 503; D2 stays 429 (D14) |
-| V5 | Credential write API | Round 1: a dedicated atomic credential-save operation, or a staged two-call handle. Round-3 response pending. R3 (unconfirmed): agrees with PUT extension and retiring `/secrets` | optional write-only `credentials` on the pending connection PUT; remove `/secrets` | PUT extension (D8, D9) |
-| V6 | Binding representation | Round 1: immutable grant per credential version, staged versions, conditional generation publish, serialized publish and acquisition. Round-3 response pending. R3 (unconfirmed): accepts the digest only if the run acquires an immutable version together with its settings in one store operation | binding digest stored with the credential, checked at reveal, no cross-path lock | Digest **plus** the publication rule (immutable versions, generation-consistent acquisition), as in Design (D8) |
-| V7 | Binding change without re-entry | Round 1: reject, or save an uncredentialed connection that cannot run. Round-3 response pending. R3 (unconfirmed): agrees with reject | reject with 409 before mutation | Reject (D8) |
-| V8 | `rootPath` | Round 1: bind it if the product promises subtree confinement. Round-3 response pending. R3 (unconfirmed): agrees not to bind in M1 | do not bind; document as non-authorizing | Do not bind (D11) |
-| V9 | DNS rebinding | Round 1: enforce at the actual dial or by network isolation. Round-3 response pending. R3 (unconfirmed): pin the vetted address for fingerprint and scans, keep the logical identity for verification, and require a dial-address mechanism or network enforcement before enabling `known_hosts` on a shared installation | pin the IP for `fingerprint` in #90; `known_hosts` best effort until a dial flag is approved | Pin now; owner chooses between "disabled on shared installations" and "best effort, documented" for `known_hosts` (D12) |
-| V10 | Webhooks | Round 1: the receiving listener owns size and time policy. Round-3 response pending. R3 (unconfirmed): agrees | same; the knob does not exist yet (runtime fixed 1 MiB) | Separate runtime spec (non-goal here) |
+Outcome: **agreed** = both experts hold the same position; **agreed with qualification** = Astra
+R3 accepts Opus's position with conditions, which this spec adopts; **divergent** = positions
+differ, owner decision.
+
+| V | Topic | Astra position (R1 → R3) | Opus position (R2) | Outcome | Recommended default |
+|---|---|---|---|---|---|
+| V1 | First deliverable | R1: admission and Run controls first, storage redesign left open. R3 (modified): ship L1 first; authenticate before collecting protected bodies, isolate expensive operations, meter actual bytes; preserve stable revision sizes; include list streaming when the repository can supply rows incrementally; #90's security fixes proceed independently after approval | L1 (auth before body) first, independent of #90 | agreed with qualification | P90 and L1a in parallel after approval; L1b list streaming as a separate phase (D1, D7) |
+| V2 | Revision ceiling | R1: "no new default byte cutoff" on existing endpoints, operator may opt in to a restrictive profile. R3 (disagree): reject a default 256 MiB ceiling on revision POST, GET or list. Creation, storage, deployment and aggregate readback use different representations. Whitespace disappears in `JSON.parse`, so the wire body can exceed the stored content with the same digest; no packing happens on POST; individually modest revisions can make a list above 256 MiB; a 413 on a bodyless GET misdescribes the failure; the owner requires compatibility with existing large uploads. A finite ceiling as an upgrade default needs a separate compatibility decision | R2: explicit 256 MiB 413 on POST, derived from `MaxBundleSize`, `jsonb` and V8. Drafter revision (this spec, not a council round): the whitespace case is checkable on `main`, so a 256 MiB cap would shrink the contract; the drafter withdraws the default ceiling | **divergent** in the council record (R2 vs R3); the drafter's revision aligns with Astra | No default ceiling; operator-configurable; D14 for memory (D2) |
+| V3 | Config surface | R1: versioned settings, profile defaults, per-operation overrides, rate and byte budgets, shared quotas for replicas. R3 (modified): operation-specific code defaults and one startup-validated class-level override surface for M1; keep instance budgets and D2 workspace reservations; allow explicit operator restrictions and evidence-backed tuning within physical capacity; "a tighten-only rule relative to an invented revision ceiling has no basis"; defer distributed quotas and general byte-rate controls | code defaults per operation, class-level overrides only, tighten-only except a bounded revision raise, no byte or workspace quotas in M1 | agreed with qualification on the surface; **divergent** on tighten-only | Class-level surface; raise allowed when evidence-backed, within physical capacity (D4) |
+| V4 | Status codes | R1: 413 size, 429 quota, capacity as a distinct transient failure. R3 (agree): 413 applicable size limit, 429 caller quota, 503 transient instance capacity, `Retry-After` on throttling or capacity exhaustion; the approved Run/scan concurrency stays 429 on its shared limiter, a 503 there would need an explicit amendment | 413 / 429 / 503 + `Retry-After` | agreed | 413 / 429 / 503; D2 stays 429 (D14) |
+| V5 | Credential write API | R1: dedicated atomic credential-save operation, or a staged two-call handle. R3 (agree): optional write-only credentials on the pending connection PUT, retire the pending free-standing secrets API; revise approved D3/D6, OpenAPI, generated client and UI tests together | optional write-only `credentials` on the pending connection PUT; remove `/secrets` | agreed | PUT extension (D8, D9) |
+| V6 | Binding representation | R1: immutable grant per credential version, staged versions, conditional generation publish, serialized publish and acquisition. R3 (modified): store the binding digest with each immutable credential version; checking and acquiring that exact version is one store operation; publish settings and version references consistently across concurrent saves, runs and deletes; no lock across network execution. "A digest comparison alone cannot make a database write and an in-memory replacement atomic" | binding digest stored with the credential, checked at reveal, no cross-path lock | agreed with qualification | Digest **plus** the publication rule (Design, D8) |
+| V7 | Binding change without re-entry | R1: reject, or save an uncredentialed connection that cannot run. R3 (agree): reject with 409 `credential_rebind_required` before mutation; prompt for fresh values; preserve the working connection on failure | reject with 409 before mutation | agreed | Reject (D8) |
+| V8 | `rootPath` | R1: bind it if the product promises subtree confinement. R3 (agree): exclude from the M1 binding; it scopes flow paths on an already authorized account; document that editors can change it; a future subtree promise needs a separate decision | do not bind; document as non-authorizing | agreed | Do not bind (D11) |
+| V9 | DNS rebinding | R1: enforce at the actual dial or by network isolation. R3 (modified): pin a vetted dial address for fingerprint mode and scans; keep the logical SSH identity for known_hosts; enforce egress at every actual dial; approve a separate dial-address mechanism or equivalent network enforcement **before enabling that mode on a shared installation**; "best-effort preflight leaves the policy unenforceable" | pin the IP for `fingerprint` in #90; `known_hosts` best effort until a dial flag is approved | agreed on pinning; **divergent** on `known_hosts` meanwhile | Pin now; `known_hosts` disabled on shared installations until a mechanism is approved (D12) |
+| V10 | Webhooks | R1: the receiving listener owns size and time policy. R3 (agree): keep production webhook policy with the runtime listener; commission a separate flow-format and runtime-configuration spec with per-trigger overrides and an instance ceiling | same; the knob does not exist yet (runtime fixed 1 MiB) | agreed | Separate runtime spec (non-goal here) |
 
 ## Open questions
 
-1. Confirm the provenance of `council/round-3-astra.md`, or obtain Astra's Round-3 reply after the
-   OpenAI limit resets. Then update the Council table and changelog.
-2. Final D3 value for login after checking field sizes, encodings and existing clients.
-3. Benchmarks for the D14 threshold and token count, and the `secret-bearing` envelope, on both
-   repositories.
-4. Does any instance hold trial data in the #90 connection/secret tables that must be migrated, or
-   is re-entry acceptable (assumed acceptable)?
-5. Name of the D4 configuration surface.
-6. Is c-ares DNS (no `/etc/hosts`) acceptable for Run, or is a bounded threadpool resolver required?
+1. Final D3 value for login after checking field sizes, encodings and existing clients.
+2. Benchmarks for the D14 threshold and token count, scan size, parse expansion and the
+   `secret-bearing` envelope, on both repositories. No production size distribution, PostgreSQL
+   boundary measurement or load-test result has been supplied to the council (Astra R3).
+3. Does any instance hold trial data in the #90 connection/secret tables that must be migrated, or
+   is re-entry acceptable (assumed acceptable; absent or unbound volatile credentials are treated as
+   `missing`)?
+4. Name of the D4 configuration surface.
+5. Is c-ares DNS (no `/etc/hosts`, different search resolution) acceptable for Run, or is a bounded
+   threadpool resolver required?
+6. Cross-provider (OpenAI) review of this spec, after the OpenAI usage limit resets.
 
 ## Improvement opportunities
 
@@ -424,9 +446,14 @@ The cross-provider (OpenAI) review of this spec is also pending.
 
 ## References
 
-- Council statements: Astra Round 1, Opus Round 2 (PR comments on this spec's pull request).
+- Council statements: Astra Round 1, Opus Round 2, Astra Round 3 (PR comments on this spec's pull
+  request).
 - Codex review and Astra review of PR #90, owner decision comment (links in Status).
 
 ## Changelog
 
 - 2026-11-24: created as a council draft by Claude Opus. Status draft, needs owner decision.
+- 2026-11-24: Astra's Round 3 (confirmed by the moderator) recorded. Council table now gives each
+  V-item's outcome; D-list marks D2, D4 (override rule) and D12 (`known_hosts`) as divergent. Binding
+  check now uses the snapshot's logical identity, not the child file after IP substitution. Status
+  still draft, needs owner decision.
