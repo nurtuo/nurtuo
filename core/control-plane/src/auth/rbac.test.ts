@@ -195,6 +195,17 @@ test("workspace creation is for session users only; creator owns it", async () =
   assert.deepEqual(mine.map((w: any) => [w.slug, w.role]).sort(), [["ws-a", "admin"], ["ws-new", "owner"]]);
 });
 
+test("escalation (characterization): a viewer can create a workspace today", async () => {
+  const { call, owner, member, login } = setup();
+  const { ws } = await owner("o@x.io", "default");
+  await member(ws.id, "viewer@x.io", "viewer");
+  const s = await login("viewer@x.io");
+  const r = await call("POST", "/v1/workspaces", { cookie: s.cookie, csrf: s.csrf, body: { slug: "mine", name: "m" } });
+  assert.equal(r.status, 201);
+  const mine = j(await call("GET", "/v1/workspaces", { cookie: s.cookie })).items;
+  assert.deepEqual(mine.map((w: any) => [w.slug, w.role]).sort(), [["default", "viewer"], ["mine", "owner"]]);
+});
+
 // ---- cross-workspace isolation ---------------------------------------------------------------------
 test("cross-workspace access is denied for users and tokens", async () => {
   const { call, owner, member, login } = setup();
