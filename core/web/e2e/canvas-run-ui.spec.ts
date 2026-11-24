@@ -261,7 +261,7 @@ test("TOFU stores nothing until Trust", async ({ page }) => {
   await d.getByRole("button", { name: "Save connection" }).click();
   await expect(d.getByRole("alert")).toContainText("A host key is required");
   expect(m.connections).toEqual([]);
-  expect(m.secretPuts).toEqual([]);
+  expect(m.connectionPuts).toEqual([]);
   await d.getByRole("button", { name: "Trust this key" }).click();
   await expect(d.getByLabel("Host key")).toHaveValue("SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
   await d.getByRole("button", { name: "Save connection" }).click();
