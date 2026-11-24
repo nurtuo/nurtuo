@@ -1,6 +1,8 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Spec: Bundle artifact delivery (`FetchArtifact`) and script modules in bundles
 
+> Superseded by `docs/specs/2026-11-24-bundle-artifact-delivery.md` (2026-11-24) — whole spec (script modules deferred, not specified there). Current state: see the new spec.
+
 Status: draft. Date: 2026-11-22.
 
 ## TLDR
