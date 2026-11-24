@@ -38,13 +38,20 @@ export function App() {
   const [showConnections, setShowConnections] = useState(false);
   const [showRun, setShowRun] = useState(false);
   const [run, setRun] = useState<RunState>(IDLE);
+  const listRequest = useRef<AbortController>(null);
+  const runRequest = useRef<AbortController>(null);
+  const currentWorkspace = useRef<string | null>(null);
 
   const enter = (me: { user: { email?: string } | null; workspaces: Session["workspaces"] }) => {
     setSession({ email: me.user?.email ?? "", workspaces: me.workspaces });
-    setWorkspaceId((cur) => cur ?? me.workspaces[0]?.id ?? null);
+    currentWorkspace.current ??= me.workspaces[0]?.id ?? null;
+    setWorkspaceId(currentWorkspace.current);
     localStorage.setItem(SESSION_HINT, "1");
   };
   const leave = () => {
+    currentWorkspace.current = null;
+    listRequest.current?.abort();
+    runRequest.current?.abort();
     setSession(null); setWorkspaceId(null); setConnections(null); setRun(IDLE);
     setShowRun(false); setShowConnections(false);
     localStorage.removeItem(SESSION_HINT);
@@ -58,16 +65,20 @@ export function App() {
   }, [cp]);
 
   const reloadConnections = async () => {
-    if (!workspaceId) return;
+    if (!workspaceId || workspaceId !== currentWorkspace.current) return;
+    listRequest.current?.abort();
+    const request = new AbortController();
+    listRequest.current = request;
     try {
-      setConnections(await cp.listConnections(workspaceId));
+      const items = await cp.listConnections(workspaceId, request.signal);
+      if (!request.signal.aborted) setConnections(items);
     } catch {
-      setConnections(null);
+      if (!request.signal.aborted) setConnections(null);
     }
   };
   useEffect(() => {
-    setConnections(null);
     void reloadConnections();
+    return () => listRequest.current?.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId]);
 
@@ -83,7 +94,23 @@ export function App() {
       return e instanceof ApiError ? e.message : describeApiError(e);
     }
   };
-  const onLogout = () => { void cp.logout().catch(() => undefined); leave(); };
+  const onLogout = async () => {
+    try {
+      await cp.logout();
+      leave();
+      return null;
+    } catch {
+      return "Could not revoke the session. Try logging out again.";
+    }
+  };
+
+  const changeWorkspace = (id: string) => {
+    currentWorkspace.current = id;
+    listRequest.current?.abort();
+    runRequest.current?.abort();
+    setWorkspaceId(id); setConnections(null); setRun(IDLE);
+    setShowRun(false); setShowConnections(false);
+  };
 
   const workspace = session?.workspaces.find((w) => w.id === workspaceId) ?? null;
   const canRun = workspace?.permissions.includes("test_run:execute") ?? false;
@@ -139,11 +166,15 @@ export function App() {
     const flow = state.flow;
     const flowHash = hashFlow(flow);
     const activeRun = { phase: "running", flowHash } as const;
+    runRequest.current?.abort();
+    const request = new AbortController();
+    runRequest.current = request;
     setRun(activeRun);
     try {
-      const result = await cp.testRun(workspaceId, { flow, input: { properties }, timeoutMs });
+      const result = await cp.testRun(workspaceId, { flow, input: { properties }, timeoutMs }, request.signal);
       setRun((r) => (r === activeRun ? { phase: "done", flowHash, result } : r));
     } catch (e) {
+      if (request.signal.aborted) return;
       if (e instanceof ApiError && e.status === 401) leave();
       if (e instanceof OfflineError) setOnline(false);
       setRun((r) => (r === activeRun ? { phase: "error", flowHash, message: describeApiError(e) } : r));
@@ -164,7 +195,7 @@ export function App() {
         <button disabled={runDisabledReason !== null} title={runDisabledReason ?? "Run this flow against your workspace connections"} onClick={() => setShowRun(true)}>Run</button>
         <span className="sep" />
         <LoginBar session={session} workspaceId={workspaceId} online={online} onLogin={onLogin} onLogout={onLogout}
-          onWorkspace={(id) => { setWorkspaceId(id); setRun(IDLE); setShowRun(false); setShowConnections(false); }} />
+          onWorkspace={changeWorkspace} />
         <input ref={fileRef} type="file" accept="application/json,.json" hidden
           onChange={(e) => { const f = e.target.files?.[0]; if (f) void onLoad(f); e.target.value = ""; }} />
         {loadError && <span className="err">{loadError}</span>}

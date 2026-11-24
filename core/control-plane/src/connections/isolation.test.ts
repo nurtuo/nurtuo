@@ -9,14 +9,12 @@ test("workspace A cannot list, get, put or delete workspace B's connections or s
   const { ws: b } = await w.owner("b@x.io", "ws-b");
   const A = await w.login("a@x.io"), B = await w.login("b@x.io");
   const as = (s: typeof A) => ({ cookie: s.cookie, csrf: s.csrf });
-  await w.call("PUT", `/v1/workspaces/${b.id}/connections/secret-conn`, { ...as(B), body: sftpConn({ password: "secret://b-pass" }) });
-  await w.call("PUT", `/v1/workspaces/${b.id}/secrets/b-pass`, { ...as(B), body: { value: "b-only-value" } });
+  await w.call("PUT", `/v1/workspaces/${b.id}/connections/secret-conn`, { ...as(B), body: { ...sftpConn(), credentials: { password: "b-only-value" } } });
 
   // A addressing B's workspace path: 404 (existence is not disclosed)
   for (const [m, p, body] of [
     ["GET", `/v1/workspaces/${b.id}/connections`], ["GET", `/v1/workspaces/${b.id}/connections/secret-conn`],
     ["PUT", `/v1/workspaces/${b.id}/connections/x`, sftpConn()], ["DELETE", `/v1/workspaces/${b.id}/connections/secret-conn`],
-    ["GET", `/v1/workspaces/${b.id}/secrets`], ["PUT", `/v1/workspaces/${b.id}/secrets/x`, { value: "v" }], ["DELETE", `/v1/workspaces/${b.id}/secrets/b-pass`],
   ] as Array<[string, string, unknown?]>) {
     const r = await w.call(m, p, { ...as(A), body });
     assert.equal(r.status, 404, `${m} ${p}`);
@@ -24,9 +22,7 @@ test("workspace A cannot list, get, put or delete workspace B's connections or s
   // A's own view: an id that exists only in B is a plain 404, the list is empty, and the secret does not exist
   assert.equal((await w.call("GET", `/v1/workspaces/${a.id}/connections/secret-conn`, { cookie: A.cookie })).status, 404);
   assert.deepEqual(j(await w.call("GET", `/v1/workspaces/${a.id}/connections`, { cookie: A.cookie })).items, []);
-  assert.deepEqual(j(await w.call("GET", `/v1/workspaces/${a.id}/secrets`, { cookie: A.cookie })).items, []);
-  assert.equal((await w.call("DELETE", `/v1/workspaces/${a.id}/secrets/b-pass`, as(A))).status, 404);
   // B is intact
   assert.equal(j(await w.call("GET", `/v1/workspaces/${b.id}/connections`, { cookie: B.cookie })).items.length, 1);
-  assert.equal(await w.secrets.reveal(b.id, "b-pass"), "b-only-value");
+  assert.equal(await w.secrets.reveal(b.id, String((await w.connections.get(b.id, "secret-conn"))?.settings.password).slice(9)), "b-only-value");
 });

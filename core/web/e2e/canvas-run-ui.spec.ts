@@ -10,7 +10,7 @@ const WS = { id: "ws-1", slug: "acme", name: "Acme", role: "editor", permissions
 
 interface Mock {
   connections: Record<string, unknown>[];
-  secretPuts: string[];
+  connectionPuts: unknown[];
   runBodies: unknown[];
   runResponse: { status?: number; body: unknown };
   workspace: typeof WS;
@@ -24,7 +24,7 @@ const OK_RUN = {
 };
 
 async function mockApi(page: Page, over: Partial<Mock> = {}): Promise<Mock> {
-  const m: Mock = { connections: [], secretPuts: [], runBodies: [], runResponse: { body: OK_RUN }, workspace: WS, ...over };
+  const m: Mock = { connections: [], connectionPuts: [], runBodies: [], runResponse: { body: OK_RUN }, workspace: WS, ...over };
   await page.route((u) => u.pathname.startsWith("/v1/"), async (route) => {
     const req = route.request();
     const { pathname } = new URL(req.url());
@@ -37,11 +37,16 @@ async function mockApi(page: Page, over: Partial<Mock> = {}): Promise<Mock> {
     }
     const c = /\/connections\/([^/]+)$/.exec(pathname);
     if (c && req.method() === "PUT") {
-      const b = req.postDataJSON() as { connector: string; settings: Record<string, unknown> };
-      m.connections.push({ id: c[1], connector: b.connector, settings: b.settings, secrets: { password: "set" }, updatedAt: "now" });
-      return json({});
+      const b = req.postDataJSON() as { connector: string; settings: Record<string, unknown>; credentials?: { password?: string } };
+      m.connectionPuts.push(b);
+      const index = m.connections.findIndex((item) => item.id === c[1]);
+      const previous = m.connections[index];
+      const settings = { ...(previous?.settings as object | undefined), ...b.settings };
+      if (b.credentials?.password) settings.password = "secret://server-assigned";
+      const connection = { id: c[1], connector: b.connector, settings, secrets: { password: "set" }, updatedAt: "now" };
+      m.connections.splice(index < 0 ? m.connections.length : index, index < 0 ? 0 : 1, connection);
+      return json(connection);
     }
-    if (/\/secrets\/[^/]+$/.test(pathname) && req.method() === "PUT") { m.secretPuts.push(pathname); return route.fulfill({ status: 204 }); }
     if (pathname.endsWith("/test-runs")) { m.runBodies.push(req.postDataJSON()); return json(m.runResponse.body, m.runResponse.status ?? 200); }
     return json({ error: { code: "not_found", message: "no mock" } }, 404);
   });
@@ -101,7 +106,7 @@ test("offline canvas is unchanged and Run is disabled", async ({ page }) => {
   await expect(page.getByRole("dialog").locator("label.field", { hasText: /^connection/ }).locator("input")).toHaveValue("rebex-demo");
 });
 
-test("create connection never sends the password to the connection endpoint", async ({ page }) => {
+test("create connection sends the password in a single write-only PUT", async ({ page }) => {
   const m = await mockApi(page);
   const sent: { url: string; body: string }[] = [];
   page.on("request", (r: Request) => { if (r.url().includes("/v1/") && r.method() !== "GET") sent.push({ url: new URL(r.url()).pathname, body: r.postData() ?? "" }); });
@@ -119,13 +124,38 @@ test("create connection never sends the password to the connection endpoint", as
   await d.getByRole("button", { name: "Save connection" }).click();
   await expect(d.locator('[data-connection="rebex-demo"]')).toBeVisible();
 
-  expect(m.secretPuts).toEqual(["/v1/workspaces/ws-1/secrets/rebex-demo-password"]);
+  expect(m.connectionPuts).toHaveLength(1);
   const withPassword = sent.filter((s) => s.body.includes(PASSWORD));
-  expect(withPassword.map((s) => s.url)).toEqual(["/v1/workspaces/ws-1/secrets/rebex-demo-password"]);
-  const conn = sent.find((s) => s.url.endsWith("/connections/rebex-demo"))!;
-  expect(JSON.parse(conn.body)).toMatchObject({ connector: "sftp", settings: { password: "secret://rebex-demo-password", hostKeyPolicy: "fingerprint", hostKeyFingerprint: "SHA256:abc123" } });
+  expect(withPassword.map((s) => s.url)).toEqual(["/v1/workspaces/ws-1/connections/rebex-demo"]);
+  expect(JSON.parse(withPassword[0]!.body)).toMatchObject({
+    connector: "sftp",
+    settings: { hostKeyPolicy: "fingerprint", hostKeyFingerprint: "SHA256:abc123" },
+    credentials: { password: PASSWORD },
+  });
+  expect(JSON.parse(withPassword[0]!.body).settings).not.toHaveProperty("password");
   expect(await d.getByLabel("password").inputValue()).toBe(""); // never pre-filled
   expect(errors).toEqual([]);
+});
+
+test("an API-created connection keeps server settings and credential when edited in canvas", async ({ page }) => {
+  const original = {
+    host: "sftp.example.com", user: "demo", port: 22,
+    hostKeyPolicy: "fingerprint", hostKeyFingerprint: "SHA256:abc123",
+    password: "secret://server-assigned-for-api", timeoutMs: 9000, maxListEntries: 42,
+  };
+  const m = await mockApi(page, { connections: [{ id: "from-api", connector: "sftp", settings: original, secrets: { password: "set" } }] });
+  await open(page);
+  await login(page);
+  await page.getByRole("button", { name: "Connections" }).click();
+  const dialog = page.getByRole("dialog", { name: "Connections" });
+  await dialog.locator('[data-connection="from-api"]').click();
+  await expect(dialog.getByLabel("password")).toHaveValue("");
+  await dialog.getByLabel("rootPath").fill("/reports");
+  await dialog.getByRole("button", { name: "Save connection" }).click();
+  await expect.poll(() => m.connectionPuts.length).toBe(1);
+  expect(m.connectionPuts[0]).not.toHaveProperty("credentials");
+  expect(m.connectionPuts[0]).not.toHaveProperty("settings.password");
+  expect(m.connections[0]?.settings).toEqual({ ...original, rootPath: "/reports" });
 });
 
 test("connector config offers workspace connections", async ({ page }) => {

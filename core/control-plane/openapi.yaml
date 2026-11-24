@@ -263,11 +263,30 @@ paths:
     put:
       operationId: putConnection
       description: |
-        EXPERIMENTAL. Creates (201) or replaces (200) a connection. Secret fields must be `secret://<name>`
-        references (400 `literal_secret`); `hostKeyPolicy: insecure` is 400 `insecure_host_key_not_allowed`;
-        missing host-key material is 400 `host_key_required`; a connector other than `sftp` is 400 `not_allowed_in_test_run`.
-      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [connector, settings], properties: { connector: { type: string, example: sftp }, settings: { type: object } } } } } }
-      responses: { "200": { description: Replaced, content: { application/json: { schema: { $ref: "#/components/schemas/Connection" } } } }, "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/Connection" } } } }, "400": { $ref: "#/components/responses/Error" }, "413": { $ref: "#/components/responses/PayloadTooLarge" }, "404": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+        EXPERIMENTAL. Creates (201) or updates (200) an SFTP connection. Omitted settings are preserved.
+        Credentials are write-only. An omitted field keeps its current version, a nonempty string sets a new
+        version, and null removes it. Changes to destination, trust or authentication fields require re-entry
+        of every retained credential (409 credential_rebind_required). Credential changes require a browser
+        session, CSRF, the applicable secret permission and trusted HTTPS or loopback.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [connector, settings]
+              properties:
+                connector: { type: string, example: sftp }
+                settings: { type: object, description: "Nonsecret settings, including a pinned fingerprint or a pasted known_hosts entry." }
+                credentials:
+                  type: object
+                  writeOnly: true
+                  additionalProperties: false
+                  properties:
+                    password: { type: string, nullable: true, writeOnly: true }
+                    privateKey: { type: string, nullable: true, writeOnly: true }
+                    passphrase: { type: string, nullable: true, writeOnly: true }
+      responses: { "200": { description: Updated, content: { application/json: { schema: { $ref: "#/components/schemas/Connection" } } } }, "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/Connection" } } } }, "400": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" }, "413": { $ref: "#/components/responses/PayloadTooLarge" }, "404": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" }, "503": { $ref: "#/components/responses/Error" } }
     delete:
       operationId: deleteConnection
       description: EXPERIMENTAL.
@@ -279,25 +298,6 @@ paths:
       description: EXPERIMENTAL. Fetches the SSH host key negotiated by SFTP without authentication or persistence.
       requestBody: { required: true, content: { application/json: { schema: { type: object, required: [host], properties: { host: { type: string }, port: { type: integer, minimum: 1, maximum: 65535, default: 22 } } } } } }
       responses: { "200": { description: Negotiated host key first, content: { application/json: { schema: { type: object, required: [keys], properties: { keys: { type: array, items: { type: object, required: [type, fingerprintSha256], properties: { type: { type: string }, fingerprintSha256: { type: string } } } } } } } } }, "400": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" }, "404": { $ref: "#/components/responses/Error" }, "413": { $ref: "#/components/responses/PayloadTooLarge" }, "429": { $ref: "#/components/responses/Error" }, "503": { $ref: "#/components/responses/Error" } }
-  /v1/workspaces/{ws}/secrets:
-    parameters: [ { $ref: "#/components/parameters/Ws" } ]
-    get:
-      operationId: listSecrets
-      description: EXPERIMENTAL. Secret names and update times only; values are never readable. Session users only.
-      responses: { "200": { description: OK, content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { type: object, properties: { name: { type: string }, updatedAt: { type: string, format: date-time } } } } } } } } }, "404": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
-  /v1/workspaces/{ws}/secrets/{name}:
-    parameters: [ { $ref: "#/components/parameters/Ws" }, { name: name, in: path, required: true, schema: { type: string } } ]
-    put:
-      operationId: putSecret
-      description: |
-        EXPERIMENTAL. Write-only; the value is held in the control-plane process memory (lost on restart) and never returned.
-        409 `secret_name_collision` when another name maps to the same environment variable. Session users only.
-      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [value], properties: { value: { type: string } } } } } }
-      responses: { "204": { description: Stored }, "400": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" }, "413": { $ref: "#/components/responses/PayloadTooLarge" }, "404": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
-    delete:
-      operationId: deleteSecret
-      description: EXPERIMENTAL. Session users only.
-      responses: { "204": { description: Deleted }, "404": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
   /v1/workspaces/{ws}/test-runs:
     parameters: [ { $ref: "#/components/parameters/Ws" } ]
     post:
@@ -306,7 +306,7 @@ paths:
         EXPERIMENTAL. Runs an inline `nurtuo.flow/v1` document synchronously through `nurtuo flow run` against
         workspace connections (sftp GET/QUERY only). A failed or stopped run is a 200 result, not an API error.
         Errors: 400 `invalid_flow`, `not_allowed_in_test_run`, `connection_required`, `host_not_allowed`;
-        404 `connection_not_found`; 409 `secret_missing`; 429 `too_many_runs`; 503 `test_run_unavailable`. Session users only.
+        404 `connection_not_found`; 409 `secret_missing`, `credential_unbound`, `dial_enforcement_unavailable`; 429 `too_many_runs`; 503 `test_run_unavailable`. Session users only.
       requestBody: { required: true, content: { application/json: { schema: { type: object, required: [flow], properties: { flow: { type: object }, input: { type: object, properties: { properties: { type: object, additionalProperties: { type: string } } } }, timeoutMs: { type: integer, minimum: 1000, maximum: 120000, default: 30000 } } } } } }
       responses: { "200": { description: Result, content: { application/json: { schema: { $ref: "#/components/schemas/TestRunResult" } } } }, "400": { $ref: "#/components/responses/Error" }, "404": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" }, "413": { $ref: "#/components/responses/PayloadTooLarge" }, "429": { $ref: "#/components/responses/Error" }, "503": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
 components:

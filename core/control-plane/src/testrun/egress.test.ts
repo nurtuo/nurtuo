@@ -28,7 +28,6 @@ async function runWorld() {
   const { ws } = await w.owner("o@x.io", "ws-a");
   const o = await w.login("o@x.io");
   await w.call("PUT", `/v1/workspaces/${ws.id}/connections/c1`, { cookie: o.cookie, csrf: o.csrf, body: sftpConn() });
-  await w.call("PUT", `/v1/workspaces/${ws.id}/secrets/c1-password`, { cookie: o.cookie, csrf: o.csrf, body: { value: "pw-value-123" } });
   const run = (body: unknown) => w.call("POST", `/v1/workspaces/${ws.id}/test-runs`, { cookie: o.cookie, csrf: o.csrf, body });
   return { ...w, ws, o, run };
 }
@@ -39,7 +38,6 @@ test("host resolving to a private address is refused before spawn; the allow swi
   const o = await w.login("o@x.io");
   const auth = { cookie: o.cookie, csrf: o.csrf };
   await w.call("PUT", `/v1/workspaces/${ws.id}/connections/c1`, { ...auth, body: sftpConn() });
-  await w.call("PUT", `/v1/workspaces/${ws.id}/secrets/c1-password`, { ...auth, body: { value: "pw-value-123" } });
   const pidfile = join(mkdtempSync(join(tmpdir(), "pid-")), "pid");
   const r = await w.call("POST", `/v1/workspaces/${ws.id}/test-runs`, { ...auth, body: { flow: flowOf(), input: { properties: { pidfile } } } });
   assert.equal(r.status, 400); assert.equal(j(r).error.code, "host_not_allowed");

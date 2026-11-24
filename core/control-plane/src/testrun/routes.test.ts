@@ -15,7 +15,6 @@ async function world(over: Parameters<typeof setup>[0] = {}) {
   const ed = await w.login("ed@x.io");
   const as = { cookie: ed.cookie, csrf: ed.csrf };
   await w.call("PUT", `/v1/workspaces/${ws.id}/connections/c1`, { ...as, body: sftpConn() });
-  await w.call("PUT", `/v1/workspaces/${ws.id}/secrets/c1-password`, { ...as, body: { value: "pw-value-123" } });
   const run = (props: Record<string, string> = {}, who = as) => w.call("POST", `/v1/workspaces/${ws.id}/test-runs`, { ...who, body: { flow: flowOf(), input: { properties: props } } });
   return { ...w, ws, ed, as, run };
 }

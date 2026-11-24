@@ -1,13 +1,48 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Egress check for server-side test runs (canvas-run spec D11): refuse hosts that resolve to loopback,
 // private, link-local, carrier-grade NAT or metadata ranges unless the operator allows them.
-// Best effort: the child resolves the name again (DNS rebinding, spec Gaps #3).
-import { lookup as dnsLookup } from "node:dns/promises";
+import { Resolver } from "node:dns/promises";
 import { isIP } from "node:net";
+import { logicalHost } from "../connections/binding.js";
 import { ApiError } from "../domain.js";
 
-export type Lookup = (host: string) => Promise<string[]>;
-export const defaultLookup: Lookup = async (host) => (await dnsLookup(host, { all: true, verbatim: true })).map((a) => a.address);
+export type Lookup = (host: string, signal?: AbortSignal) => Promise<string[]>;
+
+export const defaultLookup: Lookup = async (host, signal) => {
+  signal?.throwIfAborted();
+  const resolver = new Resolver({ timeout: 2000, tries: 2 });
+  const cancel = () => resolver.cancel();
+  signal?.addEventListener("abort", cancel, { once: true });
+  try {
+    const resolveFamily = async (answers: Promise<string[]>) => {
+      try { return await answers; }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENODATA") return [];
+        throw error;
+      }
+    };
+    const families = await Promise.all([resolveFamily(resolver.resolve4(`${host}.`)), resolveFamily(resolver.resolve6(`${host}.`))]);
+    return families.flat();
+  } finally {
+    signal?.removeEventListener("abort", cancel);
+    resolver.cancel();
+  }
+};
+
+async function lookupUntilAbort(lookup: Lookup, host: string, signal?: AbortSignal): Promise<string[]> {
+  signal?.throwIfAborted();
+  if (!signal) return lookup(host);
+  let cancel: () => void = () => {};
+  try {
+    const aborted = new Promise<never>((_, reject) => {
+      cancel = () => reject(signal.reason);
+      signal.addEventListener("abort", cancel, { once: true });
+    });
+    return await Promise.race([aborted, lookup(host, signal)]);
+  } finally {
+    signal.removeEventListener("abort", cancel);
+  }
+}
 
 /** Expands an IPv6 literal into eight 16-bit groups (an embedded dotted IPv4 tail is supported). */
 function groups6(ip: string): number[] | undefined {
@@ -50,15 +85,16 @@ export function isBlockedAddress(ip: string): boolean {
   return true;
 }
 
-export interface EgressOptions { allowPrivate: boolean; lookup?: Lookup }
+export interface EgressOptions { allowPrivate: boolean; lookup?: Lookup; signal?: AbortSignal }
 
 /** Throws 400 host_not_allowed when `host` resolves to a refused address (or does not resolve). */
-export async function checkEgress(host: string, o: EgressOptions): Promise<void> {
-  if (o.allowPrivate) return;
-  const bare = host.replace(/^\[|\]$/g, "");
+export async function checkEgress(host: string, o: EgressOptions): Promise<string> {
+  o.signal?.throwIfAborted();
+  const bare = logicalHost(host).replace(/^\[|\]$/g, "");
   let addrs: string[];
-  try { addrs = isIP(bare) ? [bare] : await (o.lookup ?? defaultLookup)(bare); }
-  catch { throw new ApiError(400, "host_not_allowed", `host "${host}" could not be resolved`); }
-  if (addrs.length === 0) throw new ApiError(400, "host_not_allowed", `host "${host}" could not be resolved`);
-  if (addrs.some(isBlockedAddress)) throw new ApiError(400, "host_not_allowed", `host "${host}" resolves to a loopback, private or link-local address; ask the operator to set NURTUO_TEST_RUN_ALLOW_PRIVATE=1 if this is intended`);
+  try { addrs = isIP(bare) ? [bare] : await lookupUntilAbort(o.lookup ?? defaultLookup, bare, o.signal); }
+  catch { o.signal?.throwIfAborted(); throw new ApiError(400, "host_not_allowed", `host "${host}" could not be resolved`); }
+  if (addrs.length === 0 || addrs.some((address) => !isIP(address))) throw new ApiError(400, "host_not_allowed", `host "${host}" could not be resolved`);
+  if (!o.allowPrivate && addrs.some(isBlockedAddress)) throw new ApiError(400, "host_not_allowed", `host "${host}" resolves to a loopback, private or link-local address; ask the operator to set NURTUO_TEST_RUN_ALLOW_PRIVATE=1 if this is intended`);
+  return addrs[0]!;
 }

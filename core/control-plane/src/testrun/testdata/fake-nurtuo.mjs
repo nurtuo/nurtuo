@@ -6,7 +6,7 @@ import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 
 const argv = process.argv.slice(2);
 if (argv[1] === "host-key") {
-  if (argv[0] !== "flow" || argv.slice(3).join(" ") !== "--port 22 --timeout 10s --json" ||
+  if (argv[0] !== "flow" || !/^--port 22 --timeout \d+ms --json$/.test(argv.slice(3).join(" ")) || argv[2] !== "8.8.8.8" ||
       Object.keys(process.env).some((name) => name.startsWith("NURTUO_"))) process.exit(2);
   console.log(JSON.stringify({ keys: [{ type: "ssh-ed25519", fingerprintSha256: "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" }] }));
   process.exit(0);
@@ -42,6 +42,11 @@ switch (props.mode ?? "echo") {
   case "sleep": hang(); break;
   case "ignoreterm": process.on("SIGTERM", () => {}); hang(); break;
   case "spool": writeFileSync(`${process.env.TMPDIR}/spool.bin`, Buffer.alloc(2 * 1024 * 1024, 1)); hang(); break;
+  case "stop-default": {
+    const i = flow.steps.findIndex((s) => s.kind === "stop");
+    process.stdout.write(JSON.stringify({ status: 200, documents: [], steps: allOk.slice(0, i + 1) }) + "\n");
+    break;
+  }
   case "stop": {
     const i = flow.steps.findIndex((s) => s.kind === "stop");
     fail("stopped", "flow stopped with status 404: gone", flow.steps.slice(0, i + 1).map((s) => stepOut(s)), 3);

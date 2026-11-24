@@ -105,8 +105,8 @@ test("undeploy removes the component from desired state and enqueues a change", 
 test("no-auth mode answers 404 (not 405) for workspace routes, including the canvas Run routes", async () => {
   const { call } = setup();
   for (const [m, p] of [
-    ["GET", "/v1/workspaces/w1/connections"], ["PUT", "/v1/workspaces/w1/connections/c1"], ["GET", "/v1/workspaces/w1/secrets"],
-    ["PUT", "/v1/workspaces/w1/secrets/s"], ["POST", "/v1/workspaces/w1/test-runs"], ["GET", "/v1/workspaces/w1/members"],
+    ["GET", "/v1/workspaces/w1/connections"], ["PUT", "/v1/workspaces/w1/connections/c1"],
+    ["POST", "/v1/workspaces/w1/test-runs"], ["GET", "/v1/workspaces/w1/members"],
   ] as const) {
     const r = await call(m, p, {});
     assert.equal(r.status, 404, `${m} ${p}`);
@@ -126,7 +126,7 @@ test("body over 1 MiB is 413 before parsing; a body under the limit still works"
   const { srv, base } = await serve({ auth: "disabled" });
   try {
     // not JSON on purpose: a parse error (400) would mean the limit was applied after parsing
-    const big = await fetch(`${base}/v1/components`, { method: "POST", headers: { "content-type": "application/json" }, body: "x".repeat(MAX_BODY_BYTES + 1) });
+    const big = await fetch(`${base}/v1/workspaces/ws/test-runs`, { method: "POST", headers: { "content-type": "application/json" }, body: "x".repeat(MAX_BODY_BYTES + 1) });
     assert.equal(big.status, 413);
     assert.equal(asAny(await big.json()).error.code, "payload_too_large");
     const ok = await fetch(`${base}/v1/components`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "small" }) });

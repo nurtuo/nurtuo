@@ -28,7 +28,6 @@ const EXPECT: Record<string, Role[]> = {
   // canvas Run (docs/specs/2026-11-23-canvas-run.md D6); the secret and test-run routes are userOnly
   "connection.list": ["owner", "admin", "editor", "viewer", "deployer"], "connection.get": ["owner", "admin", "editor", "viewer", "deployer"],
   "connection.put": EDIT, "connection.delete": EDIT, "connection.host_key_scan": EDIT,
-  "secret.list": ["owner", "admin", "editor", "viewer", "deployer"], "secret.put": EDIT, "secret.delete": EDIT,
   "test_run.execute": EDIT,
 };
 
@@ -40,7 +39,6 @@ const bodyFor = (action: string) =>
   : action === "member.update_role" ? { role: "viewer" }
   : action === "workspace.update" ? { name: "n" }
   : action === "token.create" ? { name: "n", scopes: ["component:read"] }
-  : action === "secret.put" ? { value: "v" }
   : action === "connection.put" ? { connector: "sftp", settings: {} }
   : {};
 

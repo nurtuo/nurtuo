@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { FAKE_NURTUO, flowOf, sftpConn } from "../auth/test-util.js";
+import { binding } from "../connections/binding.js";
 import { MemoryConnectionRepository } from "../connections/repository.js";
 import { MemorySecretStore } from "../connections/secrets.js";
 import { TestRunner, redact, type TestRunDeps } from "./runner.js";
@@ -14,9 +15,10 @@ const PW = "pw-value-123";
 async function world(over: Partial<TestRunDeps> = {}) {
   const connections = new MemoryConnectionRepository(), secrets = new MemorySecretStore();
   const tmpRoot = mkdtempSync(join(tmpdir(), "runner-test-"));
-  await connections.put("w1", { id: "c1", connector: "sftp", settings: sftpConn().settings });
-  await secrets.put("w1", "c1-password", PW);
-  const runner = new TestRunner({ connections, secrets, limiter: new RunLimiter(), bin: FAKE_NURTUO, lookup: async () => ["8.8.8.8"], tmpRoot, spoolPollMs: 20, killGraceMs: 300, deadlineSlackMs: 5000, ...over });
+  const c = { id: "c1", connector: "sftp", incarnation: "incarnation", settings: { ...sftpConn().settings, password: "secret://c1-password" } };
+  await connections.put("w1", c);
+  await secrets.put("w1", "c1-password", PW, binding(c, "password"));
+  const runner = new TestRunner({ connections, secrets, limiter: new RunLimiter(), bin: FAKE_NURTUO, lookup: async () => ["8.8.8.8"], tmpRoot, spoolPollMs: 20, killGraceMs: 300, ...over });
   const run = async (props: Record<string, string> = {}, extra: Record<string, unknown> = {}, signal?: AbortSignal) => {
     const r = await runner.run("w1", { flow: flowOf(), input: { properties: props }, ...extra }, signal);
     return { ...r, body: r.body as any };
@@ -40,7 +42,7 @@ test("argv array, minimal env, HOME and TMPDIR in the temp dir, secret as NURTUO
     assert.ok(info.argv.includes("--json") && info.argv.includes("--connection"));
     assert.ok(info.argv.includes("path=/a b.txt"));
     assert.ok(!info.argv.includes("--insecure-host-key"));
-    assert.equal(info.argv[info.argv.indexOf("--timeout") + 1], "30000ms");
+    assert.match(info.argv[info.argv.indexOf("--timeout") + 1], /^\d+ms$/);
     assert.equal(info.env.NURTUO_SECRET_C1_PASSWORD, PW, "prefix present exactly once");
     assert.equal(info.env.NURTUO_SECRET_NURTUO_SECRET_C1_PASSWORD, undefined);
     assert.equal(info.env.NURTUO_AUTH_SECRET, undefined);
@@ -85,7 +87,7 @@ test("connection and secret resolution: unknown connection 404, missing secret 4
   const { runner, secrets } = await world();
   await assert.rejects(runner.run("w1", { flow: flowOf("nope") }), (e: any) => e.status === 404 && e.code === "connection_not_found" && e.message.includes("nope"));
   await secrets.delete("w1", "c1-password");
-  await assert.rejects(runner.run("w1", { flow: flowOf() }), (e: any) => e.status === 409 && e.code === "secret_missing" && e.message.includes("c1-password") && e.message.includes("c1"));
+  await assert.rejects(runner.run("w1", { flow: flowOf() }), (e: any) => e.status === 409 && e.code === "secret_missing" && e.message.includes("password") && e.message.includes("c1"));
 });
 
 test("unavailable: no binary, not executable, or win32 -> 503", async () => {
@@ -104,6 +106,10 @@ test("status mapping: Stop step is stopped and parsed, later steps not_run", asy
   const r = (await runner.run("w1", { flow, input: { properties: { mode: "stop" } } })).body as any;
   assert.equal(r.status, "stopped");
   assert.deepEqual(r.stop, { status: 404, message: "gone" });
+  const omitted = (await runner.run("w1", { flow, input: { properties: { mode: "stop-default" } } })).body as any;
+  assert.equal(omitted.status, "stopped");
+  assert.deepEqual(omitted.stop, {});
+  assert.equal(omitted.steps[2].status, "stopped");
   assert.deepEqual(r.steps.map((s: any) => s.status), ["ok", "ok", "stopped", "not_run"]);
   assert.deepEqual(leftovers(), []);
 });
@@ -132,8 +138,8 @@ test("timeout: the CLI's 'timed out after' message is classified as code timeout
   assert.deepEqual(r.steps.map((s: any) => s.status), ["ok", "not_run", "not_run"]);
 });
 
-test("timeout: a child that outlives timeoutMs + slack is killed (SIGTERM, then SIGKILL), code timeout, temp dir removed", async () => {
-  const { run, leftovers } = await world({ deadlineSlackMs: 0 });
+test("timeout: a child that outlives timeoutMs is killed (SIGTERM, then SIGKILL), code timeout, temp dir removed", async () => {
+  const { run, leftovers } = await world();
   const pidfile = join(mkdtempSync(join(tmpdir(), "pid-")), "pid");
   const r = (await run({ mode: "ignoreterm", pidfile }, { timeoutMs: 1000 })).body;
   assert.equal(r.status, "failed"); assert.equal(r.error.code, "timeout");
@@ -202,4 +208,90 @@ test("semaphore: slots are released on every outcome", async () => {
   const lim = (w.runner as any).d.limiter as RunLimiter;
   const a = lim.tryAcquire("w1"), b = lim.tryAcquire("w1");
   assert.ok(a && b, "all slots free after the runs above");
+});
+
+test("stalled DNS releases both run and scan slots on deadline or disconnect", async () => {
+  const limiter = new RunLimiter(1, 1);
+  let started!: () => void;
+  const { runner, run, leftovers } = await world({
+    limiter, scanTimeoutMs: 40,
+    lookup: () => {
+      started();
+      return new Promise<string[]>(() => {});
+    },
+  });
+  for (const scan of [false, true]) {
+    for (const disconnect of [false, true]) {
+      const controller = new AbortController();
+      const resolving = new Promise<void>((resolve) => { started = resolve; });
+      const operation = scan
+        ? runner.scanHostKey("w1", { host: "sftp.example" }, controller.signal)
+        : run({}, { timeoutMs: 1000 }, controller.signal);
+      await resolving;
+      if (disconnect) {
+        controller.abort();
+        await assert.rejects(operation, { name: "AbortError" });
+      } else if (scan) {
+        await assert.rejects(operation, { code: "host_key_scan_failed" });
+      } else {
+        const result = await operation as Awaited<ReturnType<typeof run>>;
+        assert.equal(result.body.error.code, "timeout");
+      }
+      const release = limiter.tryAcquire("w1");
+      assert.ok(release);
+      release();
+      assert.deepEqual(leftovers(), []);
+    }
+  }
+});
+
+test("a stored credential from a different destination, field or connection never reaches the peer", async (t) => {
+  const { createServer } = await import("node:net");
+  const { setup } = await import("../auth/test-util.js");
+  let connections = 0;
+  const peer = createServer((socket) => { connections++; socket.destroy(); });
+  await new Promise<void>((resolve) => peer.listen(0, "127.0.0.1", resolve));
+  t.after(() => { peer.close(); });
+  const address = peer.address();
+  assert.ok(address && typeof address !== "string");
+  let queries = 0;
+  const w = setup({ testRun: {
+    bin: process.env.NURTUO_FLOW_RUN_BIN ?? FAKE_NURTUO,
+    allowPrivate: true,
+    lookup: async () => { queries++; return ["127.0.0.1"]; },
+  } });
+  const { ws } = await w.owner("binding@x.io", "binding");
+  const session = await w.login("binding@x.io");
+  const auth = { cookie: session.cookie, csrf: session.csrf };
+  const base = `/v1/workspaces/${ws.id}`;
+  const url = `${base}/connections/c1`;
+  const initial = await w.call("PUT", url, { ...auth, body: sftpConn() });
+  assert.equal(initial.status, 201);
+  const original = (await w.connections.get(ws.id, "c1"))!;
+  const proposed = { host: "other.example", port: address.port };
+  const reject = await w.call("PUT", url, { ...auth, body: { connector: "sftp", settings: proposed } });
+  assert.equal(reject.status, 409);
+  assert.equal((reject.body as any).error.code, "credential_rebind_required");
+
+  const run = (id: string) => w.call("POST", `${base}/test-runs`, { ...auth, body: { flow: flowOf(id) } });
+  const expectUnbound = async (id: string) => {
+    const result = await run(id);
+    assert.equal(result.status, 409);
+    assert.equal((result.body as any).error.code, "credential_unbound");
+  };
+  for (const settings of [
+    proposed, { port: address.port }, { user: "different" },
+    { hostKeyFingerprint: "SHA256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB" },
+    { password: undefined, privateKey: original.settings.password },
+    { user: original.settings.password },
+  ]) {
+    const updated: Record<string, unknown> = { ...original.settings, ...settings };
+    if (updated.password === undefined) delete updated.password;
+    await w.connections.put(ws.id, { ...original, settings: updated });
+    await expectUnbound("c1");
+  }
+  await w.connections.put(ws.id, { ...original, id: "c2", incarnation: "different-incarnation", settings: { ...original.settings, ...proposed } });
+  await expectUnbound("c2");
+  assert.equal(queries, 0);
+  assert.equal(connections, 0, "an unauthorized TCP peer must receive zero authentication attempts");
 });

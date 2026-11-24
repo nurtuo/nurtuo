@@ -9,10 +9,8 @@ test("a run in workspace A never uses B's connections or secrets (fake binary re
   const { ws: b } = await w.owner("b@x.io", "ws-b");
   const A = await w.login("a@x.io"), B = await w.login("b@x.io");
   const as = (s: typeof A) => ({ cookie: s.cookie, csrf: s.csrf });
-  await w.call("PUT", `/v1/workspaces/${b.id}/connections/only-b`, { ...as(B), body: sftpConn({ password: "secret://b-pass" }) });
-  await w.call("PUT", `/v1/workspaces/${b.id}/secrets/b-pass`, { ...as(B), body: { value: "B-SECRET-VALUE" } });
-  await w.call("PUT", `/v1/workspaces/${a.id}/connections/c1`, { ...as(A), body: sftpConn() });
-  await w.call("PUT", `/v1/workspaces/${a.id}/secrets/c1-password`, { ...as(A), body: { value: "A-SECRET-VALUE" } });
+  await w.call("PUT", `/v1/workspaces/${b.id}/connections/only-b`, { ...as(B), body: { ...sftpConn(), credentials: { password: "B-SECRET-VALUE" } } });
+  await w.call("PUT", `/v1/workspaces/${a.id}/connections/c1`, { ...as(A), body: { ...sftpConn(), credentials: { password: "A-SECRET-VALUE" } } });
 
   // A names a connection that exists only in B: the same 404 as for a missing id
   const foreign = await w.call("POST", `/v1/workspaces/${a.id}/test-runs`, { ...as(A), body: { flow: flowOf("only-b") } });
@@ -26,7 +24,7 @@ test("a run in workspace A never uses B's connections or secrets (fake binary re
   // A legitimate run reveals only A's secret to the child
   const ok = await w.call("POST", `/v1/workspaces/${a.id}/test-runs`, { ...as(A), body: { flow: flowOf("c1"), input: { properties: { mode: "echo" } } } });
   const info = JSON.parse(Buffer.from(j(ok).documents[0].payload, "base64").toString());
-  assert.equal(info.env.NURTUO_SECRET_C1_PASSWORD, "A-SECRET-VALUE");
+  assert.deepEqual(Object.entries(info.env).filter(([key]) => key.startsWith("NURTUO_SECRET_")).map(([, value]) => value), ["A-SECRET-VALUE"]);
   assert.ok(!JSON.stringify(info).includes("B-SECRET-VALUE"));
   assert.equal(Object.keys(info.env).filter((k) => k.startsWith("NURTUO_SECRET_")).length, 1);
 });

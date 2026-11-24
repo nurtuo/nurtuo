@@ -30,7 +30,7 @@ describe("ControlPlane client", () => {
     expect(cp.csrfToken).toBeNull();
     const me = await cp.me();
     expect(me?.workspaces).toHaveLength(1);
-    await cp.putSecret("w", "n", "v");
+    await cp.putConnection("w", "c1", { connector: "sftp", settings: {}, credentials: { password: "v" } });
     expect(hdr(calls.at(-1)!, "x-nurtuo-csrf")).toBe("restored");
   });
 
@@ -46,14 +46,12 @@ describe("ControlPlane client", () => {
     expect(calls[0]!.init.method).toBe("POST");
   });
 
-  it("the password appears only in the secrets request, never in the connection request", async () => {
+  it("sends the password in the write-only credentials member of a single PUT", async () => {
     const { cp, calls } = fake(() => new Response(null, { status: 204 }));
-    await cp.putSecret("w", "c1-password", "hunter2");
-    await cp.putConnection("w", "c1", { connector: "sftp", settings: { password: "secret://c1-password" } });
-    expect(calls[0]!.url).toContain("/secrets/c1-password");
-    expect(String(calls[0]!.init.body)).toContain("hunter2");
-    expect(calls[1]!.url).not.toContain("secrets");
-    expect(String(calls[1]!.init.body)).not.toContain("hunter2");
+    await cp.putConnection("w", "c1", { connector: "sftp", settings: {}, credentials: { password: "test-value" } });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe("/v1/workspaces/w/connections/c1");
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ connector: "sftp", settings: {}, credentials: { password: "test-value" } });
   });
 
   it("maps errors", async () => {

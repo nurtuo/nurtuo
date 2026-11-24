@@ -590,9 +590,11 @@ export interface paths {
         /** @description EXPERIMENTAL. A connection of another workspace answers 404, like a missing one. */
         get: operations["getConnection"];
         /**
-         * @description EXPERIMENTAL. Creates (201) or replaces (200) a connection. Secret fields must be `secret://<name>`
-         *     references (400 `literal_secret`); `hostKeyPolicy: insecure` is 400 `insecure_host_key_not_allowed`;
-         *     missing host-key material is 400 `host_key_required`; a connector other than `sftp` is 400 `not_allowed_in_test_run`.
+         * @description EXPERIMENTAL. Creates (201) or updates (200) an SFTP connection. Omitted settings are preserved.
+         *     Credentials are write-only. An omitted field keeps its current version, a nonempty string sets a new
+         *     version, and null removes it. Changes to destination, trust or authentication fields require re-entry
+         *     of every retained credential (409 credential_rebind_required). Credential changes require a browser
+         *     session, CSRF, the applicable secret permission and trusted HTTPS or loopback.
          */
         put: operations["putConnection"];
         post?: never;
@@ -623,51 +625,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/workspaces/{ws}/secrets": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Workspace id or slug */
-                ws: components["parameters"]["Ws"];
-            };
-            cookie?: never;
-        };
-        /** @description EXPERIMENTAL. Secret names and update times only; values are never readable. Session users only. */
-        get: operations["listSecrets"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/workspaces/{ws}/secrets/{name}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Workspace id or slug */
-                ws: components["parameters"]["Ws"];
-                name: string;
-            };
-            cookie?: never;
-        };
-        get?: never;
-        /**
-         * @description EXPERIMENTAL. Write-only; the value is held in the control-plane process memory (lost on restart) and never returned.
-         *     409 `secret_name_collision` when another name maps to the same environment variable. Session users only.
-         */
-        put: operations["putSecret"];
-        post?: never;
-        /** @description EXPERIMENTAL. Session users only. */
-        delete: operations["deleteSecret"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/workspaces/{ws}/test-runs": {
         parameters: {
             query?: never;
@@ -684,7 +641,7 @@ export interface paths {
          * @description EXPERIMENTAL. Runs an inline `nurtuo.flow/v1` document synchronously through `nurtuo flow run` against
          *     workspace connections (sftp GET/QUERY only). A failed or stopped run is a 200 result, not an API error.
          *     Errors: 400 `invalid_flow`, `not_allowed_in_test_run`, `connection_required`, `host_not_allowed`;
-         *     404 `connection_not_found`; 409 `secret_missing`; 429 `too_many_runs`; 503 `test_run_unavailable`. Session users only.
+         *     404 `connection_not_found`; 409 `secret_missing`, `credential_unbound`, `dial_enforcement_unavailable`; 429 `too_many_runs`; 503 `test_run_unavailable`. Session users only.
          */
         post: operations["createTestRun"];
         delete?: never;
@@ -2153,12 +2110,18 @@ export interface operations {
                 "application/json": {
                     /** @example sftp */
                     connector: string;
+                    /** @description Nonsecret settings, including a pinned fingerprint or a pasted known_hosts entry. */
                     settings: Record<string, never>;
+                    credentials?: {
+                        password?: string | null;
+                        privateKey?: string | null;
+                        passphrase?: string | null;
+                    };
                 };
             };
         };
         responses: {
-            /** @description Replaced */
+            /** @description Updated */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2180,7 +2143,9 @@ export interface operations {
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
             413: components["responses"]["PayloadTooLarge"];
+            503: components["responses"]["Error"];
         };
     };
     deleteConnection: {
@@ -2249,97 +2214,6 @@ export interface operations {
             413: components["responses"]["PayloadTooLarge"];
             429: components["responses"]["Error"];
             503: components["responses"]["Error"];
-        };
-    };
-    listSecrets: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Workspace id or slug */
-                ws: components["parameters"]["Ws"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        items?: {
-                            name?: string;
-                            /** Format: date-time */
-                            updatedAt?: string;
-                        }[];
-                    };
-                };
-            };
-            401: components["responses"]["Unauthenticated"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["Error"];
-        };
-    };
-    putSecret: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Workspace id or slug */
-                ws: components["parameters"]["Ws"];
-                name: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": {
-                    value: string;
-                };
-            };
-        };
-        responses: {
-            /** @description Stored */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            400: components["responses"]["Error"];
-            401: components["responses"]["Unauthenticated"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["Error"];
-            409: components["responses"]["Error"];
-            413: components["responses"]["PayloadTooLarge"];
-        };
-    };
-    deleteSecret: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Workspace id or slug */
-                ws: components["parameters"]["Ws"];
-                name: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Deleted */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            401: components["responses"]["Unauthenticated"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["Error"];
         };
     };
     createTestRun: {

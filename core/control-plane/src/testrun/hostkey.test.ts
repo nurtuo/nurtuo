@@ -30,5 +30,4 @@ test("host-key scan checks egress, shares the run limit and persists nothing", a
   assert.equal(result.status, 200);
   assert.deepEqual(j(result).keys, [{ type: "ssh-ed25519", fingerprintSha256: "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" }]);
   assert.deepEqual(j(await w.call("GET", `${base}/connections`, as)).items, []);
-  assert.deepEqual(j(await w.call("GET", `${base}/secrets`, as)).items, []);
 });

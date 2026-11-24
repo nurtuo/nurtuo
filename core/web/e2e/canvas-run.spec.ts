@@ -88,7 +88,7 @@ async function run(page: Page) {
 }
 
 test.afterAll(async ({ browser }) => {
-  // Cleanup: delete what the tests created (connections through the UI endpoint, secrets through the API).
+  // Delete the test connections and their owned credentials.
   const page = await browser.newPage();
   try {
     await login(page);
@@ -97,7 +97,6 @@ test.afterAll(async ({ browser }) => {
       const ws = me.workspaces[0].id, h = { "x-nurtuo-csrf": me.csrfToken };
       for (const id of ids) {
         await fetch(`/v1/workspaces/${ws}/connections/${id}`, { method: "DELETE", headers: h });
-        await fetch(`/v1/workspaces/${ws}/secrets/${id}-password`, { method: "DELETE", headers: h });
       }
     }, created);
   } finally { await page.close(); }

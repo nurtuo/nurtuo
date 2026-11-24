@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { flowOf } from "../auth/test-util.js";
+import { binding } from "../connections/binding.js";
 import { MemoryConnectionRepository } from "../connections/repository.js";
 import { MemorySecretStore } from "../connections/secrets.js";
 import { TestRunner } from "./runner.js";
@@ -15,8 +16,9 @@ const skip = !ready && "NURTUO_FLOW_RUN_BIN / NURTUO_TEST_SFTP_* not set";
 
 async function world(password: string, fingerprint = e.NURTUO_TEST_SFTP_FINGERPRINT!) {
   const connections = new MemoryConnectionRepository(), secrets = new MemorySecretStore();
-  await connections.put("w", { id: "real", connector: "sftp", settings: { host: e.NURTUO_TEST_SFTP_HOST, port: Number(e.NURTUO_TEST_SFTP_PORT), user: e.NURTUO_TEST_SFTP_USER, password: "secret://real-password", hostKeyPolicy: "fingerprint", hostKeyFingerprint: fingerprint } });
-  await secrets.put("w", "real-password", password);
+  const c = { id: "real", connector: "sftp", incarnation: "test-incarnation", settings: { host: e.NURTUO_TEST_SFTP_HOST, port: Number(e.NURTUO_TEST_SFTP_PORT), user: e.NURTUO_TEST_SFTP_USER, password: "secret://real-password", hostKeyPolicy: "fingerprint", hostKeyFingerprint: fingerprint } };
+  await connections.put("w", c);
+  await secrets.put("w", "real-password", password, binding(c, "password"));
   return new TestRunner({ connections, secrets, limiter: new RunLimiter(), bin: e.NURTUO_FLOW_RUN_BIN, allowPrivate: true });
 }
 

@@ -128,17 +128,18 @@ export class ControlPlane {
   async logout(): Promise<void> {
     try {
       await this.request("POST", "/v1/auth/logout");
-    } finally {
-      this.csrf = null;
+    } catch (error) {
+      if (!(error instanceof ApiError && error.status === 401)) throw error;
     }
+    this.csrf = null;
   }
 
   private ws = (ws: string) => `/v1/workspaces/${encodeURIComponent(ws)}`;
 
-  async listConnections(ws: string): Promise<ConnectionItem[]> {
-    return (await this.request<{ items: ConnectionItem[] }>("GET", `${this.ws(ws)}/connections`)).items;
+  async listConnections(ws: string, signal?: AbortSignal): Promise<ConnectionItem[]> {
+    return (await this.request<{ items: ConnectionItem[] }>("GET", `${this.ws(ws)}/connections`, undefined, signal)).items;
   }
-  putConnection(ws: string, id: string, body: { connector: string; settings: Record<string, unknown> }): Promise<unknown> {
+  putConnection(ws: string, id: string, body: { connector: string; settings: Record<string, unknown>; credentials?: Record<string, string | null> }): Promise<unknown> {
     return this.request("PUT", `${this.ws(ws)}/connections/${encodeURIComponent(id)}`, body);
   }
   scanHostKey(ws: string, host: string, port: number): Promise<{ keys: { type: string; fingerprintSha256: string }[] }> {
@@ -146,13 +147,6 @@ export class ControlPlane {
   }
   deleteConnection(ws: string, id: string): Promise<void> {
     return this.request("DELETE", `${this.ws(ws)}/connections/${encodeURIComponent(id)}`);
-  }
-  /** The secret value is sent only here. */
-  putSecret(ws: string, name: string, value: string): Promise<void> {
-    return this.request("PUT", `${this.ws(ws)}/secrets/${encodeURIComponent(name)}`, { value });
-  }
-  deleteSecret(ws: string, name: string): Promise<void> {
-    return this.request("DELETE", `${this.ws(ws)}/secrets/${encodeURIComponent(name)}`);
   }
   testRun(ws: string, req: TestRunRequest, signal?: AbortSignal): Promise<TestRunResponse> {
     return this.request("POST", `${this.ws(ws)}/test-runs`, req, signal);

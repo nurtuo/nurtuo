@@ -14,10 +14,11 @@ export function LoginBar({ session, workspaceId, onWorkspace, online, onLogin, o
   onWorkspace: (id: string) => void;
   online: boolean;
   onLogin: (email: string, password: string) => Promise<string | null>;
-  onLogout: () => void;
+  onLogout: () => Promise<string | null>;
 }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [loggingOut, setLoggingOut] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   if (session) {
@@ -27,7 +28,13 @@ export function LoginBar({ session, workspaceId, onWorkspace, online, onLogin, o
           {session.workspaces.map((w) => <option key={w.id} value={w.id}>{w.name} ({w.role})</option>)}
         </select>
         <span title={session.email}>{session.email}</span>
-        <button onClick={onLogout}>Log out</button>
+        <button disabled={loggingOut} onClick={async () => {
+          setErr(null);
+          setLoggingOut(true);
+          setErr(await onLogout());
+          setLoggingOut(false);
+        }}>Log out</button>
+        {err && <span className="err" role="alert">{err}</span>}
       </span>
     );
   }

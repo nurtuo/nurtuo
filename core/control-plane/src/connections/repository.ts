@@ -4,16 +4,20 @@
 export interface Connection {
   id: string;
   connector: string;
+  incarnation?: string;
+  generation?: string;
   /** Non-secret settings; secret fields hold `secret://<name>` references only. */
   settings: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
 }
 
+export type ConnectionWrite = Pick<Connection, "id" | "connector" | "settings" | "incarnation" | "generation">;
+
 export interface ConnectionRepository {
   list(workspaceId: string): Promise<Connection[]>;
   get(workspaceId: string, id: string): Promise<Connection | undefined>;
-  put(workspaceId: string, c: { id: string; connector: string; settings: Record<string, unknown> }): Promise<{ connection: Connection; created: boolean }>;
+  put(workspaceId: string, c: ConnectionWrite): Promise<{ connection: Connection; created: boolean }>;
   delete(workspaceId: string, id: string): Promise<boolean>;
   /** Removes every connection of a workspace (the Postgres backend cascades on its own). */
   purge(workspaceId: string): Promise<void>;
@@ -24,11 +28,11 @@ export class MemoryConnectionRepository implements ConnectionRepository {
 
   async list(ws: string) { return [...(this.byWs.get(ws)?.values() ?? [])].map((c) => structuredClone(c)).sort((a, b) => a.id.localeCompare(b.id)); }
   async get(ws: string, id: string) { const c = this.byWs.get(ws)?.get(id); return c && structuredClone(c); }
-  async put(ws: string, c: { id: string; connector: string; settings: Record<string, unknown> }) {
+  async put(ws: string, c: ConnectionWrite) {
     const m = this.byWs.get(ws) ?? new Map<string, Connection>();
     const prev = m.get(c.id);
     const now = new Date().toISOString();
-    const connection: Connection = { id: c.id, connector: c.connector, settings: structuredClone(c.settings), createdAt: prev?.createdAt ?? now, updatedAt: now };
+    const connection: Connection = { ...c, settings: structuredClone(c.settings), createdAt: prev?.createdAt ?? now, updatedAt: now };
     m.set(c.id, connection);
     this.byWs.set(ws, m);
     return { connection: structuredClone(connection), created: !prev };

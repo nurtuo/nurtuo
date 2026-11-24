@@ -1,47 +1,38 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { j, setup } from "../auth/test-util.js";
+import { j, setup, sftpConn } from "../auth/test-util.js";
 
-const VALUE = "super-secret-value-9f3a";
-
-test("secrets are write-only: PUT 204, list shows names only, no route returns a value, audit has no value", async () => {
+test("only a session with CSRF over trusted transport can write credentials, and no response or audit contains their value", async () => {
   const w = setup();
   const { ws } = await w.owner("o@x.io", "ws-a");
-  const o = await w.login("o@x.io");
-  const url = `/v1/workspaces/${ws.id}/secrets`;
-  const auth = { cookie: o.cookie, csrf: o.csrf };
-  assert.equal((await w.call("PUT", `${url}/db-password`, { ...auth, body: { value: VALUE } })).status, 204);
-  const list = await w.call("GET", url, { cookie: o.cookie });
-  assert.deepEqual(j(list).items.map((x: any) => Object.keys(x).sort()), [["name", "updatedAt"]]);
-  assert.ok(!JSON.stringify(list.body).includes(VALUE));
-  const direct = await w.call("GET", `${url}/db-password`, { cookie: o.cookie }); // no such route: fail closed
-  assert.equal(direct.status, 403);
-  assert.ok(!JSON.stringify(direct.body).includes(VALUE));
-  const aud = await w.call("GET", `/v1/workspaces/${ws.id}/audit`, { cookie: o.cookie });
-  assert.ok(!JSON.stringify(aud.body).includes(VALUE));
-  assert.ok(j(aud).items.some((e: any) => e.action === "secret.put" && e.resourceId === "db-password"));
-  assert.equal((await w.call("DELETE", `${url}/db-password`, auth)).status, 204);
-  assert.equal((await w.call("DELETE", `${url}/db-password`, auth)).status, 404);
-});
-
-test("secret_name_collision and input validation", async () => {
-  const w = setup();
-  const { ws } = await w.owner("o@x.io", "ws-a");
-  const o = await w.login("o@x.io");
-  const put = (n: string, body: unknown) => w.call("PUT", `/v1/workspaces/${ws.id}/secrets/${n}`, { cookie: o.cookie, csrf: o.csrf, body });
-  assert.equal((await put("a-b", { value: "1" })).status, 204);
-  const c = await put("a_b", { value: "2" });
-  assert.equal(c.status, 409); assert.equal(j(c).error.code, "secret_name_collision");
-  assert.equal((await put("ok", { value: "" })).status, 400);
-  assert.equal((await put("ok", {})).status, 400);
-  assert.equal((await put("-bad", { value: "x" })).status, 400);
-});
-
-test("API tokens are refused on secret routes (userOnly)", async () => {
-  const w = setup();
-  const { ws } = await w.owner("o@x.io", "ws-a");
+  const owner = await w.login("o@x.io");
   const { token } = await w.member(ws.id, "ed@x.io", "editor");
-  assert.equal((await w.call("PUT", `/v1/workspaces/${ws.id}/secrets/x`, { token: token.raw, body: { value: "v" } })).status, 403);
-  assert.equal((await w.call("GET", `/v1/workspaces/${ws.id}/secrets`, { token: token.raw })).status, 403);
+  const path = `/v1/workspaces/${ws.id}/connections/c1`;
+  const auth = { cookie: owner.cookie, csrf: owner.csrf };
+  const body = sftpConn();
+  const put = (options: Parameters<typeof w.call>[2]) => w.call("PUT", path, { body, ...options });
+  assert.equal((await put({ token: token.raw })).status, 403);
+  assert.equal(j(await put({ cookie: owner.cookie })).error.code, "csrf");
+  assert.equal(j(await put({ ...auth, ip: "192.0.2.1", headers: { "x-forwarded-proto": "https" } })).error.code, "tls_required");
+  assert.equal((await w.call("GET", path, auth)).status, 404);
+  const result = await put(auth);
+  assert.equal(result.status, 201);
+  assert.equal(j(result).secrets.password, "set");
+  for (const response of [result, await w.call("GET", path, auth), await w.call("GET", `/v1/workspaces/${ws.id}/audit`, auth)]) {
+    assert.ok(!JSON.stringify(response.body).includes(body.credentials.password));
+  }
+  const legacy = await w.call("PUT", `/v1/workspaces/${ws.id}/secrets/old`, { ...auth, body: { value: "unused" } });
+  assert.equal(j(legacy).error.code, "no_policy");
+});
+
+test("trusted proxy must assert HTTPS, even from loopback", async () => {
+  const w = setup({ hook: { trustProxy: true } });
+  const { ws } = await w.owner("o@x.io", "ws-a");
+  const owner = await w.login("o@x.io");
+  const put = (proto: string) => w.call("PUT", `/v1/workspaces/${ws.id}/connections/c1`, {
+    cookie: owner.cookie, csrf: owner.csrf, headers: { "x-forwarded-proto": proto }, body: sftpConn(),
+  });
+  assert.equal(j(await put("http")).error.code, "tls_required");
+  assert.equal((await put("https")).status, 201);
 });

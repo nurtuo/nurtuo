@@ -8,10 +8,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hasErrors, validateFlow } from "@nurtuo/flow-validate";
 import { ApiError } from "../domain.js";
+import { binding, checkSecretPlacement } from "../connections/binding.js";
+import { ConnectionCoordinator } from "../connections/coordinator.js";
 import type { ConnectionRepository } from "../connections/repository.js";
 import { envVar } from "../connections/env-var.js";
 import type { SecretStore } from "../connections/secrets.js";
-import { secretRefs } from "../connections/validate.js";
+import { secretRefs, validateConnection, validateConnectionId } from "../connections/validate.js";
 import { checkEgress, type Lookup } from "./egress.js";
 import { checkFlowPolicy, type FlowStep } from "./policy.js";
 import type { RunLimiter } from "./semaphore.js";
@@ -24,6 +26,7 @@ const PROP_KEY = /^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/;
 export interface TestRunDeps {
   connections: ConnectionRepository;
   secrets: SecretStore;
+  coordinator?: ConnectionCoordinator;
   limiter: RunLimiter;
   /** Absolute path of the nurtuo binary (NURTUO_FLOW_RUN_BIN). */
   bin?: string;
@@ -33,7 +36,7 @@ export interface TestRunDeps {
   tmpRoot?: string;
   /** Test knobs; defaults are the spec's limits. */
   killGraceMs?: number;
-  deadlineSlackMs?: number;
+  scanTimeoutMs?: number;
   spoolPollMs?: number;
   spoolLimitBytes?: number;
   stdoutLimit?: number;
@@ -67,14 +70,16 @@ async function dirSize(dir: string): Promise<number> {
 }
 
 export class TestRunner {
-  constructor(private d: TestRunDeps) {}
+  private coordinator: ConnectionCoordinator;
+
+  constructor(private d: TestRunDeps) { this.coordinator = d.coordinator ?? new ConnectionCoordinator(); }
 
   async available(): Promise<boolean> {
     if ((this.d.platform ?? process.platform) === "win32" || !this.d.bin) return false;
     try { await access(this.d.bin, constants.X_OK); return true; } catch { return false; }
   }
 
-  async run(workspaceId: string, req: TestRunRequest, signal?: AbortSignal): Promise<RunOutcome> {
+  async run(workspaceId: string, req: TestRunRequest, signal?: AbortSignal, authorize?: () => Promise<void>): Promise<RunOutcome> {
     const d = this.d;
     if (!(await this.available())) throw new ApiError(503, "test_run_unavailable", "test runs are not configured on this server");
 
@@ -83,58 +88,96 @@ export class TestRunner {
     if (typeof timeoutMs !== "number" || !Number.isInteger(timeoutMs) || timeoutMs < MIN_TIMEOUT_MS || timeoutMs > MAX_TIMEOUT_MS) throw new ApiError(400, "bad_request", `timeoutMs must be an integer between ${MIN_TIMEOUT_MS} and ${MAX_TIMEOUT_MS}`);
     const props = this.inputProperties(req.input);
 
-    // 2. flow validation and D11 policy
-    const diags = validateFlow(req.flow);
-    if (hasErrors(diags)) return { status: 400, body: { error: { code: "invalid_flow", message: "the flow is not valid", diagnostics: diags } } };
-    const flow = req.flow as { steps: FlowStep[] };
-    const uses = checkFlowPolicy(flow.steps);
-
     const release = d.limiter.tryAcquire(workspaceId);
     if (!release) throw new ApiError(429, "too_many_runs", "another run is in progress, retry shortly");
+    const started = Date.now();
+    const runId = randomUUID();
+    const deadlineController = new AbortController();
+    const deadline = deadlineController.signal;
+    const timer = setTimeout(() => deadlineController.abort(), timeoutMs);
+    const operation = signal ? AbortSignal.any([signal, deadline]) : deadline;
     let tmp: string | undefined;
+    let steps: FlowStep[] = [];
     try {
+      operation.throwIfAborted();
+      const diags = validateFlow(req.flow);
+      if (hasErrors(diags)) return { status: 400, body: { error: { code: "invalid_flow", message: "the flow is not valid", diagnostics: diags } } };
+      steps = (req.flow as { steps: FlowStep[] }).steps;
+      const uses = checkFlowPolicy(steps);
+
       // 3. connections and secrets of this workspace only
       const ids = [...new Set(uses.map((u) => u.connection))];
-      const conns = [];
-      const env: Record<string, string> = {};
-      const secretValues: string[] = [];
-      for (const id of ids) {
-        const c = await d.connections.get(workspaceId, id);
-        if (!c) throw new ApiError(404, "connection_not_found", `connection "${id}" not found`);
-        for (const r of secretRefs(c.connector, c.settings)) {
-          const v = await d.secrets.reveal(workspaceId, r.name);
-          if (v === undefined) throw new ApiError(409, "secret_missing", `secret "${r.name}" of connection "${id}" is not set; open Connections and enter it again`);
-          env[envVar(r.name)] = v;
-          secretValues.push(v);
+      const { conns, env, secretValues } = await this.coordinator.withWorkspace(workspaceId, async () => {
+        operation.throwIfAborted();
+        await authorize?.();
+        const conns = [];
+        for (const id of ids) {
+          operation.throwIfAborted();
+          const reconciled = await this.coordinator.reconcile(d.connections, d.secrets, workspaceId, id);
+          const c = reconciled ?? await d.connections.get(workspaceId, id);
+          if (!c) throw new ApiError(404, "connection_not_found", `connection "${id}" not found`);
+          if (c.settings.hostKeyPolicy !== "fingerprint") throw new ApiError(409, "dial_enforcement_unavailable", "test runs require a pinned SSH host key fingerprint");
+          try {
+            validateConnectionId(c.id);
+            if (c.id !== id) throw new Error("connection id mismatch");
+            checkSecretPlacement(c.connector, c.settings, true);
+            validateConnection(c.connector, c.settings);
+            if (c.settings.passphrase && !c.settings.privateKey) throw new Error("invalid credential set");
+          } catch {
+            throw new ApiError(409, "credential_unbound", "stored connection has invalid settings");
+          }
+          conns.push(c);
         }
-        conns.push(c);
-      }
+        operation.throwIfAborted();
+        const env: Record<string, string> = {};
+        const secretValues: string[] = [];
+        for (const c of conns) {
+          if (!c.incarnation) throw new ApiError(409, "credential_unbound", "re-enter the connection credentials");
+          for (const { field, name } of secretRefs(c.connector, c.settings)) {
+            const key = envVar(name);
+            if (Object.hasOwn(env, key)) throw new ApiError(409, "credential_unbound", "credential reference is shared");
+            const value = d.secrets.acquire(workspaceId, name, binding(c, field));
+            if (value === undefined) throw new ApiError(409, "secret_missing", `credential "${field}" of connection "${c.id}" is not set; open Connections and enter it again`);
+            env[key] = value;
+            secretValues.push(value);
+          }
+        }
+        return { conns, env, secretValues };
+      });
       // 4. egress
-      for (const c of conns) await checkEgress(String(c.settings.host ?? ""), { allowPrivate: d.allowPrivate ?? false, lookup: d.lookup });
+      const dialAddresses = [];
+      for (const c of conns) dialAddresses.push(await checkEgress(String(c.settings.host ?? ""), {
+        allowPrivate: d.allowPrivate ?? false, lookup: d.lookup, signal: operation,
+      }));
 
       // 5. temp dir with the flow and non-secret connection files
       tmp = await mkdtemp(join(d.tmpRoot ?? tmpdir(), "nurtuo-testrun-"));
       const flowFile = join(tmp, "flow.json");
       await writeFile(flowFile, JSON.stringify(req.flow), { mode: 0o600 });
-      const argv = ["flow", "run", flowFile, "--json", "--timeout", `${timeoutMs}ms`];
-      for (const c of conns) {
+      const argv = ["flow", "run", flowFile, "--json", "--max-output-bytes", String(d.maxPayloadBytes ?? 1024 * 1024), "--max-documents", String(d.maxDocuments ?? 20)];
+      for (const [index, c] of conns.entries()) {
         const f = join(tmp, `${c.id}.connection.json`);
-        await writeFile(f, JSON.stringify({ schema: "nurtuo.connection/v1", id: c.id, connector: c.connector, settings: c.settings }), { mode: 0o600 });
+        await writeFile(f, JSON.stringify({ schema: "nurtuo.connection/v1", id: c.id, connector: c.connector, settings: { ...c.settings, host: dialAddresses[index]! } }), { mode: 0o600 });
         argv.push("--connection", f);
       }
       for (const [k, v] of Object.entries(props)) argv.push("--set", `${k}=${v}`);
 
       // 6-7. spawn and supervise
-      const runId = randomUUID();
-      const started = Date.now();
+      operation.throwIfAborted();
+      argv.push("--timeout", `${Math.max(1, timeoutMs - (Date.now() - started))}ms`);
       const childEnv: Record<string, string> = { PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin", HOME: tmp, TMPDIR: tmp, ...env };
-      const res = await this.supervise(argv, childEnv, tmp, timeoutMs, signal);
+      const res = await this.supervise(argv, childEnv, tmp, operation, deadline);
 
       // 8. map
       const durationMs = Date.now() - started;
-      const body = this.map(runId, durationMs, flow.steps, res, secretValues, timeoutMs);
+      const body = this.map(runId, durationMs, steps, res, secretValues, timeoutMs);
       return { status: 200, body, audit: { after: { runId, status: (body as { status: string }).status } } };
+    } catch (error) {
+      if (!deadline.aborted || signal?.aborted) throw error;
+      const body = this.map(runId, Date.now() - started, steps, { code: null, stdout: "", stderr: "", reason: "deadline" }, [], timeoutMs);
+      return { status: 200, body, audit: { after: { runId, status: body.status } } };
     } finally {
+      clearTimeout(timer);
       release();
       if (tmp) await rm(tmp, { recursive: true, force: true }).catch(() => undefined);
     }
@@ -152,12 +195,19 @@ export class TestRunner {
     const release = d.limiter.tryAcquire(workspaceId);
     if (!release) throw new ApiError(429, "too_many_runs", "another run is in progress, retry shortly");
     let tmp: string | undefined;
+    const started = Date.now();
+    const timeoutMs = d.scanTimeoutMs ?? 10_000;
+    const deadlineController = new AbortController();
+    const deadline = deadlineController.signal;
+    const timer = setTimeout(() => deadlineController.abort(), timeoutMs);
+    const operation = signal ? AbortSignal.any([signal, deadline]) : deadline;
     try {
-      await checkEgress(host, { allowPrivate: d.allowPrivate ?? false, lookup: d.lookup });
+      const address = await checkEgress(host, { allowPrivate: d.allowPrivate ?? false, lookup: d.lookup, signal: operation });
       tmp = await mkdtemp(join(d.tmpRoot ?? tmpdir(), "nurtuo-hostkey-"));
-      const timeoutMs = 10_000;
-      const result = await this.supervise(["flow", "host-key", host, "--port", String(port), "--timeout", "10s", "--json"],
-        { PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin", HOME: tmp, TMPDIR: tmp }, tmp, timeoutMs, signal);
+      operation.throwIfAborted();
+      const remaining = Math.max(1, timeoutMs - (Date.now() - started));
+      const result = await this.supervise(["flow", "host-key", address, "--port", String(port), "--timeout", `${remaining}ms`, "--json"],
+        { PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin", HOME: tmp, TMPDIR: tmp }, tmp, operation, deadline);
       if (result.code === 0 && !result.reason) {
         try {
           const parsed = JSON.parse(result.stdout);
@@ -169,7 +219,11 @@ export class TestRunner {
         } catch { /* An unreadable result is a failed scan. */ }
       }
       throw new ApiError(400, "host_key_scan_failed", "could not fetch the SSH host key");
+    } catch (error) {
+      if (deadline.aborted && !signal?.aborted) throw new ApiError(400, "host_key_scan_failed", "SSH host key scan timed out");
+      throw error;
     } finally {
+      clearTimeout(timer);
       release();
       if (tmp) await rm(tmp, { recursive: true, force: true }).catch(() => undefined);
     }
@@ -191,7 +245,7 @@ export class TestRunner {
     return out;
   }
 
-  private supervise(argv: string[], env: Record<string, string>, tmp: string, timeoutMs: number, signal?: AbortSignal) {
+  private supervise(argv: string[], env: Record<string, string>, tmp: string, signal: AbortSignal, deadline: AbortSignal) {
     const d = this.d;
     const stdoutLimit = d.stdoutLimit ?? 1.5 * 1024 * 1024, stderrLimit = d.stderrLimit ?? 64 * 1024;
     return new Promise<{ code: number | null; stdout: string; stderr: string; reason?: "deadline" | "output_too_large" | "aborted" }>((resolve) => {
@@ -209,19 +263,18 @@ export class TestRunner {
       };
       child.stdout!.on("data", (b: Buffer) => { outN += b.length; if (outN > stdoutLimit) kill("output_too_large"); else out.push(b); });
       child.stderr!.on("data", (b: Buffer) => { if (errN < stderrLimit) { err.push(b.subarray(0, stderrLimit - errN)); errN += b.length; } });
-      const deadline = setTimeout(() => kill("deadline"), timeoutMs + (d.deadlineSlackMs ?? 5000));
       let polling = false;
       const poll = setInterval(() => {
         if (polling) return;
         polling = true;
         dirSize(tmp).then((n) => { if (n > (d.spoolLimitBytes ?? 64 * 1024 * 1024)) kill("output_too_large"); }).finally(() => { polling = false; });
       }, d.spoolPollMs ?? 500);
-      const onAbort = () => kill("aborted");
+      const onAbort = () => kill(deadline.aborted ? "deadline" : "aborted");
       if (signal?.aborted) onAbort(); else signal?.addEventListener("abort", onAbort, { once: true });
       const done = (code: number | null) => {
         if (exited) return;
         exited = true;
-        clearTimeout(deadline); clearInterval(poll); if (killTimer) clearTimeout(killTimer);
+        clearInterval(poll); if (killTimer) clearTimeout(killTimer);
         signal?.removeEventListener("abort", onAbort);
         resolve({ code, stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8"), reason });
       };
@@ -251,9 +304,10 @@ export class TestRunner {
       else error = { code: "execution", message: res.stderr.trim().split("\n").pop() || `the nurtuo binary exited with code ${res.code}` };
     }
 
+    const stopStep = [...(cliSteps ?? [])].reverse().find((s) => s.kind === "stop")?.id;
     let status: "succeeded" | "failed" | "stopped" = "succeeded";
     let stop: { status?: number; message?: string } | undefined;
-    if (res.reason === "output_too_large") { status = "failed"; error = { code: "output_too_large", message: "output larger than 1 MiB; use `nurtuo flow run`" }; documents = undefined; }
+    if (res.reason === "output_too_large" || error?.code === "output_too_large") { status = "failed"; error = { code: "output_too_large", message: "output larger than 1 MiB; use `nurtuo flow run`" }; documents = undefined; }
     else if (res.reason === "deadline" || (error && error.code === "execution" && error.message.startsWith("timed out after"))) { status = "failed"; error = { code: "timeout", message: `the run timed out after ${timeoutMs / 1000} s` }; }
     else if (error?.code === "stopped") {
       status = "stopped";
@@ -261,6 +315,7 @@ export class TestRunner {
       stop = m ? { status: Number(m[1]), ...(m[2] ? { message: m[2] } : {}) } : {};
       error = undefined;
     } else if (error) status = "failed";
+    else if (stopStep) { status = "stopped"; stop = {}; }
 
     if (status === "succeeded" && documents) {
       const total = documents.reduce((n, x) => n + Buffer.byteLength(x.payload ?? "", "base64"), 0);
@@ -268,13 +323,12 @@ export class TestRunner {
     }
 
     const byId = new Map((cliSteps ?? []).map((s) => [s.id, s]));
-    const stopStep = status === "stopped" ? [...(cliSteps ?? [])].reverse().find((s) => s.kind === "stop")?.id : undefined;
     // A failure raised before the engine ran (host key, password) names the connection: its connector steps are the failed ones.
     const failedConn = !cliSteps && error ? /connection "([^"]+)"/.exec(error.message)?.[1] : undefined;
     const steps = flowSteps.map((s) => {
       const t = byId.get(s.id);
       let st: StepStatus = "not_run";
-      if (t) st = s.id === stopStep ? "stopped" : t.failed > 0 ? "error" : "ok";
+      if (t) st = status === "stopped" && s.id === stopStep ? "stopped" : t.failed > 0 ? "error" : "ok";
       else if (failedConn && s.kind === "connector" && s.config?.connection === failedConn) st = "error";
       return { id: s.id, kind: s.kind, status: st, in: t?.in ?? 0, out: t?.out ?? 0, failed: t?.failed ?? 0, dropped: t?.dropped ?? 0 };
     });

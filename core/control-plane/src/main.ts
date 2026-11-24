@@ -11,6 +11,7 @@ import { createHttpServer, type HandlerOptions } from "./api.js";
 import { AuthService, MemoryAuthRepository, PgAuthRepository, createAuthHook, type AuthRepository } from "./auth/index.js";
 import { MemoryConnectionRepository, type ConnectionRepository } from "./connections/repository.js";
 import { PgConnectionRepository } from "./connections/pg-repository.js";
+import { ConnectionCoordinator } from "./connections/coordinator.js";
 import { connectionEndpoints } from "./connections/routes.js";
 import { MemorySecretStore } from "./connections/secrets.js";
 import { MemoryRepository } from "./memory-repository.js";
@@ -24,7 +25,8 @@ const insecure = process.env.NURTUO_INSECURE_NO_AUTH === "1";
 let repo: Repository = new MemoryRepository();
 let authRepo: AuthRepository = new MemoryAuthRepository();
 let connections: ConnectionRepository = new MemoryConnectionRepository();
-const secrets = new MemorySecretStore(); // in-memory only in this slice: values are lost on restart
+const secrets = new MemorySecretStore();
+const coordinator = new ConnectionCoordinator(); // in-memory only in this slice: values are lost on restart
 if (process.env.DATABASE_URL) {
   const mod = "pg"; // resolved at runtime so the package is optional for tests
   const pg = (await import(mod)) as { default: { Pool: new (o: { connectionString: string }) => Db } };
@@ -52,12 +54,20 @@ if (insecure) {
     await service.bootstrap(process.env.NURTUO_BOOTSTRAP_EMAIL, process.env.NURTUO_BOOTSTRAP_PASSWORD);
     console.log(`bootstrap owner ensured: ${process.env.NURTUO_BOOTSTRAP_EMAIL}`);
   }
-  const runner = new TestRunner({ connections, secrets, limiter: new RunLimiter(), bin: process.env.NURTUO_FLOW_RUN_BIN, allowPrivate: process.env.NURTUO_TEST_RUN_ALLOW_PRIVATE === "1" });
+  const runner = new TestRunner({ connections, secrets, coordinator, limiter: new RunLimiter(), bin: process.env.NURTUO_FLOW_RUN_BIN, allowPrivate: process.env.NURTUO_TEST_RUN_ALLOW_PRIVATE === "1" });
   opts = {
     auth: createAuthHook({
       service, trustProxy: process.env.NURTUO_TRUST_PROXY === "1", onAuditError: (e) => console.error("audit write failed", e),
-      extraEndpoints: { ...connectionEndpoints({ connections, secrets }), ...testRunEndpoints(runner) },
-      onWorkspaceDeleted: async (id) => { await connections.purge(id); await secrets.purge(id); },
+      extraEndpoints: { ...connectionEndpoints({ connections, secrets, coordinator, trustProxy: process.env.NURTUO_TRUST_PROXY === "1", proxyConfigured: process.env.NURTUO_TRUST_PROXY !== undefined }), ...testRunEndpoints(runner) },
+      serializeWorkspaceDelete: (id, remove) => coordinator.withWorkspace(id, async () => {
+        const result = await remove();
+        if (result.status < 300) {
+          await connections.purge(id);
+          await secrets.purge(id);
+          coordinator.pending.delete(id);
+        }
+        return result;
+      }),
     }),
   };
 }

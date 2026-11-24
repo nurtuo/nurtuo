@@ -9,11 +9,8 @@ import { fieldsOf, type Field } from "../model/formSchema";
 const HIDDEN = new Set(["privateKey", "passphrase", "hostKeyPolicy", "knownHosts", "hostKeyFingerprint", "maxListEntries", "timeoutMs"]);
 const FIELDS: Field[] = fieldsOf(sftpSchema as Record<string, unknown>).filter((f) => !HIDDEN.has(f.name));
 const ID_RE = /^[a-z][a-z0-9_-]*$/;
-const secretRef = (name: string) => `secret://${name}`;
 
-type HostKeyMode = "fingerprint" | "known_hosts";
-
-/** Workspace connections: list, create/edit an SFTP connection, delete. Passwords go only to the secrets endpoint. */
+/** Workspace connections: list, create/edit an SFTP connection, delete. Credential values are write-only. */
 export function ConnectionsPanel({ api, workspaceId, items, onChanged, onClose }: {
   api: ControlPlane;
   workspaceId: string;
@@ -23,7 +20,6 @@ export function ConnectionsPanel({ api, workspaceId, items, onChanged, onClose }
 }) {
   const [id, setId] = useState("");
   const [values, setValues] = useState<Record<string, string>>({ port: "22" });
-  const [mode, setMode] = useState<HostKeyMode>("fingerprint");
   const [hostKey, setHostKey] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [scanned, setScanned] = useState<{ host: string; port: string; fingerprint: string } | null>(null);
@@ -36,9 +32,7 @@ export function ConnectionsPanel({ api, workspaceId, items, onChanged, onClose }
     const v: Record<string, string> = {};
     for (const f of FIELDS) if (!f.writeOnly && c.settings[f.name] !== undefined) v[f.name] = String(c.settings[f.name]);
     setValues(v); // the password field stays empty: values are never readable
-    const policy = c.settings["hostKeyPolicy"] === "known_hosts" ? "known_hosts" : "fingerprint";
-    setMode(policy);
-    setHostKey(String((policy === "known_hosts" ? c.settings["knownHosts"] : c.settings["hostKeyFingerprint"]) ?? ""));
+    setHostKey(String(c.settings["hostKeyFingerprint"] ?? c.settings["knownHosts"] ?? ""));
     setError(null);
   };
 
@@ -73,15 +67,16 @@ export function ConnectionsPanel({ api, workspaceId, items, onChanged, onClose }
       if (raw === undefined || raw === "") continue;
       settings[f.name] = f.type === "integer" || f.type === "number" ? Number(raw) : raw;
     }
-    if (typed.length === 0 && !existing?.settings["password"]) return setError("password is required");
-    settings["password"] = secretRef(`${id}-password`);
-    settings["hostKeyPolicy"] = mode;
-    if (mode === "fingerprint") settings["hostKeyFingerprint"] = hostKey.trim();
+    if (typed.length === 0 && !existing) return setError("password is required");
+    if (hostKey.trim().startsWith("SHA256:")) {
+      settings["hostKeyPolicy"] = "fingerprint";
+      settings["hostKeyFingerprint"] = hostKey.trim();
+    }
     else settings["knownHosts"] = hostKey;
     setBusy(true);
     try {
-      for (const [f, v] of typed) await api.putSecret(workspaceId, `${id}-${f.name}`, v); // the only place a password is sent
-      await api.putConnection(workspaceId, id, { connector: "sftp", settings });
+      const credentials = typed.length ? Object.fromEntries(typed.map(([f, value]) => [f.name, value])) : undefined;
+      await api.putConnection(workspaceId, id, { connector: "sftp", settings, credentials });
       await onChanged();
       setValues((p) => ({ ...p, password: "" }));
     } catch (e) {
@@ -131,16 +126,13 @@ export function ConnectionsPanel({ api, workspaceId, items, onChanged, onClose }
         ))}
         <fieldset>
           <legend>Host key</legend>
-          <label><input type="radio" checked={mode === "fingerprint"} onChange={() => setMode("fingerprint")} /> SHA256 fingerprint</label>{" "}
-          <label><input type="radio" checked={mode === "known_hosts"} onChange={() => setMode("known_hosts")} /> known_hosts content</label>
           <textarea aria-label="Host key" rows={3} value={hostKey} onChange={(e) => setHostKey(e.target.value)}
-            placeholder={mode === "fingerprint" ? "SHA256:…" : "host ssh-ed25519 AAAA…"} />
+            placeholder="SHA256:… or a known_hosts entry" />
           <button disabled={busy || !values.host} onClick={() => void fetchHostKey()}>Fetch host key</button>
           {scanned && scanned.host === values.host && scanned.port === (values.port || "22") && (
             <div>
               <code>{scanned.fingerprint}</code>
               <button disabled={busy} onClick={() => {
-                setMode("fingerprint");
                 setHostKey(scanned.fingerprint);
                 setScanned(null);
               }}>Trust this key</button>

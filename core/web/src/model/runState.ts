@@ -47,11 +47,12 @@ export type Preview = { kind: "text"; text: string; truncated: boolean; size: nu
 export function previewOf(doc: RunDocument): Preview {
   const bytes = decodeBase64(doc.payload);
   try {
-    const slice = bytes.length > PREVIEW_LIMIT ? bytes.subarray(0, PREVIEW_LIMIT) : bytes;
+    const truncated = bytes.length > PREVIEW_LIMIT;
+    const slice = bytes.subarray(0, PREVIEW_LIMIT);
     // A cut in the middle of a multi-byte sequence must not make a text file look binary.
-    const text = new TextDecoder("utf-8", { fatal: bytes.length <= PREVIEW_LIMIT }).decode(slice);
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(slice, { stream: truncated });
     if (text.includes("\u0000")) return { kind: "binary", size: bytes.length };
-    return { kind: "text", text, truncated: bytes.length > PREVIEW_LIMIT, size: bytes.length };
+    return { kind: "text", text, truncated, size: bytes.length };
   } catch {
     return { kind: "binary", size: bytes.length };
   }

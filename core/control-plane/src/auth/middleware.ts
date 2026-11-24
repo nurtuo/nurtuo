@@ -22,6 +22,7 @@ export interface AuthHookOptions {
   /** Endpoints of other modules, keyed by policy action; built-in auth endpoints win on a name clash. They receive the resolved workspace. */
   extraEndpoints?: Record<string, Endpoint>;
   /** Called after a workspace was deleted so other modules can purge what they keyed by workspace id. */
+  serializeWorkspaceDelete?: (workspaceId: string, remove: () => Promise<EndpointResult>) => Promise<EndpointResult>;
   onWorkspaceDeleted?: (workspaceId: string) => Promise<void>;
 }
 
@@ -166,7 +167,11 @@ export function createAuthHook(o: AuthHookOptions): AuthHook {
     }
 
     let res: EndpointResult;
-    try { res = await run(ws); }
+    try {
+      res = policy.action === "workspace.delete" && ws && o.serializeWorkspaceDelete
+        ? await o.serializeWorkspaceDelete(ws.id, () => run(ws))
+        : await run(ws);
+    }
     catch (e) {
       if (e instanceof ApiError && mutating) { await safeAudit(() => audit(req, { ...auditBase, ws, status: e.status, extra: { error: e.code } })); }
       throw e;

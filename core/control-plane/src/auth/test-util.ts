@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createHandler, type ApiResponse } from "../api.js";
 import { MemoryConnectionRepository } from "../connections/repository.js";
+import { ConnectionCoordinator } from "../connections/coordinator.js";
 import { connectionEndpoints } from "../connections/routes.js";
 import { MemorySecretStore } from "../connections/secrets.js";
 import { MemoryRepository } from "../memory-repository.js";
@@ -25,7 +26,8 @@ export const FAKE_NURTUO = fileURLToPath(new URL("../../src/testrun/testdata/fak
 /** An SFTP connection body that passes validation. */
 export const sftpConn = (over: Record<string, unknown> = {}) => ({
   connector: "sftp",
-  settings: { host: "sftp.example.com", port: 22, user: "u", password: "secret://c1-password", hostKeyPolicy: "fingerprint", hostKeyFingerprint: "SHA256:abc", ...over },
+  credentials: { password: "pw-value-123" },
+  settings: { host: "sftp.example.com", port: 22, user: "u", hostKeyPolicy: "fingerprint", hostKeyFingerprint: "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", ...over },
 });
 export const flowOf = (conn = "c1", op = "GET", connector = "sftp") => ({
   schema: "nurtuo.flow/v1", id: "t", name: "t", revision: 1,
@@ -44,12 +46,21 @@ export function setup(over: { service?: Partial<AuthServiceOptions>; hook?: Part
   const service = new AuthService(authRepo, { secret: randomBytes(32), scrypt: { N: 1024, r: 8, p: 1 }, now: () => new Date(clock.t), loginsPerMinutePerIp: 10_000, ...over.service });
   const connections = new MemoryConnectionRepository();
   const secrets = new MemorySecretStore();
+  const coordinator = new ConnectionCoordinator();
   const limiter = new RunLimiter();
-  const runner = new TestRunner({ connections, secrets, limiter, ...over.testRun });
+  const runner = new TestRunner({ connections, secrets, coordinator, limiter, ...over.testRun });
   const hook = createAuthHook({
     service,
-    extraEndpoints: { ...connectionEndpoints({ connections, secrets }), ...testRunEndpoints(runner) },
-    onWorkspaceDeleted: async (id) => { await connections.purge(id); await secrets.purge(id); },
+    extraEndpoints: { ...connectionEndpoints({ connections, secrets, coordinator, trustProxy: over.hook?.trustProxy }), ...testRunEndpoints(runner) },
+    serializeWorkspaceDelete: (id, remove) => coordinator.withWorkspace(id, async () => {
+        const result = await remove();
+        if (result.status < 300) {
+          await connections.purge(id);
+          await secrets.purge(id);
+          coordinator.pending.delete(id);
+        }
+        return result;
+      }),
     ...over.hook,
   });
   const handle = createHandler(repo, { auth: hook });
@@ -60,7 +71,7 @@ export function setup(over: { service?: Partial<AuthServiceOptions>; hook?: Part
     if (o.cookie) headers.cookie = `${SESSION_COOKIE}=${o.cookie}`;
     if (o.csrf) headers["x-nurtuo-csrf"] = o.csrf;
     if (o.ws) headers["x-nurtuo-workspace"] = o.ws;
-    return handle({ method, path, body: o.body, query: o.query, headers, ip: o.ip ?? "10.0.0.1" });
+    return handle({ method, path, body: o.body, query: o.query, headers, ip: o.ip ?? "127.0.0.1" });
   };
 
   /** Creates a user (and optionally a workspace they own). */

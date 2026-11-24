@@ -150,9 +150,11 @@ explicit ACLs ([spec](specs/implemented/2026-11-24-windows-secrets-dacl.md), iss
   control-plane secrets, `HOME` and `TMPDIR` in a per-run 0700 temp dir). Test runs allow `sftp` with
   `GET`/`QUERY` only and refuse hosts that resolve to loopback, private, link-local or metadata
   addresses unless the operator sets `NURTUO_TEST_RUN_ALLOW_PRIVATE=1` (dangerous: lets any editor
-  probe the control plane's network). DNS rebinding between the check and the child's dial is not
-  prevented. `hostKeyPolicy: insecure` cannot be stored. Not supported on Windows control-plane hosts
-  (503). See [the spec](specs/2026-11-23-canvas-run.md).
+  probe the control plane's network). Every dial uses a vetted IP address. Credentials are bound to
+  the connection incarnation, logical destination, user, credential fields and pinned fingerprint.
+  Rebinding requires fresh credential entry. A stored `known_hosts` connection is refused before
+  dialing. Canvas Run requires a POSIX control-plane host. See
+  [the credential binding spec](specs/2026-11-24-operation-limits-and-credential-binding.md).
 
 ## Connector security notes
 

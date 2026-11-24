@@ -2,7 +2,7 @@
 import type { Flow } from "@nurtuo/flow-schema";
 import { describe, expect, it } from "vitest";
 import type { TestRunResponse } from "../api/controlPlane";
-import { IDLE, failureHint, previewOf, reconcile, stepStatuses, hashFlow, type RunState } from "./runState";
+import { IDLE, PREVIEW_LIMIT, failureHint, previewOf, reconcile, stepStatuses, hashFlow, type RunState } from "./runState";
 
 const flow = (): Flow => ({
   schema: "nurtuo.flow/v1", id: "f", name: "f", revision: 1,
@@ -49,6 +49,16 @@ describe("runState", () => {
     expect(previewOf(doc(b64(new Uint8Array([0xff, 0xfe, 0x00]))))).toEqual({ kind: "binary", size: 3 });
     const big = previewOf(doc(Buffer.from("a".repeat(70 * 1024)).toString("base64")));
     expect(big.kind === "text" && big.truncated && big.text.length === 64 * 1024).toBe(true);
+  });
+
+  it("rejects malformed UTF-8 in a large prefix and omits a split trailing code point", () => {
+    const doc = (bytes: Buffer) => ({ id: "d", properties: {}, payload: bytes.toString("base64") });
+    const malformed = Buffer.alloc(PREVIEW_LIMIT + 4, 0x61);
+    malformed[0] = 0xff;
+    expect(previewOf(doc(malformed))).toEqual({ kind: "binary", size: malformed.length });
+    const prefix = "a".repeat(PREVIEW_LIMIT - 1);
+    const split = Buffer.from(prefix + "éx");
+    expect(previewOf(doc(split))).toEqual({ kind: "text", text: prefix, truncated: true, size: split.length });
   });
 
   it("hints for host key mismatch and oversized output", () => {

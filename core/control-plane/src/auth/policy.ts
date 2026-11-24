@@ -97,9 +97,6 @@ export const POLICIES: readonly RoutePolicy[] = [
   P("GET", "/v1/workspaces/:ws/connections/:id", wsPerm("connection:read", "connection", "connection.get")),
   P("PUT", "/v1/workspaces/:ws/connections/:id", wsPerm("connection:write", "connection", "connection.put")),
   P("DELETE", "/v1/workspaces/:ws/connections/:id", wsPerm("connection:delete", "connection", "connection.delete")),
-  P("GET", "/v1/workspaces/:ws/secrets", wsPerm("connection:read", "secret", "secret.list", { userOnly: true })),
-  P("PUT", "/v1/workspaces/:ws/secrets/:name", wsPerm("secret:write", "secret", "secret.put", { userOnly: true })),
-  P("DELETE", "/v1/workspaces/:ws/secrets/:name", wsPerm("secret:delete", "secret", "secret.delete", { userOnly: true })),
   P("POST", "/v1/workspaces/:ws/test-runs", wsPerm("test_run:execute", "test_run", "test_run.execute", { userOnly: true })),
 ];
 

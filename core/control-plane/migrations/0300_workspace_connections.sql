@@ -6,6 +6,8 @@ CREATE TABLE connections (
   id           text        NOT NULL,
   connector    text        NOT NULL,
   settings     jsonb       NOT NULL,
+  incarnation  uuid,
+  generation   uuid,
   created_at   timestamptz NOT NULL DEFAULT now(),
   updated_at   timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (workspace_id, id)

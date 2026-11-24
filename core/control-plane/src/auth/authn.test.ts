@@ -175,7 +175,7 @@ test("audit: every mutating request is logged, reads are not, secrets never appe
   const [c, u, , denied, t] = page as [any, any, any, any, any];
   assert.equal(c.actorType, "token"); assert.equal(c.actorId, ed.token.id); assert.equal(c.requestId, "req-12345678");
   assert.equal(c.resourceId, id); assert.equal(c.beforeHash, null); assert.match(c.afterHash, /^sha256:[0-9a-f]{64}$/);
-  assert.equal(c.ip, "10.0.0.1"); assert.equal(c.metadata.userId, ed.user.id);
+  assert.equal(c.ip, "127.0.0.1"); assert.equal(c.metadata.userId, ed.user.id);
   assert.match(u.beforeHash, /^sha256:/); assert.notEqual(u.beforeHash, u.afterHash, "before/after differ across the PATCH");
   assert.equal(denied.metadata.denied, "forbidden");
   assert.ok(!JSON.stringify(page).includes(j(tok).token), "plaintext token never reaches the audit log");
@@ -248,7 +248,7 @@ test("trustProxy only honoured when enabled", async () => {
     await call("POST", "/v1/components", { token: ed.token.raw, body: { name: "a" }, headers: { "x-forwarded-for": "203.0.113.9, 10.0.0.2" } });
     return (await authRepo.queryAudit({ workspaceId: ws.id, limit: 1 })).items[0]!.ip;
   };
-  assert.equal(await mk(false), "10.0.0.1");
+  assert.equal(await mk(false), "127.0.0.1");
   assert.equal(await mk(true), "203.0.113.9");
 });
 
