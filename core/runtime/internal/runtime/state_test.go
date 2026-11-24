@@ -193,7 +193,8 @@ func TestQueueMessagesSurviveRuntimeRestart(t *testing.T) {
 	defer cancel()
 	cfg := baseCfg()
 	cfg.StateDir, cfg.BundleDir = t.TempDir(), t.TempDir()
-	bundle := `{"flows":[` + flowJSON("jobs", `{"type":"queue","queue":"jobs"}`) + `]}`
+	const queueName = "jobs.eu"
+	bundle := `{"flows":[` + flowJSON("jobs", `{"type":"queue","queue":"`+queueName+`"}`) + `]}`
 	bundle = strings.Replace(bundle, `"edges":{"s:default":"r"}`, `"edges":{"s:default":"m","m:default":"r"}`, 1)
 	bundle = strings.Replace(bundle, `{"id":"r"`, `{"id":"m","kind":"message","config":{"template":"seen"}},{"id":"r"`, 1)
 	if err := os.WriteFile(filepath.Join(cfg.BundleDir, "abc.json"), []byte(bundle), 0o600); err != nil {
@@ -276,10 +277,10 @@ func TestQueueMessagesSurviveRuntimeRestart(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer closeQ()
-		if err := qb.Ensure(ctx, queue.QueueDef{Name: "jobs"}); err != nil {
+		if err := qb.Ensure(ctx, queue.QueueDef{Name: queueName}); err != nil {
 			t.Fatal(err)
 		}
-		if err := qb.Publish(ctx, "jobs", queue.Message{ID: "j1", Data: []byte("x")}); err != nil {
+		if err := qb.Publish(ctx, queueName, queue.Message{ID: "j1", Data: []byte("x")}); err != nil {
 			t.Fatal(err)
 		}
 	}()

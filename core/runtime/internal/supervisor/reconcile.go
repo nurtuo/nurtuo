@@ -156,21 +156,23 @@ func (s *Supervisor) Reconcile(ctx context.Context, revision uint64, desired []D
 		report(Status{revision, d.ID, state, msg})
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	for _, id := range stale {
 		delete(s.last, id)
 	}
+	s.mu.Unlock()
 	if len(errs) > 0 {
 		return errors.Join(errs...)
 	}
-	s.reconciled = true
-	s.revision = revision
 	if s.revPath != "" {
 		if err := saveRevision(s.revPath, revision); err != nil {
-			// Applied but not recorded: report it; the control plane resends after a restart.
+			// Leave the advertised revision unchanged so the control plane retries.
 			return fmt.Errorf("persist revision %d: %w", revision, err)
 		}
 	}
+	s.mu.Lock()
+	s.reconciled = true
+	s.revision = revision
+	s.mu.Unlock()
 	return nil
 }
 

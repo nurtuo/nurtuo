@@ -94,3 +94,97 @@ func TestSharedPersistentConsumer(t *testing.T) {
 		})
 	}
 }
+
+func TestPerKeyOrderingAcrossSharedListeners(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	const name = "jobs"
+	b, err := New(Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = b.Close() }()
+	if err := b.Ensure(ctx, queue.QueueDef{Name: name, Ordering: queue.OrderingPerKey, Concurrency: 4}); err != nil {
+		t.Fatal(err)
+	}
+
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	firstAck := make(chan error, 1)
+	type result struct {
+		id       string
+		listener int
+		err      error
+	}
+	got := make(chan result, 2)
+	opts := queue.SubOpts{Durable: "shared"}
+	first, err := b.Subscribe(ctx, name, opts, func(hctx context.Context, d queue.Delivery) {
+		if d.Message().ID != "first" {
+			got <- result{d.Message().ID, 1, d.Ack(hctx)}
+			return
+		}
+		close(firstStarted)
+		select {
+		case <-releaseFirst:
+			firstAck <- d.Ack(hctx)
+		case <-ctx.Done():
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	publish := func(id, key string) {
+		t.Helper()
+		if err := b.Publish(ctx, name, queue.Message{ID: id, Key: key}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	publish("first", "a")
+	select {
+	case <-firstStarted:
+	case <-ctx.Done():
+		t.Fatal("first listener did not start")
+	}
+
+	if _, err := b.Subscribe(ctx, name, opts, func(hctx context.Context, d queue.Delivery) {
+		got <- result{d.Message().ID, 2, d.Ack(hctx)}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	publish("same-key", "a")
+	publish("other-key", "b")
+	expect := func(want string) result {
+		t.Helper()
+		select {
+		case r := <-got:
+			if r.id != want || r.err != nil {
+				t.Fatalf("delivery = %q, ack = %v, want %q", r.id, r.err, want)
+			}
+			return r
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for %q", want)
+			return result{}
+		}
+	}
+	expect("other-key")
+	if err := first.Pause(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case r := <-got:
+		t.Fatalf("delivery %q ran while its key was busy", r.id)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releaseFirst)
+	select {
+	case err := <-firstAck:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("first listener did not ack")
+	}
+	if r := expect("same-key"); r.listener != 2 {
+		t.Fatalf("same-key delivery ran on listener %d, want 2", r.listener)
+	}
+}

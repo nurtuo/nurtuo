@@ -2,8 +2,8 @@
 
 // Package natsjs implements queue.QueueBackend on an embedded NATS JetStream server.
 //
-// Each queue is a stream "Q_<name>" (subject "nq.<name>") and a dead letter stream
-// "Q_<name>_DLQ" (subject "nqdlq.<name>"). Delivery is push-based (push consumers with a
+// Each queue is a stream "Q_<token>" (subject "nq.<token>") and a dead letter stream
+// "Q_<token>_DLQ" (subject "nqdlq.<token>"). Delivery is push-based (push consumers with a
 // deliver subject); there is no polling. Messages that exhaust MaxDeliveries (on Nak) or are
 // Term'd are copied to the DLQ stream and then terminated on the source stream.
 // Server-side exhaustion (ack-wait timeouts, handler crash) is caught through the
@@ -12,9 +12,11 @@ package natsjs
 
 import (
 	"context"
+	"encoding/base32"
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -53,6 +55,7 @@ type Backend struct {
 	defs    map[string]queue.QueueDef
 	subs    map[*subscription]struct{}
 	redeliv map[string]uint64
+	lanes   map[laneKey]*keyLane
 	ackWait time.Duration
 	advSub  *nats.Subscription
 }
@@ -61,7 +64,7 @@ var _ queue.QueueBackend = (*Backend)(nil)
 
 // New starts an embedded nats-server (no network listener) with JetStream enabled.
 func New(o Options) (*Backend, error) {
-	b := &Backend{defs: map[string]queue.QueueDef{}, subs: map[*subscription]struct{}{}, redeliv: map[string]uint64{}}
+	b := &Backend{defs: map[string]queue.QueueDef{}, subs: map[*subscription]struct{}{}, redeliv: map[string]uint64{}, lanes: map[laneKey]*keyLane{}}
 	b.ackWait = o.AckWait
 	if b.ackWait <= 0 {
 		b.ackWait = defaultAckWait
@@ -124,7 +127,14 @@ func (b *Backend) cleanup() {
 }
 
 func token(name string) string {
-	return strings.NewReplacer(".", "_", "*", "_", ">", "_", " ", "_").Replace(name)
+	// Preserve existing lowercase literal names. Reserve "~" for encoded
+	// names and uppercase "_DLQ" for the dead-letter namespace.
+	if name != "" && !strings.ContainsFunc(name, func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' && r != '_'
+	}) {
+		return name
+	}
+	return "~" + strings.ToLower(base32.HexEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(name)))
 }
 func streamName(name string) string { return "Q_" + token(name) }
 func dlqStream(name string) string  { return "Q_" + token(name) + "_DLQ" }
@@ -278,14 +288,36 @@ func (b *Backend) Subscribe(_ context.Context, name string, opts queue.SubOpts, 
 	if durable == "" {
 		durable = "default"
 	}
-	s := &subscription{b: b, name: name, def: def, durable: durable, conc: conc, h: h, keys: map[string]*keyLane{}}
+	s := &subscription{b: b, name: name, def: def, durable: token(durable), conc: conc, h: h}
 	if err := s.attach(); err != nil {
 		return nil, err
 	}
 	return s, nil
 }
 
+type laneKey struct{ queue, durable, key string }
+
 type keyLane struct{ pending []func() }
+
+// An ordered consumer has one NATS callback so same-key deliveries enter
+// their lane in broker delivery order, even when routed to different handlers.
+type orderedConsumer struct {
+	members []*subscription
+	next    int
+}
+
+func (c *orderedConsumer) dispatch(m *nats.Msg, b *Backend) {
+	b.mu.Lock()
+	if len(c.members) == 0 {
+		b.mu.Unlock()
+		_ = m.Nak()
+		return
+	}
+	s := c.members[c.next%len(c.members)]
+	c.next = c.next%len(c.members) + 1
+	s.dispatch(m)
+	b.mu.Unlock()
+}
 
 type subscription struct {
 	b       *Backend
@@ -295,14 +327,17 @@ type subscription struct {
 	conc    int
 	h       queue.Handler
 
-	sub    *nats.Subscription // guarded by b.mu
-	closed bool               // guarded by b.mu
-	mu     sync.Mutex         // guards keys
-	keys   map[string]*keyLane
+	sub     *nats.Subscription // guarded by b.mu
+	closed  bool               // guarded by b.mu
+	ordered *orderedConsumer   // guarded by b.mu
 }
 
 func (s *subscription) attach() error {
-	cb := func(m *nats.Msg) { s.dispatch(m) }
+	cb := func(m *nats.Msg) {
+		s.b.mu.Lock()
+		defer s.b.mu.Unlock()
+		s.dispatch(m)
+	}
 	stream := streamName(s.name)
 	// Serialize consumer setup when listeners start concurrently. Explicit creation
 	// keeps the durable alive when any one subscriber pauses or closes.
@@ -310,6 +345,19 @@ func (s *subscription) attach() error {
 	defer s.b.mu.Unlock()
 	if s.closed || s.sub != nil {
 		return nil
+	}
+	var ordered *orderedConsumer
+	if s.def.Ordering == queue.OrderingPerKey {
+		for other := range s.b.subs {
+			if other.name == s.name && other.durable == s.durable && other.ordered != nil {
+				s.sub, s.ordered = other.sub, other.ordered
+				s.ordered.members = append(s.ordered.members, s)
+				s.b.subs[s] = struct{}{}
+				return nil
+			}
+		}
+		ordered = &orderedConsumer{}
+		cb = func(m *nats.Msg) { ordered.dispatch(m, s.b) }
 	}
 	info, err := s.b.js.ConsumerInfo(stream, s.durable)
 	switch {
@@ -341,7 +389,10 @@ func (s *subscription) attach() error {
 		_ = sub.Unsubscribe()
 		return err
 	}
-	s.sub = sub
+	s.sub, s.ordered = sub, ordered
+	if ordered != nil {
+		ordered.members = append(ordered.members, s)
+	}
 	s.b.subs[s] = struct{}{}
 	return nil
 }
@@ -367,46 +418,42 @@ func (s *subscription) waitPushBound(want bool) error {
 	}
 }
 
-// dispatch runs on the nats callback goroutine (in stream order). It enforces per-key
-// ordering; MaxAckPending bounds overall concurrency on the server side.
+// dispatch runs on the NATS callback goroutine with b.mu held. It enqueues
+// keyed handlers in delivery order; MaxAckPending bounds server-side concurrency.
 func (s *subscription) dispatch(m *nats.Msg) {
 	d := &delivery{s: s, m: m, msg: fromHeader(m.Header, m.Data)}
 	if md, err := m.Metadata(); err == nil {
 		d.attempt = int(md.NumDelivered)
 		if d.attempt > 1 {
-			s.b.mu.Lock()
 			s.b.redeliv[s.name]++
-			s.b.mu.Unlock()
 		}
 	}
 	run := func() { s.h(context.Background(), d) }
-	key := d.msg.Key
-	if s.def.Ordering != queue.OrderingPerKey || key == "" {
+	key := laneKey{s.name, s.durable, d.msg.Key}
+	if s.def.Ordering != queue.OrderingPerKey || key.key == "" {
 		go run()
 		return
 	}
-	s.mu.Lock()
-	lane, busy := s.keys[key]
+	lane, busy := s.b.lanes[key]
 	if busy {
 		lane.pending = append(lane.pending, run)
-		s.mu.Unlock()
 		return
 	}
 	lane = &keyLane{}
-	s.keys[key] = lane
-	s.mu.Unlock()
+	s.b.lanes[key] = lane
 	go func() {
 		run()
 		for {
-			s.mu.Lock()
+			s.b.mu.Lock()
 			if len(lane.pending) == 0 {
-				delete(s.keys, key)
-				s.mu.Unlock()
+				delete(s.b.lanes, key)
+				s.b.mu.Unlock()
 				return
 			}
 			next := lane.pending[0]
+			lane.pending[0] = nil
 			lane.pending = lane.pending[1:]
-			s.mu.Unlock()
+			s.b.mu.Unlock()
 			next()
 		}
 	}()
@@ -415,9 +462,8 @@ func (s *subscription) dispatch(m *nats.Msg) {
 // stop is called with the backend lock held when shutting down or deleting a queue.
 func (s *subscription) stop() {
 	s.closed = true
-	if s.sub != nil {
-		_ = s.sub.Unsubscribe() // durable consumer is kept on the server
-		s.sub = nil
+	if sub := s.release(); sub != nil {
+		_ = sub.Unsubscribe() // durable consumer is kept on the server
 	}
 }
 
@@ -430,8 +476,7 @@ func (s *subscription) Pause() error {
 
 // detach is called with the backend lock held.
 func (s *subscription) detach() error {
-	sub := s.sub
-	s.sub = nil
+	sub := s.release()
 	if sub == nil {
 		return nil
 	}
@@ -446,6 +491,20 @@ func (s *subscription) detach() error {
 	// Wait until JetStream sees the last subscriber leave. Otherwise a publish
 	// immediately after Pause can race with interest removal and miss delivery.
 	return s.waitPushBound(false)
+}
+
+// release removes the local handler and returns the NATS subscription
+// if no other handler owns it. The caller holds b.mu.
+func (s *subscription) release() *nats.Subscription {
+	sub, ordered := s.sub, s.ordered
+	s.sub, s.ordered = nil, nil
+	if ordered != nil {
+		ordered.members = slices.DeleteFunc(ordered.members, func(other *subscription) bool { return other == s })
+		if len(ordered.members) > 0 {
+			return nil
+		}
+	}
+	return sub
 }
 
 // Resume re-attaches to the durable consumer.

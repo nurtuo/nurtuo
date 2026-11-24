@@ -60,14 +60,52 @@ func TestRevisionFileCorruptFailsStart(t *testing.T) {
 }
 
 func TestPersistFailureIsReported(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gone", RevisionFile) // directory does not exist
+	dir := filepath.Join(t.TempDir(), "state")
+	path := filepath.Join(dir, RevisionFile)
 	s, err := NewPersistent(newFakeDeployer(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Reconcile(context.Background(), 1, nil, nil); err == nil {
-		t.Fatal("expected persist error")
+	h := &Handler{S: s}
+	check := func(revision uint64) {
+		t.Helper()
+		if got := s.Revision(); got != revision {
+			t.Errorf("applied revision = %d, want %d", got, revision)
+		}
+		// The gateway uses Handler.Revision to populate Hello.DesiredStateRevision.
+		if got := h.Revision(); got != revision {
+			t.Errorf("Hello revision = %d, want %d", got, revision)
+		}
+	}
+	reconcile := func(rev uint64) error { return s.Reconcile(t.Context(), rev, nil, nil) }
+	if err := reconcile(1); err == nil {
+		t.Fatal("expected persist error on first reconcile")
+	}
+	check(0)
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcile(1); err != nil {
+		t.Fatal(err)
+	}
+	check(1)
+
+	if err := os.Rename(dir, dir+"-backup"); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcile(2); err == nil {
+		t.Fatal("expected persist error on later reconcile")
+	}
+	check(1)
+	if err := os.Rename(dir+"-backup", dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcile(2); err != nil {
+		t.Fatal(err)
+	}
+	check(2)
+	if got, err := LoadRevision(path); err != nil || got != 2 {
+		t.Fatalf("saved revision = %d, error = %v", got, err)
 	}
 }
 
