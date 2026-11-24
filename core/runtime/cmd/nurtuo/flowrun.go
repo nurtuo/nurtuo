@@ -40,13 +40,54 @@ const (
 	exitStopped = 3 // the flow ended in a Stop step with a status
 )
 
-const flowRunUsage = "Usage: nurtuo flow run <flow.json> [--connection <file>]... [--set key=value]... [--secrets-dir <dir>] [--known-hosts <file>] [--insecure-host-key] [--json] [--timeout <duration>]"
+const flowRunUsage = "Usage: nurtuo flow run <flow.json> [--connection <file>]... [--set key=value]... [--secrets-dir <dir>] [--known-hosts <file>] [--insecure-host-key] [--json] [--timeout <duration>] [--max-output-bytes N] [--max-documents N]"
 
 // flowRunError is an error with its exit code and a machine-readable code for --json.
 type flowRunError struct {
 	exit int
 	code string
 	msg  string
+	// steps is the per-step trace, set only when the engine ran (--json errors carry it).
+	steps []stepOut
+}
+
+// stepOut is one entry of the additive "steps" array in the --json output (canvas-run spec D16).
+type stepOut struct {
+	ID      string `json:"id"`
+	Kind    string `json:"kind"`
+	In      int    `json:"in"`
+	Out     int    `json:"out"`
+	Failed  int    `json:"failed"`
+	Dropped int    `json:"dropped"`
+}
+
+// aggregateSteps sums the engine trace per step id, in first-seen order (a step visited twice by
+// two branches sums its counters). It returns a non-nil slice so the JSON key is always an array.
+func aggregateSteps(trace []engine.StepTrace) []stepOut {
+	out := []stepOut{}
+	idx := map[string]int{}
+	for _, t := range trace {
+		i, ok := idx[t.StepID]
+		if !ok {
+			i = len(out)
+			idx[t.StepID] = i
+			out = append(out, stepOut{ID: t.StepID, Kind: t.Kind})
+		}
+		out[i].In += t.In
+		out[i].Out += t.Out
+		out[i].Failed += t.Failed
+		out[i].Dropped += t.Dropped
+	}
+	return out
+}
+
+// withSteps returns a copy of err carrying the trace of res (when the engine produced one).
+func withSteps(err *flowRunError, res *engine.Result) *flowRunError {
+	cp := *err
+	if res != nil {
+		cp.steps = aggregateSteps(res.Trace)
+	}
+	return &cp
 }
 
 func (e *flowRunError) Error() string { return e.msg }
@@ -65,14 +106,16 @@ func execErr(format string, a ...any) *flowRunError {
 
 // flowRunOptions are the parsed flags of "nurtuo flow run".
 type flowRunOptions struct {
-	flowPath    string
-	connections []string
-	set         map[string]string
-	secretsDir  string
-	knownHosts  string
-	insecure    bool
-	json        bool
-	timeout     time.Duration
+	flowPath       string
+	connections    []string
+	set            map[string]string
+	secretsDir     string
+	knownHosts     string
+	insecure       bool
+	json           bool
+	timeout        time.Duration
+	maxOutputBytes int64
+	maxDocuments   int
 }
 
 // parseFlowRunArgs parses flags and the single <flow.json> positional, in any order.
@@ -100,6 +143,8 @@ func parseFlowRunArgs(args []string) (*flowRunOptions, error) {
 	fs.BoolVar(&o.insecure, "insecure-host-key", false, "")
 	fs.BoolVar(&o.json, "json", false, "")
 	fs.DurationVar(&o.timeout, "timeout", 0, "")
+	fs.Int64Var(&o.maxOutputBytes, "max-output-bytes", 0, "")
+	fs.IntVar(&o.maxDocuments, "max-documents", 0, "")
 	var positional []string
 	rest := args
 	for {
@@ -119,6 +164,18 @@ func parseFlowRunArgs(args []string) (*flowRunOptions, error) {
 		return o, usageErr("expected one <flow.json>, got %d arguments", len(positional))
 	case o.timeout < 0:
 		return o, usageErr("--timeout must not be negative")
+	}
+	var badLimit bool
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "max-documents":
+			badLimit = badLimit || o.maxDocuments <= 0
+		case "max-output-bytes":
+			badLimit = badLimit || o.maxOutputBytes <= 0 || o.maxOutputBytes > (1<<60)
+		}
+	})
+	if badLimit {
+		return o, usageErr("output limits must be positive and within range")
 	}
 	o.flowPath = positional[0]
 	return o, nil
@@ -245,7 +302,12 @@ func reportError(stderr io.Writer, asJSON bool, err error) int {
 		fe = &flowRunError{exit: exitExec, code: "execution", msg: err.Error()}
 	}
 	if asJSON {
-		b, _ := json.Marshal(map[string]any{"error": map[string]string{"code": fe.code, "message": fe.msg}})
+		body := map[string]any{"code": fe.code, "message": fe.msg}
+		payload := map[string]any{"error": body}
+		if fe.steps != nil {
+			payload["steps"] = fe.steps
+		}
+		b, _ := json.Marshal(payload)
 		_, _ = fmt.Fprintf(stderr, "%s\n", b)
 	} else {
 		_, _ = fmt.Fprintf(stderr, "nurtuo: %s\n", fe.msg)
@@ -436,20 +498,28 @@ func flowRun(args []string, stdout, stderr io.Writer, reg *connhost.Registry) in
 	mgr.Commit(prepared)
 
 	eng := engine.New()
+	eng.MaxReturnedDocuments = opts.maxDocuments
+	eng.MaxReturnedBytes = opts.maxOutputBytes
+	if opts.maxOutputBytes > 0 {
+		eng.Spool = docs.NewSpool(docs.SpoolConfig{DiskBudget: opts.maxOutputBytes})
+	}
 	eng.Registry.RegisterConnectorLookup(mgr) // start is a pass-through when no runner is registered
 	in := docs.NewSet(docs.New("flow-run", opts.set, nil))
 	res, err := eng.Run(ctx, f, in, engine.NewProcess(nil))
 	if res != nil {
 		defer func() { _ = res.Returned.Close(); _ = res.Failed.Close() }()
 	}
+	if eng.Spool.DiskBudgetExceeded() || errors.Is(err, engine.ErrReturnLimit) {
+		return fail(withSteps(outputTooLarge(), res))
+	}
 	if err != nil {
 		switch {
 		case errors.Is(err, context.DeadlineExceeded):
-			return fail(execErr("timed out after %s", opts.timeout))
+			return fail(withSteps(execErr("timed out after %s", opts.timeout), res))
 		case errors.Is(err, context.Canceled):
-			return fail(execErr("interrupted"))
+			return fail(withSteps(execErr("interrupted"), res))
 		}
-		return fail(execErr("%v", err))
+		return fail(withSteps(execErr("%v", err), res))
 	}
 	if n := res.Failed.Len(); n > 0 {
 		var msgs []string
@@ -462,44 +532,102 @@ func flowRun(args []string, stdout, stderr io.Writer, reg *connhost.Registry) in
 				msgs = append(msgs, m)
 			}
 		}
-		return fail(execErr("%d document(s) failed: %s", n, strings.Join(msgs, "; ")))
+		return fail(withSteps(execErr("%d document(s) failed: %s", n, strings.Join(msgs, "; ")), res))
 	}
 	if res.Stop != nil && res.Stop.Status != 0 {
 		fe := &flowRunError{exit: exitStopped, code: "stopped", msg: fmt.Sprintf("flow stopped with status %d", res.Stop.Status)}
 		if res.Stop.Message != "" {
 			fe.msg += ": " + res.Stop.Message
 		}
-		return fail(fe)
+		return fail(withSteps(fe, res))
 	}
-	if err := writeOutput(stdout, res.Returned, opts.json); err != nil {
+	if err := writeOutput(stdout, res, opts); err != nil {
+		if errors.Is(err, errOutputTooLarge) {
+			return fail(withSteps(outputTooLarge(), res))
+		}
 		return fail(execErr("write output: %v", err))
 	}
 	return exitOK
 }
 
+var errOutputTooLarge = errors.New("output exceeds the byte or document limit")
+
+func outputTooLarge() *flowRunError {
+	return &flowRunError{exit: exitExec, code: "output_too_large", msg: errOutputTooLarge.Error()}
+}
+
 // writeOutput prints the returned documents: raw payload bytes, or the JSON envelope.
-func writeOutput(stdout io.Writer, ret *docs.Set, asJSON bool) error {
-	if asJSON {
+func writeOutput(stdout io.Writer, res *engine.Result, opts *flowRunOptions) error {
+	ret := res.Returned
+	if opts.maxDocuments > 0 && ret.Len() > opts.maxDocuments {
+		return errOutputTooLarge
+	}
+	if opts.maxOutputBytes > 0 {
+		var total int64
+		for i := 0; i < ret.Len(); i++ {
+			if p := ret.At(i).Payload(); p != nil {
+				if p.Size() > opts.maxOutputBytes-total {
+					return errOutputTooLarge
+				}
+				total += p.Size()
+			}
+		}
+	}
+	if opts.json {
 		type docOut struct {
 			ID         string            `json:"id"`
 			Properties map[string]string `json:"properties"`
 			Payload    string            `json:"payload"` // base64
 		}
 		out := struct {
-			Status    int      `json:"status"`
-			Documents []docOut `json:"documents"`
-		}{Status: 200, Documents: []docOut{}}
+			Status    int       `json:"status"`
+			Documents []docOut  `json:"documents"`
+			Steps     []stepOut `json:"steps"`
+		}{Status: 200, Documents: []docOut{}, Steps: aggregateSteps(res.Trace)}
+		var wireBytes int64
+		if opts.maxOutputBytes > 0 {
+			envelope, err := json.Marshal(out)
+			if err != nil {
+				return err
+			}
+			wireBytes = int64(len(envelope)) + 1 // terminating newline
+		}
+		// The decoded limit remains available for payload. Wire overhead, including
+		// metadata and JSON escapes, is independently bounded.
+		wireLimit := opts.maxOutputBytes + (opts.maxOutputBytes+2)/3 + 128*1024
 		for _, d := range ret.Docs() {
+			props := d.Props
+			if props == nil {
+				props = map[string]string{}
+			}
+			if opts.maxOutputBytes > 0 {
+				// Reject oversized metadata before allocating an escaped JSON copy.
+				metadataBytes := int64(len(d.ID))
+				for key, value := range props {
+					metadataBytes += int64(len(key)) + int64(len(value))
+				}
+				if metadataBytes > wireLimit-wireBytes {
+					return errOutputTooLarge
+				}
+				wireBytes++ // document separator
+				metadata, err := json.Marshal(docOut{ID: d.ID, Properties: props})
+				if err != nil {
+					return err
+				}
+				wireBytes += int64(len(metadata))
+				if p := d.Payload(); p != nil {
+					wireBytes += 4 * ((p.Size() + 2) / 3)
+				}
+				if wireBytes > wireLimit {
+					return errOutputTooLarge
+				}
+			}
 			var b []byte
 			if p := d.Payload(); p != nil {
 				var err error
 				if b, err = p.Bytes(); err != nil {
 					return err
 				}
-			}
-			props := d.Props
-			if props == nil {
-				props = map[string]string{}
 			}
 			out.Documents = append(out.Documents, docOut{ID: d.ID, Properties: props, Payload: base64.StdEncoding.EncodeToString(b)})
 		}

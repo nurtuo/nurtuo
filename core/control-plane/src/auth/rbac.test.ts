@@ -27,7 +27,7 @@ const EXPECT: Record<string, Role[]> = {
   "audit.query": ["owner", "admin"],
   // canvas Run (docs/specs/2026-11-23-canvas-run.md D6); the secret and test-run routes are userOnly
   "connection.list": ["owner", "admin", "editor", "viewer", "deployer"], "connection.get": ["owner", "admin", "editor", "viewer", "deployer"],
-  "connection.put": EDIT, "connection.delete": EDIT,
+  "connection.put": EDIT, "connection.delete": EDIT, "connection.host_key_scan": EDIT,
 };
 
 function concretePath(pattern: string, ws: string) {

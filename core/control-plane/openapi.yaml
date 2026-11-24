@@ -290,6 +290,13 @@ paths:
       operationId: deleteConnection
       description: EXPERIMENTAL.
       responses: { "204": { description: Deleted }, "404": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+  /v1/workspaces/{ws}/connections/host-key-scan:
+    parameters: [ { $ref: "#/components/parameters/Ws" } ]
+    post:
+      operationId: scanConnectionHostKey
+      description: EXPERIMENTAL. Fetches the SSH host key negotiated by SFTP without authentication or persistence.
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [host], properties: { host: { type: string }, port: { type: integer, minimum: 1, maximum: 65535, default: 22 } } } } } }
+      responses: { "200": { description: Negotiated host key first, content: { application/json: { schema: { type: object, required: [keys], properties: { keys: { type: array, items: { type: object, required: [type, fingerprintSha256], properties: { type: { type: string }, fingerprintSha256: { type: string } } } } } } } } }, "400": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" }, "404": { $ref: "#/components/responses/Error" }, "413": { $ref: "#/components/responses/PayloadTooLarge" }, "429": { $ref: "#/components/responses/Error" }, "503": { $ref: "#/components/responses/Error" } }
 components:
   securitySchemes:
     bearerAuth: { type: http, scheme: bearer, description: "API token (nrt_...) or session JWT" }

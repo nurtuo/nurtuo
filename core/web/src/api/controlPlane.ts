@@ -112,6 +112,9 @@ export class ControlPlane {
   putConnection(ws: string, id: string, body: { connector: string; settings: Record<string, unknown>; credentials?: Record<string, string | null> }): Promise<unknown> {
     return this.request("PUT", `${this.ws(ws)}/connections/${encodeURIComponent(id)}`, body);
   }
+  scanHostKey(ws: string, host: string, port: number): Promise<{ keys: { type: string; fingerprintSha256: string }[] }> {
+    return this.request("POST", `${this.ws(ws)}/connections/host-key-scan`, { host, port });
+  }
   deleteConnection(ws: string, id: string): Promise<void> {
     return this.request("DELETE", `${this.ws(ws)}/connections/${encodeURIComponent(id)}`);
   }

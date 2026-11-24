@@ -360,3 +360,16 @@ func TestControlPlaneEnvWiresGatewayAndAuth(t *testing.T) {
 		}
 	}
 }
+
+func TestControlPlaneEnvFlowRunBin(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Skip(err)
+	}
+	for _, c := range []*Credentials{nil, {AdminToken: strings.Repeat("a", 48)}} {
+		got := strings.Join(controlPlaneEnv("postgres://x", c, 8080, "127.0.0.1:9443"), "\n")
+		if !strings.Contains(got, "NURTUO_FLOW_RUN_BIN="+exe) {
+			t.Errorf("env lacks NURTUO_FLOW_RUN_BIN=%s:\n%s", exe, got)
+		}
+	}
+}

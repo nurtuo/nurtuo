@@ -605,6 +605,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/workspaces/{ws}/connections/host-key-scan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description EXPERIMENTAL. Fetches the SSH host key negotiated by SFTP without authentication or persistence. */
+        post: operations["scanConnectionHostKey"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2093,6 +2113,49 @@ export interface operations {
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["Error"];
+        };
+    };
+    scanConnectionHostKey: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    host: string;
+                    /** @default 22 */
+                    port?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Negotiated host key first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        keys: {
+                            type: string;
+                            fingerprintSha256: string;
+                        }[];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["Error"];
+            413: components["responses"]["PayloadTooLarge"];
+            429: components["responses"]["Error"];
+            503: components["responses"]["Error"];
         };
     };
 }
