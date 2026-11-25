@@ -121,11 +121,13 @@ test("HTTP skips dispatch when the client disconnects mid-body", { timeout: 5000
   } });
   t.after(() => { server.closeAllConnections(); server.close(); });
   const base = await listen(server);
-  const received = Promise.withResolvers<void>();
-  const closed = Promise.withResolvers<void>();
+  let receive!: () => void;
+  let close!: () => void;
+  const received = new Promise<void>((resolve) => { receive = resolve; });
+  const closed = new Promise<void>((resolve) => { close = resolve; });
   server.once("request", (req) => {
-    req.once("data", () => received.resolve());
-    req.once("close", () => closed.resolve());
+    req.once("data", receive);
+    req.once("close", close);
   });
   const client = request(base + "/partial", {
     method: "POST",
@@ -133,9 +135,9 @@ test("HTTP skips dispatch when the client disconnects mid-body", { timeout: 5000
   });
   client.on("error", () => {});
   client.write("{");
-  await received.promise;
+  await received;
   client.destroy();
-  await closed.promise;
+  await closed;
 
   const next = await fetch(base + "/complete");
   assert.equal(next.status, 200);
