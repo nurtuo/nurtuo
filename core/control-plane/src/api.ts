@@ -173,6 +173,7 @@ async function route(repo: Repository, req: ApiRequest): Promise<ApiResponse> {
 
 /** Interactive run body limit (operation limits D1). */
 export const MAX_BODY_BYTES = 1024 * 1024;
+export const MAX_LOGIN_BODY_BYTES = 64 * 1024;
 
 /** Thin node:http adapter. */
 export function createHttpServer(repo: Repository, opts: HandlerOptions): Server {
@@ -186,6 +187,7 @@ export function createHttpServer(repo: Repository, opts: HandlerOptions): Server
     const jsonEnvelope = 512;
     const connectionSettings = 6 * (253 + 255 + 4096) + jsonEnvelope;
     const maxBytes = action === "test_run.execute" ? MAX_BODY_BYTES
+      : action === "auth.login" ? MAX_LOGIN_BODY_BYTES
       : action === "connection.host_key_scan" ? 6 * 253 + jsonEnvelope
       : action === "connection.put" ? 6 * 4 * 64 * 1024 + connectionSettings
       : Infinity;
