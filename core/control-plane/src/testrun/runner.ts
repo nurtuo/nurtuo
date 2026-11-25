@@ -53,11 +53,27 @@ type StepStatus = "ok" | "error" | "stopped" | "not_run";
 interface CliStep { id: string; kind: string; in: number; out: number; failed: number; dropped: number }
 interface CliError { code: string; message: string }
 
-/** Replaces every secret value in text; defence in depth on top of the child's own Redactor. */
+/** Redacts every nonempty credential, including short ones, before returning diagnostics. */
 export function redact(text: string, values: readonly string[]): string {
   let out = text;
   for (const v of values) if (v) out = out.split(v).join("[redacted]");
   return out;
+}
+
+function containsEscapedCredential(text: string, values: readonly string[]): boolean {
+  if (!text.includes("\\")) return false;
+  try {
+    JSON.parse(text);
+  } catch {
+    return false;
+  }
+  // Inspect each original string token so that duplicate object keys cannot hide a value.
+  for (const [token] of text.matchAll(/"(?:[^"\\]|\\.)*"/gs)) {
+    if (!token.includes("\\")) continue;
+    const decoded: string = JSON.parse(token);
+    if (values.some((value) => decoded.includes(value))) return true;
+  }
+  return false;
 }
 
 async function dirSize(dir: string): Promise<number> {
@@ -363,12 +379,16 @@ export class TestRunner {
       if (documents.length > (d.maxDocuments ?? 20) || total > (d.maxPayloadBytes ?? 1024 * 1024)) { status = "failed"; error = { code: "output_too_large", message: "output larger than 1 MiB or 20 documents; use `nurtuo flow run`" }; documents = undefined; }
     }
 
-    if (status === "succeeded" && documents && secretValues.length > 0) {
-      const needles = secretValues.map((value) => Buffer.from(value));
+    const credentials = secretValues.filter((value) => value !== "");
+    if (status === "succeeded" && documents && credentials.length > 0) {
+      // Withhold output on any nonempty match. Short credentials can cause false positives.
+      const needles = credentials.map((value) => Buffer.from(value));
       const containsCredential = documents.some((doc) => {
         const payload = Buffer.from(doc.payload ?? "", "base64");
         const fields = [doc.id, ...Object.entries(doc.properties ?? {}).flat()];
-        return needles.some((value) => payload.includes(value)) || fields.some((field) => clean(field) !== field);
+        return needles.some((value) => payload.includes(value))
+          || fields.some((field) => credentials.some((value) => field.includes(value)))
+          || containsEscapedCredential(payload.toString("utf8"), credentials);
       });
       if (containsCredential) {
         status = "failed";
