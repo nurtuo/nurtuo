@@ -420,7 +420,7 @@ export interface paths {
         /** @description Workspaces the session user belongs to. Session users only. */
         get: operations["listWorkspaces"];
         put?: never;
-        /** @description Creates a workspace; the caller becomes its owner. Session users only. */
+        /** @description Creates a workspace. Requires the instance-level permission `instance:workspace_create` (instance admins, see `NURTUO_INSTANCE_ADMINS` and `NURTUO_ALLOW_WORKSPACE_CREATE`). The caller becomes its owner. Session users only. */
         post: operations["createWorkspace"];
         delete?: never;
         options?: never;
@@ -644,7 +644,8 @@ export interface paths {
         /**
          * @description EXPERIMENTAL. Runs an inline `nurtuo.flow/v1` document synchronously through `nurtuo flow run` against
          *     workspace connections (SFTP GET/QUERY, HTTP GET and PostgreSQL QUERY). A failed or stopped run is a 200 result, not an API error.
-         *     Errors: 400 `invalid_flow`, `not_allowed_in_test_run`, `connection_required`, `host_not_allowed`;
+         *     A failed result uses `credential_in_result` when returned documents contain a workspace credential.
+         *     Errors: 400 `invalid_flow`, `not_allowed_in_test_run`, `connection_required`, `connection_type_mismatch`, `host_not_allowed`;
          *     404 `connection_not_found`; 409 `secret_missing`, `credential_unbound`, `dial_enforcement_unavailable`; 429 `too_many_runs`; 503 `test_run_unavailable`. Session users only.
          */
         post: operations["createTestRun"];
