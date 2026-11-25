@@ -33,14 +33,14 @@ failed-authentication rate) with evidence; and D4 and D14 are clarifications, no
 
 | | |
 |---|---|
-| Pull requests | this spec (approved by Łukasz 2026-11-24, not yet merged). Affects [PR #90](https://github.com/nurtuo/nurtuo/pull/90) (canvas Run implementation, head `aa02133`) |
+| Pull requests | this spec (approved by Łukasz 2026-11-24, not yet merged). Affects [PR #90](https://github.com/nurtuo/nurtuo/pull/90) (canvas Run implementation, head `aa02133`), now split into #99 (merged) and #100-#102 (see Phase P90) |
 | Owner direction | "Spoko zrób tak jak jest na boomi" (Łukasz, 2026-11-24 19:52, see "Owner requirement"); answered by the Boomi alignment council (see "Boomi alignment") |
 | Owner approval | D1-D14 approved by Łukasz on 2026-11-24: the Boomi direction and every recommendation other than the three open questions earlier that day; Q-threshold, Q-D7 and Q-labels at 21:06 Europe/Warsaw (see "Owner requirement", "Open questions (closed)") |
-| Reviews it answers | Codex review https://github.com/nurtuo/nurtuo/pull/90#issuecomment-7134020883, Astra review https://github.com/nurtuo/nurtuo/pull/90#issuecomment-7134187185, owner decision https://github.com/nurtuo/nurtuo/pull/90#issuecomment-7134459612, cross-provider reviews of this spec https://github.com/nurtuo/nurtuo/pull/92#issuecomment-7140661227 and https://github.com/nurtuo/nurtuo/pull/92#issuecomment-7142837972 |
-| Amends | [canvas Run](2026-11-23-canvas-run.md): D2 scope, D4 (`known_hosts` paste), D11 egress (check at the actual dial), Phase 2 body limit, D3/D6 secret workflow, Gaps #3, #7, #9, #19; [backward compatibility contract](2026-11-22-backward-compatibility-contract.md): classification rows for the D4 surface and `nurtuo flow` (D4) |
+| Reviews it answers | Astra review of `e8d24f3` https://github.com/nurtuo/nurtuo/pull/92#issuecomment-7171018980 (see "Third review"), Codex review https://github.com/nurtuo/nurtuo/pull/90#issuecomment-7134020883, Astra review https://github.com/nurtuo/nurtuo/pull/90#issuecomment-7134187185, owner decision https://github.com/nurtuo/nurtuo/pull/90#issuecomment-7134459612, cross-provider reviews of this spec https://github.com/nurtuo/nurtuo/pull/92#issuecomment-7140661227 and https://github.com/nurtuo/nurtuo/pull/92#issuecomment-7142837972 |
+| Amends | [canvas Run](2026-11-23-canvas-run.md): D2 scope, D4 (`known_hosts` paste), D11 egress (check at the actual dial), Phase 2 body limit, D3/D6 secret workflow, Gaps #3, #7, #9, #19; [backward compatibility contract](2026-11-22-backward-compatibility-contract.md): classification row for the D4 surface (D4; the `nurtuo flow` row is already on `main`) |
 | ADRs | [ADR 0010](../adr/0010-connections-and-secrets.md) (connections and secrets), [ADR 0009](../adr/0009-outbound-only-runtime-gateway.md) (gateway), [ADR 0005](../adr/0005-set-at-a-time-engine-with-per-document-status.md) (engine) |
 | Related specs | [backward compatibility contract](2026-11-22-backward-compatibility-contract.md), [auth rate limiting and lockout](2026-11-22-auth-rate-limiting-and-lockout.md), [bundle artifact delivery](2026-11-22-bundle-artifact-delivery.md), [HTTP listener routing](2026-11-22-http-listener-routing.md) |
-| Code (main `fbdb9e8`) | `core/control-plane/src/api.ts` (`createHttpServer`, `canonicalJson`), `core/control-plane/src/auth/policy.ts` (`POLICIES`), `core/control-plane/src/auth/throttle.ts`, `core/control-plane/src/auth/middleware.ts` (`NURTUO_TRUST_PROXY`), `core/control-plane/src/pg-repository.ts`, `core/control-plane/src/memory-repository.ts`, `core/runtime/internal/listener/http.go` (`MaxBodyBytes`), `core/runtime/internal/connections/connections.go` (`Resolver`), `connectors/sftp/sftp.go` (`dial`), `connectors/sftp/config.go` (`sshConfig`) |
+| Code (main `6e43918`) | `core/control-plane/src/api.ts` (`createHttpServer`, `canonicalJson`), `core/control-plane/src/auth/policy.ts` (`POLICIES`), `core/control-plane/src/auth/throttle.ts`, `core/control-plane/src/auth/middleware.ts` (`NURTUO_TRUST_PROXY`), `core/control-plane/src/pg-repository.ts`, `core/control-plane/src/memory-repository.ts`, `core/runtime/internal/listener/http.go` (`MaxBodyBytes`), `core/runtime/internal/connections/connections.go` (`Resolver`), `connectors/sftp/sftp.go` (`dial`), `connectors/sftp/config.go` (`sshConfig`) |
 | Code (PR #90 `aa02133`) | `core/control-plane/src/testrun/runner.ts`, `core/control-plane/src/testrun/egress.ts`, `core/control-plane/src/connections/routes.ts`, `core/control-plane/src/connections/validate.ts`, `core/web/src/ui/ConnectionsPanel.tsx` |
 
 ## Owner requirement
@@ -181,14 +181,25 @@ Council).
 
 1. **One operation inventory.** Admission uses the same method plus normalized route template table
    as authorization (`POLICIES` in `auth/policy.ts`). Every OpenAPI operation has an explicit limit
-   profile. A test fails when one is missing, like `policy.test.ts`. Unknown routes are answered
-   without reading the body. D9's 404 for workspace routes in auth-disabled mode stays.
-2. **Authenticate before reading the body.** Policy match, cookie or bearer, CSRF header, workspace
-   from path or `X-Nurtuo-Workspace`, and `authorize` need only headers and path. They run before any
-   body read. Body-authenticated routes use their own bounded parser (D3). The OIDC callback is a
-   GET and reads only the query string. SCIM routes run their own authorization before reading a
-   mutation body. Authentication is separated from endpoint execution, so a public policy entry
-   cannot bypass a route-specific check.
+   profile. A test fails when one is missing, like `policy.test.ts`. A method and path with no
+   policy entry is answered without reading the body and **keeps the status it gets on `main`**
+   (see "Unmatched routes"). D9's 404 for workspace routes in auth-disabled mode stays.
+2. **Authorize before reading the body.** The pre-body decision is **the existing middleware
+   decision, reused unchanged and moved ahead of the body read**, not a second implementation. On
+   `main` (`core/control-plane/src/auth/middleware.ts:108-170`) it is, in order: policy match;
+   authentication (cookie or bearer; presented-but-invalid credentials are 401); `userOnly`
+   (403 `forbidden`, bearer denied); CSRF for cookie sessions on mutating methods (403 `csrf`);
+   for `access: "instance"` policies the instance permission, today
+   `instance:workspace_create` on `POST /v1/workspaces` (403 `forbidden`, **audited** for mutating
+   methods, `middleware.ts:149-155`); workspace from path or `X-Nurtuo-Workspace` (audited denial);
+   and `authorize` for `access: "permission"` policies (audited denial). All of these need only
+   headers and path, and every one runs before any body byte is read, with the same status, code
+   and audit record as on `main`. Body-authenticated routes use their own bounded parser (D3). The
+   OIDC callback is a GET and reads only the query string. SAML and SCIM routes are public 501
+   stubs on `main` (`auth/stub-routes.ts`) and get the body-free `stub` profile (see "Operation
+   classes"). Authentication is separated from endpoint execution, so a public policy entry cannot
+   bypass a route-specific check; a future SCIM implementation must add its route-local bearer
+   check to this pre-body decision and get its own profile in the spec that implements it.
 3. **Accepted payload is not resident working set.** Bytes are counted while reading, including
    chunked bodies. Content-Length allows early rejection where a limit exists. Parse cost, graph
    validation, output queues and retained records are accounted separately. A response is charged
@@ -223,7 +234,8 @@ Council).
 | Class | Operations | Body | Time / concurrency | Basis |
 |---|---|---|---|---|
 | `preauth` | `POST /v1/auth/login`, other body-authenticated routes | bounded, memory only, candidate 64 KiB (D3); safety ceiling | login throttle; per-peer in-flight limit; failed-auth rate budget (D7) | largest legitimate input is credentials and tokens |
-| `control` | authenticated management JSON (component metadata, runtimes, deployments, members, tokens, workspaces, roles, SCIM) | no new default ceiling; D14 reservation | listener-wide `headersTimeout`, `requestTimeout` (300 s kept), `maxHeaderSize` set explicitly | compatibility of STABLE routes |
+| `control` | authenticated management JSON (component metadata, runtimes, deployments, members, tokens, workspaces, roles) | no new default ceiling; D14 reservation | listener-wide `headersTimeout`, `requestTimeout` (300 s kept), `maxHeaderSize` set explicitly | compatibility of STABLE routes |
+| `stub` | the public SAML and SCIM routes (`auth.saml_*`, `scim.*` in `auth/policy.ts`), which answer 501 on `main` (`auth/stub-routes.ts`, `auth/enterprise-stubs.ts`) | **body never read**; `Connection: close` when a body was announced | per-peer in-flight limit (D7); no failed-auth bucket, because no credential is verified | the response (501, body and headers of `notImplemented`) stays exactly as on `main`; the profile is replaced when SAML or SCIM is implemented |
 | `document` | `POST`/`GET /v1/components/{id}/revisions`, `GET …/revisions/{n}` | no default ceiling (D2); D14 reservation and isolation; operator may set a ceiling | `requestTimeout` 300 s kept | owner requirement; whitespace and aggregate-list cases in V2 |
 | `secret-bearing` | **every** `PUT /v1/workspaces/{ws}/connections/{id}`, with or without `credentials` (D4, D8) | bounded, memory only, never staged to disk, traced or hashed; envelope from the formula below; safety ceiling | user session for credential changes (D8) | sensitive values of known size |
 | `interactive-run` | `POST /v1/workspaces/{ws}/test-runs` | request 1 MiB (D2), 413; returned-result bounds 20 returned documents and 1 MiB total decoded returned output, overflow `output_too_large` with zero documents (D1, D5) | 30 s default, 120 s max; 2/workspace, 4/instance; 429 `too_many_runs`; dial rate budget (D7) | approved D2 |
@@ -252,75 +264,135 @@ it equals the initial threshold.
 
 One large-body token does not bound process memory: a single admitted request still allocates
 chunk buffers, the decoded string, the parsed tree, the canonical serialization and repository
-copies. L1a therefore uses a **byte-weighted budget**, reserved before allocation:
+copies. Worker heap limits alone do not bound it either: a worker's heap is outside the parent's
+`heap_size_limit`, and the parent still holds socket chunks, database results and response copies
+unless the design says where each byte lives. L1a therefore uses a **byte-weighted budget over a
+stated physical bound**, reserved before allocation:
 
-- **Budget.** `memoryBudget` = V8 `heap_size_limit` minus a fixed headroom for the gateway, the
-  event loop and the small-request pool. The headroom and pool sizes are startup-validated (D4).
-  `MemoryRepository` retained history (bytes of retained revisions, tracked at creation) is
-  subtracted from the budget continuously, because it is resident for the life of the process.
-- **Estimate.** A reservation is `k × wireBytes` for a body (decoded string, tree, canonical
+- **Physical bound.** Process memory is bounded by
+  `M_proc = H_parent + E_parent + W + N`, where `H_parent` is the parent isolate's
+  `heap_size_limit` (as configured today), `E_parent` is the parent's off-heap buffer budget
+  (socket read chunks, PostgreSQL driver buffers of small requests, response write buffers),
+  `W` is the **large-operation budget** (the sum of all worker `resourceLimits`, young and old
+  generation, code range and stack, plus a measured fixed overhead per worker) and `N` is the
+  documented native overhead measured in L1a. Startup computes `M_proc` and refuses to start when
+  it exceeds the D4 resource budget minus the gateway headroom; when a cgroup memory limit is
+  present it is an upper bound for that budget. `W`, `E_parent`, the headroom and the pool sizes
+  are startup-validated (D4).
+- **Parent budget.** Requests below the in-memory threshold are charged to the small-request pool
+  inside `H_parent` and `E_parent`. `MemoryRepository` retained history (bytes of retained
+  revisions, tracked at creation) is charged to `H_parent` continuously, because it is resident for
+  the life of the process.
+- **Estimate.** A worker reservation is `k × wireBytes` for a body (decoded string, tree, canonical
   string, repository copy) and `k × storedBytes` for a response. `k` is the measured expansion
   factor per class (placeholder, benchmark-gated with high-expansion JSON: deep nesting, many tiny
-  objects, long escaped strings).
+  objects, long escaped strings). A large operation also holds one parent transfer window (below).
+- **Where the bytes of a large operation live.** Above the in-memory threshold the parent never
+  holds the whole body, row or response:
+  - *Upload.* The parent reads socket chunks into one bounded **transfer window** per large
+    operation (placeholder 2 × 1 MiB, charged to `E_parent`) and transfers each chunk's
+    `ArrayBuffer` to the worker (ownership transfer, not a structured-clone copy). The socket is
+    paused while the window is full. Decode, parse, `canonicalJson` and digest run in the worker.
+    For PostgreSQL the worker writes the row through its own database client (a small dedicated
+    pool counted in `W`), so the parameter buffer lives in the worker. For `MemoryRepository` the
+    canonical result is transferred to the parent and charged to retained history before it is
+    accepted; a write that does not fit `H_parent` fails that request only (500
+    `resource_exhausted`).
+  - *Readback (single row and list).* The worker reads the row or rows through its own database
+    client, so the driver's result buffers and parsed values live in the worker heap. It serializes
+    the response and passes it to the parent through the transfer window; the parent writes to the
+    socket and stops the worker's producer while the socket's `writableLength` is at the window
+    size. For `MemoryRepository` the copy given to the worker is charged to the worker reservation.
+  - Database results of small reads and the small-request pool are the only bodies the parent
+    materializes, and they are bounded by the threshold.
 - **Fixed-length upload.** With `Content-Length`, the full reservation is taken after
   authorization and **before the first body byte is read**. While waiting the socket is paused.
 - **Chunked upload.** Without `Content-Length`, bytes are read into the small-request pool up to
-  the in-memory threshold. Each further step (the reservation doubles, starting at the threshold) is
-  reserved before more bytes are read; the socket is paused while waiting. A step that cannot be
+  the in-memory threshold. At the threshold the operation becomes a large operation: it takes a
+  worker reservation and a transfer window before more bytes are read, and the buffered prefix is
+  transferred to the worker. Each further step (the reservation doubles, starting at the threshold)
+  is reserved before more bytes are read; the socket is paused while waiting. A step that cannot be
   reserved before the wait deadline ends the request as below.
 - **Single row.** `GET …/revisions/{n}` and every internal read of one revision (deploy, digest
   checks) first read the stored size (PostgreSQL: `octet_length(content::text)` or a size column added
   by migration, measured in L1a; memory: size kept at creation), reserve, then load the row.
-- **Revision list.** Before L1b, L1a reads the total stored size of the matching rows with one size
-  query, reserves `k × total` and only then loads them. L1b replaces this with an iterator that
-  reserves per row (largest row plus write buffers). The list is never truncated or omitted.
+- **Revision list (one snapshot).** Before L1b, the size and the rows come from **one consistent
+  read**, so an append between the two reads cannot exceed the reservation. PostgreSQL: one
+  read-only `REPEATABLE READ` transaction runs the size query (`sum` of stored sizes and `max(number)`
+  for the component) and then loads only rows with `number <= ` that maximum, ordered by `number`.
+  Memory: the size and the row count are captured in one synchronous step, and only that prefix of
+  the append-only revision array is serialized. A revision committed after the snapshot is not in
+  this response; it is in the next one, as with any read that precedes a write. L1a reserves
+  `k × total` before loading. L1b replaces this with an iterator that reserves per row (largest row
+  plus write buffers) inside the same snapshot. The list is never truncated or omitted.
 - **Responses.** A response reservation is held until the client drains it or disconnects. Slow
   readers keep their reservation; that is why the wait deadline and the instance-wide ingress
   budget (D7) exist.
-- **Isolation.** Above the in-memory threshold, decode, parse, `canonicalJson`, digest and response
-  serialization run in a worker thread with `resourceLimits` sized to the reservation. A worker
-  heap failure ends that worker and that request only (500 `resource_exhausted`), never the process
-  or the gateway. On `main` the same request would kill the whole process, so no request that
-  succeeds today is lost by this (the load-test gate below proves it). A child process is the
-  alternative if measurement shows worker transfer cost is too high; L1a chooses by measurement.
-- **Exclusive admission.** A reservation larger than the whole large-operation budget is not
-  rejected (owner decision prevails: no new default 413). It waits for exclusive admission: new
-  large reservations queue behind it, it starts when the large-operation budget is idle, and it runs
-  isolated.
+- **Isolation.** The large-operation work above runs in a worker thread whose `resourceLimits`
+  equal its reservation. A worker heap failure ends that worker and that request only (500
+  `resource_exhausted`), never the process or the gateway. On `main` the same request would kill
+  the whole process, so no request that succeeds today is lost by this (the load-test gate below
+  proves it). A child process is the alternative if measurement shows worker transfer cost is too
+  high; L1a chooses by measurement, and the same physical bound and byte locations apply to it.
+- **Exclusive admission.** A reservation larger than `W` is not rejected (owner decision prevails:
+  no new default 413). It waits for exclusive admission: new large reservations queue behind it,
+  it starts when `W` is idle, and it runs isolated in one worker whose limits are the **whole of
+  `W`**, never more. The process bound `M_proc` therefore holds for it too. If the operation
+  physically needs more than `W`, its worker reaches its heap limit and that request alone fails
+  with 500 `resource_exhausted` (request-only failure above capacity); the parent, the gateway and
+  other requests continue. The load-test gate requires `W` to fit the operations at `S_main`.
 - **When 503 is permitted.** Only when a reservation cannot be obtained before the wait deadline
   because **other** reservations hold the budget (transient). Never because of the request's own
   size. The wait deadline is the remainder of the class `requestTimeout`. A 503 carries
   `Retry-After` and `Connection: close`. Each reservation is released exactly once, including on
   disconnect, abort and worker failure.
-- **Load-test gate (blocks L1a release).** On the reference heap: (1) establish `S_main`, the largest
-  revision POST, GET and list that succeed on `main` with an otherwise idle instance; the release
-  must succeed at `S_main` too, with the same digest. (2) With high-expansion JSON, concurrent large
-  and small reads and writes, slow readers, mid-upload and mid-response disconnects, and uploads
-  above `S_main`, the process is not killed, the gateway's mTLS listener keeps answering its
-  heartbeat within its existing timeout, peak RSS stays within `heap_size_limit + documented native
-  overhead`, and all reservations return to zero afterwards.
+- **Load-test gate (blocks L1a release).** On the reference configuration: (1) establish `S_main`,
+  the largest revision POST, GET and list that succeed on `main` with an otherwise idle instance;
+  the release must succeed at `S_main` too, with the same digest. (2) With high-expansion JSON,
+  concurrent large and small reads and writes, slow readers, mid-upload and mid-response
+  disconnects, and an **oversized upload and an oversized readback** (single row and list, each
+  needing more than `W`), the process is not killed, the gateway's mTLS listener keeps answering
+  its heartbeat within its existing timeout, **peak process RSS stays within `M_proc`**, the
+  oversized operations fail alone with 500 `resource_exhausted` while concurrent small requests
+  succeed, and all reservations return to zero afterwards.
 
 ### Admission, unread bodies and error precedence (L1a, D3, D14)
 
 - **Rejected unread bodies.** A response decided before reading the body (401, 403, 404, 405, 413,
-  503) is sent with `Connection: close`; the server stops reading and destroys the socket after the
-  response is flushed (bounded grace, initial 1 s). It never drains an unread body. For
-  `Expect: 100-continue` the final status is sent instead of `100 Continue`. Application-level body
-  consumption is zero; kernel and Node socket buffering is bounded by the socket high-water mark.
+  429, 501 on `stub` routes, 503) is sent with `Connection: close` when a body was announced; the
+  server stops reading and destroys the socket after the response is flushed (bounded grace,
+  initial 1 s). It never drains an unread body. For `Expect: 100-continue` the final status is sent
+  instead of `100 Continue`. Application-level body consumption is zero; kernel and Node socket
+  buffering is bounded by the socket high-water mark.
+- **Unmatched routes (status unchanged).** A method and path with no policy entry keeps the
+  status, code and headers it gets on `main`; only the body read is removed:
+  - auth enabled (`middleware.ts:115-119`): anonymous request, or presented-but-invalid
+    credentials, 401 `unauthenticated` with `WWW-Authenticate: Bearer realm="nurtuo"`; valid
+    principal, 403 `no_policy`;
+  - auth disabled: 404 `not_found` or 405 `method_not_allowed` from the API fallthrough
+    (`api.ts:170`), and the canvas D9 404 for pending workspace routes.
+  The route lookup itself produces no new status; 404/405 below means "as on `main` for the
+  mode".
 - **Error precedence (changed, documented).** Today a malformed body gets 400 `invalid JSON` on every
-  path first. After L1a the order is: 404/405 (route), 429 `rate_limited` (per-peer in-flight limit
-  reached, D7), 429 `rate_limited` (the peer's failed-authentication bucket is empty, checked before
-  credential verification, D7), 401 (authentication), 403 (CSRF, permission), 413 (declared size
-  over a class limit), 503 (capacity), then 400 `invalid JSON` and validation. On `POST
-  /v1/auth/login` the existing login throttle and lockout 429s (`rate_limited`, `account_locked`)
-  keep their current position and codes. Clients that send malformed bodies to unknown or
-  unauthorized routes see the more specific status. This is a change of a STABLE route's error
-  semantics and is part of the D3/D7/D14 upgrade note.
+  path first (`api.ts:191-192`), before routing and authentication. After L1a the order is: route
+  lookup (unmatched: the status above), 429 `rate_limited` (per-peer in-flight limit reached, D7),
+  429 `rate_limited` (the peer's failed-authentication bucket is empty, checked before credential
+  verification, D7), 401 (authentication), 403 (`userOnly`, CSRF, instance permission, workspace,
+  permission, in the `main` order), 413 (declared size over a class limit), 503 (capacity), then
+  400 `invalid JSON` and validation. For an unmatched route in auth-enabled mode the 429 checks run
+  before its 401/403, as on any other route. On `POST /v1/auth/login` the existing login throttle
+  and lockout 429s (`rate_limited`, `account_locked`) keep their current position and codes.
+  Clients that send malformed bodies to unknown or unauthorized routes see the route or
+  authorization status instead of 400. This is a change of a STABLE route's error semantics and is
+  part of the D3/D7/D14 upgrade note.
 - **Auth-disabled mode.** With `NURTUO_INSECURE_NO_AUTH=1` the core routes keep reading and parsing
-  their bodies as on `main` (behind the D14 reservation). Pending workspace routes still answer 404
-  without reading the body (canvas D9).
-- **SCIM.** SCIM routes have public policy entries; their route-local bearer authorization runs
-  before the mutation body is read.
+  their bodies as on `main` (behind the D14 reservation). Unmatched routes and pending workspace
+  routes answer 404/405 without reading the body (canvas D9).
+- **SAML and SCIM stubs.** These routes have public policy entries and answer 501 through
+  `notImplemented` on `main`; no bearer or assertion is verified. Under the `stub` profile their
+  body is never read and their response is unchanged. OIDC is not a stub: `GET
+  /v1/auth/oidc/login` and the callback read no body (query only), and the callback keeps its
+  anonymous audit record.
 
 ### Rate limiting and ingress budgets (L1a, D7)
 
@@ -435,11 +507,27 @@ benchmark-gated:
   canvas D6) and need the CSRF header. The body is parsed (bounded, D4) before the credential checks,
   and every check runs before any mutation.
 - **Trusted TLS.** The listener is plain HTTP (fact 7), so TLS is established by a proxy. A
-  credential-bearing PUT is accepted only if (a) `NURTUO_TRUST_PROXY=1` and the immediate peer's
-  `X-Forwarded-Proto` is `https`, or (b) `NURTUO_TRUST_PROXY` is unset and the immediate peer is a
-  loopback address (local development and the Vite proxy). Otherwise 403 `tls_required`, nothing
-  mutated. An operator with a non-loopback TLS-terminating proxy must set `NURTUO_TRUST_PROXY=1`,
-  which is already required for correct client addresses. No new configuration key.
+  credential-bearing PUT is accepted only if (a) `NURTUO_TRUST_PROXY=1` and the `X-Forwarded-Proto`
+  header holds exactly one value, `https`, or (b) `NURTUO_TRUST_PROXY` is unset, the immediate peer
+  is a loopback address (local development and the Vite dev proxy, which adds no forwarded
+  headers) and the request carries no `Forwarded` or `X-Forwarded-*` header. Otherwise 403
+  `tls_required`, nothing mutated. A list value (`https, http`) or a forwarded header seen without
+  `NURTUO_TRUST_PROXY=1` means the request passed through a proxy the server was not told to
+  trust, so it is refused. An operator with a TLS-terminating proxy must set
+  `NURTUO_TRUST_PROXY=1`, which is already required for correct client addresses. No new
+  configuration key.
+- **Trusted-proxy deployment invariant.** `NURTUO_TRUST_PROXY=1` is an operator assertion, not
+  something the server can verify. It is valid only when (1) the control-plane listener is
+  reachable **only** from the trusted proxy (bound to loopback or a private interface, or protected
+  by a network policy; today `listen(port)` binds every interface, so this is the operator's job),
+  (2) the proxy **overwrites** (does not append to) client-supplied `X-Forwarded-For` and
+  `X-Forwarded-Proto` (the middleware reads the first `X-Forwarded-For` value,
+  `middleware.ts:44-45`), and (3) the proxy sets `X-Forwarded-Proto: https` only for connections it
+  terminated with TLS and never forwards plaintext client traffic with `https`. Rule (b) is valid
+  only when no process on the host forwards non-local traffic to the listener; a loopback proxy
+  that accepts non-local traffic is a proxy and needs `NURTUO_TRUST_PROXY=1` and rule (a). The
+  same invariant governs the per-peer keys (D7). `docs/operations` and the `tls_required` error
+  text state it; violating it voids the trusted-TLS check and the per-peer limits.
 - **Uncertain commits.** Every publication writes a server-generated generation id. If the database
   outcome is uncertain (connection lost after `COMMIT` was sent, timeout), the server reads the
   committed generation **before reporting an outcome**: committed means 200, not committed means the
@@ -472,12 +560,26 @@ benchmark-gated:
   `dial_enforcement_unavailable`, on every installation. "Equivalent network enforcement" (an egress
   proxy or network policy) would need its own approved decision and test before it can lift this.
 - **API and UI (amends canvas D4).** The API still accepts pasted `known_hosts` content as input to
-  the trust step. At save it converts the content to `hostKeyPolicy: fingerprint` when the content
-  has exactly one key entry for the logical host and port. With zero or several matching keys it
-  returns 400 `known_hosts_ambiguous` and the UI asks the user to choose a fingerprint (the TOFU
-  scan or a pasted fingerprint). `hostKeyPolicy: known_hosts` sent directly is 400
-  `host_key_policy_not_supported` on the control-plane connection API. The UI shows no `known_hosts`
-  mode. Standalone and bundle connections are unchanged.
+  the trust step. At save it is parsed with OpenSSH marker semantics and converted to
+  `hostKeyPolicy: fingerprint` **only for a positive, unmarked match**:
+  - every line is parsed; a line that does not parse makes the whole paste 400;
+  - a line matches when one of its host patterns matches the logical host and port (`host` for
+    port 22, `[host]:port` otherwise; hashed `|1|` entries are checked by HMAC; a negated pattern
+    `!pattern` that matches excludes the line);
+  - **`@revoked`** lines are never candidates. A key on any `@revoked` line, whatever its host
+    patterns, is removed from the candidates, so a paste whose only matching entry is `@revoked`
+    has no candidate;
+  - **`@cert-authority`** lines that match the host, and any other or unknown marker, are not
+    supported by the fingerprint policy: the paste is rejected, even if an unmarked entry also
+    matches, because the stored fingerprint could not reproduce what the paste trusts;
+  - exactly one distinct unmarked key (after removing revoked keys) for the host and port becomes
+    the pin. Zero, or several distinct keys, is 400.
+  Every rejection is 400 `known_hosts_ambiguous` (the D12 status) with a `reason` of
+  `no_match`, `multiple_keys`, `revoked`, `cert_authority`, `unsupported_marker` or `parse_error`;
+  nothing is saved, and the UI asks the user to choose a fingerprint (the TOFU scan or a pasted
+  fingerprint). `hostKeyPolicy: known_hosts` sent directly is 400 `host_key_policy_not_supported`
+  on the control-plane connection API. The UI shows no `known_hosts` mode. Standalone and bundle
+  connections are unchanged.
 - **Egress contract amendments.** Canvas D11: the egress check applies at the actual dial (all
   dials of a run and scan, both address families), not only in preflight. Canvas Gaps #3 becomes
   "closed for `fingerprint`; `known_hosts` refused"; Gaps #19 is resolved by this rule.
@@ -487,8 +589,9 @@ benchmark-gated:
 | Case | Response |
 |---|---|
 | body over a class limit (`interactive-run`, `scan`, `preauth`, `secret-bearing`, operator-set ceiling) | 413 `payload_too_large`, before parsing (declared) or when the count crosses it (chunked) |
-| unknown route | 404/405 as today, body not read, `Connection: close` |
-| unauthenticated or unauthorized request with a body | 401/403 as today, body not read, `Connection: close` |
+| route with no policy entry | as on `main`: auth enabled 401 `unauthenticated` (anonymous) or 403 `no_policy` (authenticated); auth disabled 404/405; body not read, `Connection: close` |
+| SAML or SCIM stub route | 501 as on `main`, body not read |
+| unauthenticated or unauthorized request with a body (including `userOnly`, CSRF and instance-permission denials) | 401/403 as today, with the same audit record, body not read, `Connection: close` |
 | reservation not available before the wait deadline, or ingress queue full | 503 `capacity_unavailable`, `Retry-After` (D14, D7) |
 | isolated worker exceeds its heap | 500 `resource_exhausted`, process and gateway unaffected (D14) |
 | run/scan concurrency or dial rate exhausted | 429 `too_many_runs`, `Retry-After` (D2, D7) |
@@ -514,11 +617,12 @@ benchmark-gated:
 | `…/secrets` routes | removed from pending API (D9) | experimental (pending, #90) |
 | run error `credential_unbound` (409), save error `secret_ref_not_allowed` (400) | new | experimental |
 | limits configuration surface and its variable (D4) | new, name chosen by owner; added to the compatibility contract's classification table | EXPERIMENTAL (until a later decision makes it STABLE) |
-| `nurtuo flow run --max-output-bytes`, `--max-documents` (D5) | new, additive | EXPERIMENTAL; the compatibility table gains the row "`nurtuo flow` (subcommand and flags): EXPERIMENTAL", matching `docs/cli.md` ("The contract is experimental") |
+| `nurtuo flow run --max-output-bytes`, `--max-documents` (D5) | new, additive | EXPERIMENTAL; already covered on `main` by the compatibility row "`nurtuo flow` subcommands and flags: EXPERIMENTAL (includes the Run output flags)" |
 | `secret://` syntax, `nurtuo.connection/v1`, bundle syntax | unchanged | frozen / stable |
 
 The compatibility contract lists control-plane environment variables and `nurtuo` flags as STABLE,
-with named EXPERIMENTAL exceptions. D4 and D5 add explicit exceptions there in the same PR as the
+with named EXPERIMENTAL exceptions. The D5 flags are already covered by the `nurtuo flow` row on
+`main`. D4 adds an explicit exception for its configuration surface in the same PR as the L1a
 code; that is a public contract change and is covered by Łukasz's approval of D4 and D5
 (2026-11-24).
 
@@ -542,16 +646,17 @@ code; that is a public contract change and is covered by Łukasz's approval of D
   (login throttle and lockout). L1a adds two triggers that reuse the existing `rate_limited` code
   (not `too_many_runs`, which stays with the pending Run and scan routes):
   - **Per-peer in-flight limit:** every STABLE operation in `openapi.yaml`, including the
-    `security: []` operations, because the limit applies before authentication.
+    `security: []` operations (including the SAML and SCIM 501 stubs), because the limit applies
+    before authentication. The stubs verify no credential, so the failed-authentication bucket
+    does not apply to them; a future SCIM implementation adds it in its own spec.
   - **Failed-authentication bucket:** every STABLE operation that accepts a session cookie or bearer
-    token (all operations without `security: []`), the SCIM routes (route-local bearer), and `POST
-    /v1/auth/login`, where it adds to the existing throttle and lockout and leaves their codes
+    token (all operations without `security: []`) and `POST /v1/auth/login`, where it adds to the existing throttle and lockout and leaves their codes
     (`rate_limited`, `account_locked`) and `Retry-After` unchanged.
   - **OpenAPI:** each affected operation declares `429` with the shared `Error` response and a
     `Retry-After` header (integer seconds). Login keeps its existing description and gains the D7
     trigger in it.
   - **Precedence and headers:** as in "Admission, unread bodies and error precedence": the D7 429s
-    come after 404/405 and before 401, 403, 413, 503 and 400. Every D7 429 carries `Retry-After`;
+    come after route lookup (an unmatched route keeps its `main` status, see "Unmatched routes") and before 401, 403, 413, 503 and 400. Every D7 429 carries `Retry-After`;
     the in-flight 429 also carries `Connection: close` and the body is not read. The per-peer
     check runs before the instance-wide ingress check, so a peer over its own limit gets 429 even
     when the instance is also full, and a peer within its limit gets 503 `capacity_unavailable`
@@ -572,7 +677,12 @@ code; that is a public contract change and is covered by Łukasz's approval of D
 ## Security
 
 - Pre-auth memory: no body read before authorization except bounded D3 parsers. Per-peer in-flight
-  limit and failed-auth budget use `NURTUO_TRUST_PROXY` semantics; key cardinality is bounded.
+  limit and failed-auth budget use `NURTUO_TRUST_PROXY` semantics; key cardinality is bounded. The
+  pre-body decision is the `main` middleware decision (instance permission, `userOnly`, CSRF,
+  workspace, permission, with audited denials), moved before the body read, not a reimplementation.
+- Forwarded headers are trusted only under the trusted-proxy deployment invariant ("Credential
+  lifecycle"): listener reachable only from the proxy, client values overwritten, `https` only for
+  TLS-terminated connections.
 - Credential binding as above. Trusted TLS is required for credential-bearing PUTs (proxy-asserted
   or loopback). Login has no such server-side check today; adding one is out of scope.
 - SSRF: canvas D11 applies at the actual dial, for retries and both address families (D12);
@@ -590,25 +700,40 @@ code; that is a public contract change and is covered by Łukasz's approval of D
 Łukasz approved this spec's decisions (D1-D14) on 2026-11-24. Each phase is a separate PR with its
 tests.
 
-### Phase P90: PR #90 rework (must land in #90)
+### Phase P90: canvas Run rework (delivered in #100-#102)
 
 Findings from the Codex review (issuecomment-7134020883) and the Astra review (issuecomment-7134187185).
-The second blocker below comes from the Astra review.
+The second blocker below comes from the Astra review. #90 was split after
+[#99](https://github.com/nurtuo/nurtuo/pull/99) merged; the accepted canvas Run spec
+(`2026-11-23-canvas-run.md`, "Implementation Status") tracks the remaining work in
+[#100](https://github.com/nurtuo/nurtuo/pull/100) (connections and secrets),
+[#101](https://github.com/nurtuo/nurtuo/pull/101) (runtime support: runner, egress, host-key scan,
+`nurtuo flow` child, SFTP connector) and [#102](https://github.com/nurtuo/nurtuo/pull/102)
+(test-run API, canvas and end-to-end tests). Each P90 item lands in the PR that owns the code it
+changes. The P90 items **reuse what #99 merged on `main`** and do not re-add it: the permission
+matrix (`auth/permissions.ts`, `CANVAS_RUN`: `connection:write`, `connection:delete`,
+`secret:write`, `secret:delete`, `test_run:execute`), migration
+`0104_auth_seed_connection_permissions.sql`, the no-auth 404 behavior (canvas D9), the HTTP
+disconnect signal (`req.signal`) and sign-in, session restoration and logout (`LoginBar.tsx`). The
+compatibility contract on `main` already classifies "`nurtuo flow` subcommands and flags" as
+EXPERIMENTAL, including the Run output flags, so no P90 item adds that row.
 
-| Item | Finding | Change | Verify |
-|---|---|---|---|
-| P90-1 | Codex blocker / Astra blocker 1: password released to a repointed destination | D8, D10, D11, D13 binding, publication rule, credential lifecycle, 409 codes, `/secrets` removal (D9) | zero-auth tests T1-T6, T17-T20 |
-| P90-2 | Astra blocker 2: missing scan tests | zero authentication during scan; scan deadline and socket close against a silent TCP peer | T7, T8 in `flowrun_sftp_test.go` and `runner.test.ts` |
-| P90-3 | Codex major: DNS holds slots | deadline before preflight; `dns.promises.Resolver` (c-ares) with `timeout`/`tries` and `cancel()` on the run's abort signal (or a separately bounded pool); admission before graph validation (Astra major `runner.ts:87`) | T9 stalled resolver on both routes |
-| P90-4 | Codex major + Astra majors `ConnectionsPanel.tsx:77/83`: edit discards settings / non-atomic save | single credential-bearing PUT; preserve untouched settings and refs; failed save keeps prior pair | T10, canvas test with an API-created connection |
-| P90-5 | D1: global cap rejected | remove the global 1 MiB limit at `api.ts`; route-aware 413 for `interactive-run`, `scan` and the whole connection PUT (`secret-bearing`), decided from method and path before reading, with envelope values from the formulas | T11, T12, T21 |
-| P90-6 | D12 | vetted-address pinning for `fingerprint` connections and scans at every dial; `known_hosts` fails closed; `known_hosts` paste converted to fingerprint | T13, T22 |
-| P90-7 | Astra majors: Stop status, late workspace response, logout revocation | as listed in the Astra review | existing #90 test plan |
-| P90-8 | Codex nit / Astra minor: preview decoding | fatal streaming UTF-8 on the truncated prefix | malformed large payload; code point split at boundary |
-| P90-9 | D5 (required for #90) | `--max-output-bytes`, `--max-documents` in the child; runner passes D2's values | T23 |
-| P90-10 | spec amendment | update canvas Run spec D2 scope, **D4** (`known_hosts` paste), **D11** (egress at the actual dial), Phase 2, Contracts, Compatibility, Gaps #3/#7/#9/#19 and changelog; add the D4/D5 rows to the compatibility contract | `node scripts/check-docs-links.mjs` |
+| Item | Finding | Change | Delivered in | Verify |
+|---|---|---|---|---|
+| P90-1 | Codex blocker / Astra blocker 1: password released to a repointed destination | D8, D10, D13 binding, publication rule, credential lifecycle, 409 codes, `/secrets` removal (D9) in the connection store and routes; digest check and acquisition of one generation before reveal in the runner (D11) | store, routes, trusted TLS: #100; acquisition before reveal: #101 | T3-T6, T17-T20 in #100; zero-auth T1, T2, T5 at socket level in #101 |
+| P90-2 | Astra blocker 2: missing scan tests | zero authentication during scan; scan deadline and socket close against a silent TCP peer | #101 | T7, T8 in `flowrun_sftp_test.go` and `runner.test.ts` |
+| P90-3 | Codex major: DNS holds slots | deadline before preflight; `dns.promises.Resolver` (c-ares) with `timeout`/`tries` and `cancel()` on the run's abort signal (or a separately bounded pool); admission before graph validation (Astra major `runner.ts:87`) | #101 | T9 stalled resolver on both routes |
+| P90-4 | Codex major + Astra majors `ConnectionsPanel.tsx:77/83`: edit discards settings / non-atomic save | single credential-bearing PUT; preserve untouched settings and refs; failed save keeps prior pair | #100 | T10, canvas test with an API-created connection |
+| P90-5 | D1: global cap rejected | no global 1 MiB limit in `api.ts` (none is on `main`; the split branches must not add it); route-aware 413 decided from method and path before reading, with envelope values from the formulas: the whole connection PUT (`secret-bearing`), the scan route, `interactive-run` | connection PUT: #100; scan: #101; test-runs and the absence of a global cap: #102 | T11, T12, T21 |
+| P90-6 | D12 | `known_hosts` paste converted to fingerprint with marker semantics, `host_key_policy_not_supported`; vetted-address pinning for `fingerprint` connections and scans at every dial; stored `known_hosts` fails closed | paste conversion: #100; pinning and fail closed: #101 | T13, T22 |
+| P90-7 | Astra majors: Stop status, late workspace response, logout revocation | as listed in the Astra review; logout revocation reuses #99's session logout | #102 | the canvas Run test plan for #102 |
+| P90-8 | Codex nit / Astra minor: preview decoding | fatal streaming UTF-8 on the truncated prefix | #101 | malformed large payload; code point split at boundary |
+| P90-9 | D5 (required for Run) | `--max-output-bytes`, `--max-documents` in the child; runner passes D2's values | #101 | T23 |
+| P90-10 | spec amendment | update canvas Run spec D2 scope, **D4** (`known_hosts` paste), **D11** (egress at the actual dial), Phase 2, Contracts, Compatibility, Gaps #3/#7/#9/#19 and changelog | #100 (first of the three) | `node scripts/check-docs-links.mjs` |
 
-### Phase L1a: admission and memory budget (separate issue, independent of #90)
+Run is enabled (#102) only after #100 and #101 deliver P90-1, P90-6 and P90-9.
+
+### Phase L1a: admission and memory budget (separate issue, independent of #100-#102)
 
 Auth before body, route-inventory profiles plus coverage test against OpenAPI, unknown routes not
 read, unread-body handling, D3 bounded parser, explicit `headersTimeout`/`requestTimeout`/
@@ -635,10 +760,23 @@ per-row reservation, backpressure, abort on mid-stream failure.
 
 ## Acceptance criteria
 
-- WHEN an unauthenticated client sends any body to any non-`preauth` route THEN the server answers
-  401/404/405 with `Connection: close`, the application consumes no body bytes, server buffering is
+- WHEN a client sends any body to a non-`preauth` route and is denied before the body is read
+  (unauthenticated, `userOnly`, CSRF, instance permission, workspace, permission, unmatched route,
+  SAML/SCIM stub) THEN the server answers with the status, code and audit record it gives on `main`
+  and `Connection: close`, the application consumes no body bytes, server buffering is
   bounded by the socket high-water mark, and process RSS does not grow with body size.
-- WHEN a body exceeds the `preauth` limit THEN 413 before parsing (if D3 approved).
+- WHEN a body exceeds the `preauth` limit THEN 413 before parsing (if D3 approved); a valid login
+  body within the limit is read and answered as on `main`.
+- WHEN an owner without `instance:workspace_create` sends `POST /v1/workspaces` with a body THEN
+  403 `forbidden` with the audited denial and zero body bytes read; a bearer token gets the
+  `main` denial; a granted user session with CSRF gets 201.
+- WHEN a pasted `known_hosts` has no positive unmarked match (only `@revoked`, only
+  `@cert-authority`, unknown marker, several keys) THEN 400 `known_hosts_ambiguous` and no pin is
+  saved.
+- WHEN a revision is appended between the size read and the row read of a list THEN the list
+  stays within its reservation and contains exactly the snapshot's revisions.
+- WHEN an upload or a readback needs more than `W` THEN only that request fails (500
+  `resource_exhausted`), RSS stays within `M_proc` and the gateway keeps answering.
 - WHEN an existing client posts and fetches a revision above 1 MiB (fixed length and chunked, both
   digest modes, memory and PostgreSQL) THEN it gets 201 / 200 with full content and the same digest
   as on `main`.
@@ -709,21 +847,24 @@ messages; a file check alone does not satisfy these tests.
 | T8 | scan against silent TCP peer closes at deadline | same | |
 | T9 | stalled resolver on run and scan frees slot at deadline | `runner.test.ts` | injected resolver |
 | T10 | edit with blank password keeps refs, `timeoutMs`, `maxListEntries` | `core/web` and `connections/routes.test.ts` | API-created connection |
-| T11 | revision POST/GET/list above 1 MiB, chunked and fixed, both digest modes, both repositories | `api.test.ts`, `pg-*.test.ts` | Pg tests need a database |
+| T11 | revision POST/GET/list above 1 MiB, chunked and fixed, both digest modes, both repositories; a revision appended between the list's size read and row read (injected hook in both repositories) is not in that response and the reservation is never exceeded | `api.test.ts`, `pg-*.test.ts` | Pg tests need a database |
 | T12 | test-runs body > 1 MiB -> 413; scan and connection PUT: largest valid escaped request succeeds, +1 byte -> 413 (declared and chunked) | `api.test.ts`, `connections/routes.test.ts` | envelope formulas |
 | T13 | fingerprint connection: binding uses the logical host; every TCP connection of the run goes to the vetted address | `runner.test.ts`, `flowrun_sftp_test.go` | socket level |
-| T14 | unauthenticated large body on any route: application consumes 0 body bytes, `Connection: close`, server-side buffered bytes ≤ socket high-water mark, socket closed after the grace; `Expect: 100-continue` gets the final status | `api.test.ts` | L1a |
+| T14 | **pre-body denials only** (no route reads a body before its decision): unauthenticated or unauthorized large body on every non-`preauth` route, including unmatched routes and SAML/SCIM stubs: application consumes 0 body bytes, `Connection: close`, server-side buffered bytes ≤ socket high-water mark, socket closed after the grace; `Expect: 100-continue` gets the final status. Login (`preauth`): a valid body within the D3 limit is read and authenticates; a body over the limit gets 413 when the count crosses it; a pre-admission 429 (per-peer in-flight, failed-authentication bucket) reads 0 body bytes | `api.test.ts` | L1a |
 | T15 | every OpenAPI operation has a limit profile | `limits.test.ts` (new) | L1a |
 | T16 | list streaming aborts on mid-stream failure, never completes partially | `api.test.ts` | L1b |
-| T17 | credential PUT denials: bearer token (not user session), missing `secret:write` / `secret:delete`, missing CSRF, no trusted TLS (proxy without `https`, non-loopback without proxy) -> 403, nothing mutated | `connections/routes.test.ts` | |
+| T17 | credential PUT denials: bearer token (not user session), missing `secret:write` / `secret:delete`, missing CSRF, no trusted TLS -> 403, nothing mutated. Trusted-TLS cases: `NURTUO_TRUST_PROXY=1` with `X-Forwarded-Proto: http` (plaintext proxy ingress), missing, or a list such as `https, http` -> 403; `NURTUO_TRUST_PROXY` unset with a client-supplied `X-Forwarded-Proto: https` from a non-loopback peer -> 403; loopback peer carrying any `Forwarded`/`X-Forwarded-*` header with the setting unset -> 403; loopback peer without forwarded headers -> accepted; `NURTUO_TRUST_PROXY=1` with exactly `https` -> accepted | `connections/routes.test.ts` | |
 | T18 | keep/set/remove per field; every valid and invalid SFTP combination; empty string; after 409 `credential_rebind_required`, re-entry succeeds and the run authenticates once at the new destination | `connections/routes.test.ts`, `runner.test.ts` | SFTP for the run |
 | T19 | workspace deletion and connection deletion racing acquisition: either the admitted run finishes or the run is 404, never a reveal after purge | `connections/*.test.ts`, `runner.test.ts` | memory and Pg |
 | T20 | uncertain commit (connection dropped after `COMMIT`): outcome reconciled before the response; unreadable generation -> 503 `save_outcome_unknown`, reconciled on next access; restart: Pg row kept, volatile versions `missing`, run refused without network contact, re-entry restores | `connections/pg-*.test.ts`, `runner.test.ts` | Pg needs a database |
 | T21 | invalid D4 overrides (unknown key, bad unit, negative, zero-as-unlimited, raise of a safety ceiling or of a tighten-only dimension, isolation threshold above the coded maximum, budget sum above `heap_size_limit` minus headroom) fail startup with a clear error; valid finite raises of each group (a) Run, (b) threshold up to the coded maximum, (c) every D7 setting including the failed-authentication bucket are accepted | `limits.test.ts` | L1a |
-| T22 | rebinding: DNS answer changes between preflight and dial; connector retry; A+AAAA with IPv4 and IPv6 listeners; one disallowed answer -> no connection; host-key mismatch -> 0 auth; stored `known_hosts` -> 409, 0 connections; pasted `known_hosts` with one / several keys -> fingerprint / 400 | `runner.test.ts`, `egress.test.ts`, `flowrun_sftp_test.go` | socket level, Run and scan |
+| T22 | rebinding: DNS answer changes between preflight and dial; connector retry; A+AAAA with IPv4 and IPv6 listeners; one disallowed answer -> no connection; host-key mismatch -> 0 auth; stored `known_hosts` -> 409, 0 connections; pasted `known_hosts`: one unmarked key -> fingerprint; several keys -> 400; **only `@revoked` entry -> 400, no pin saved**; unmarked key also listed `@revoked` -> 400; **only `@cert-authority` entry -> 400, no pin saved**; `@cert-authority` plus an unmarked key -> 400; unknown marker, unparsable line -> 400; hashed `\|1\|` and `[host]:port` entries match; negated pattern excludes | `runner.test.ts`, `egress.test.ts`, `flowrun_sftp_test.go` | socket level, Run and scan |
 | T23 | large SFTP download and metadata-heavy listing above D2 limits: child RSS and temp-dir high-water bounded, `output_too_large`, no documents, temp dir removed, child reaped | `flowrun_sftp_test.go`, `runner.test.ts` | SFTP |
-| T24 | D14 load tests: `S_main` regression, high-expansion JSON, concurrent large and small reads and writes, slow readers, disconnects, uploads above `S_main`; gateway heartbeat answered; reservations return to zero; many peers, rapid scans, stalled uploads, repeated timeouts and disconnects with capacity recovery | `bench/` (new, `make bench`-style job) | L1a release gate |
-| T25 | D7 429 on STABLE routes: per-peer in-flight limit exceeded -> 429 `rate_limited` with `Retry-After` and `Connection: close`, body not read, before 401; empty failed-authentication bucket -> 429 before credential verification on a protected route and on login; login throttle/lockout codes unchanged; precedence against 404/405, 401, 413, 503 and 400; every affected OpenAPI operation declares 429 | `api.test.ts`, `limits.test.ts` | L1a |
+| T24 | D14 load tests: `S_main` regression, high-expansion JSON, concurrent large and small reads and writes, slow readers, disconnects, uploads above `S_main`; oversized upload and oversized readback (single row and list) above `W` fail alone with 500 `resource_exhausted`; peak process RSS ≤ `M_proc`; parent holds at most one transfer window per large operation; gateway heartbeat answered; reservations return to zero; many peers, rapid scans, stalled uploads, repeated timeouts and disconnects with capacity recovery | `bench/` (new, `make bench`-style job) | L1a release gate |
+| T25 | D7 429 on STABLE routes: per-peer in-flight limit exceeded -> 429 `rate_limited` with `Retry-After` and `Connection: close`, body not read, before 401; empty failed-authentication bucket -> 429 before credential verification on a protected route and on login; login throttle/lockout codes unchanged; precedence against unmatched routes (401 or 403 `no_policy`, or 404/405 with auth disabled), 401, 413, 503 and 400; every affected OpenAPI operation declares 429 | `api.test.ts`, `limits.test.ts` | L1a |
+| T26 | pre-body authorization reuses the `main` decision: owner without `instance:workspace_create` -> `POST /v1/workspaces` with a large body gets audited 403 `forbidden` with 0 body bytes read; bearer token -> 403 `forbidden` (`userOnly`), 0 bytes; cookie session without CSRF -> 403 `csrf`, 0 bytes; granted session with CSRF -> 201; workspace and permission denials keep their audit records | `api.test.ts`, `auth/instance.test.ts` | L1a |
+| T27 | unmatched method/path, auth enabled: anonymous -> 401 `unauthenticated` with `WWW-Authenticate`, invalid credentials -> 401, valid principal -> 403 `no_policy`; auth disabled: 404 / 405; each with an empty body and with a malformed JSON body (no 400), 0 body bytes read | `api.test.ts` | L1a, both auth modes |
+| T28 | SAML (`GET` login and metadata, `POST` ACS) and SCIM (each method) with and without a body: response identical to `main` (501 from `notImplemented`), 0 body bytes read; OIDC login and callback: query only, callback audit kept; per-peer 429 applies to all three, the failed-authentication bucket to none of the stubs | `api.test.ts`, `auth/oidc.test.ts` | L1a, tested separately |
 
 ## Gaps and risks
 
@@ -740,6 +881,7 @@ messages; a file check alone does not satisfy these tests.
 | 9 | c-ares resolver ignores `/etc/hosts`/search domains, so a host that resolves for the system resolver fails in Run | low | UX | documented; CI uses IP literals with `NURTUO_TEST_RUN_ALLOW_PRIVATE=1` |
 | 10 | Isolation worker transfer (structured clone) doubles memory for large trees | medium | performance | reservation counts it in `k`; child-process alternative chosen by measurement |
 | 11 | A deployment behind a TLS proxy without `NURTUO_TRUST_PROXY=1` cannot save credentials (403 `tls_required`) | low | UX | documented in operations; the error names the setting |
+| 12 | `NURTUO_TRUST_PROXY=1` while the listener is also reachable directly, or behind a proxy that appends client headers: a client forges `X-Forwarded-Proto: https` or its peer key | medium | security | trusted-proxy deployment invariant documented in operations and the error text; rule (a) needs exactly one `https` value; T17. A bind-address setting would let the server enforce part of it, but is a new configuration key (Ask First) and not part of this spec |
 
 ## Council
 
@@ -842,6 +984,26 @@ review's two majors are written to match those decisions.
 | 2 (major) | D7's new 429 triggers on STABLE routes are missing from the rollout | "Compatibility": affected operations for the per-peer in-flight limit and the failed-authentication bucket, reuse of `rate_limited` (not `too_many_runs`), OpenAPI `429` with `Retry-After`, error precedence (after 404/405, before 401), interaction with the 503 ingress budget and with the login throttle, upgrade note, `nurtuoctl`; Contracts, Failure modes, acceptance criteria, T25 |
 | 3 (nit) | D5 overstates where Boomi enforces the Test Mode byte quota | D5 row and Boomi table: the byte quota is an observable, execution-wide quota; no pre-allocation enforcement is claimed; listed under "Not verified" |
 | 4 (nit) | D7's Boomi row: 503 belongs to rate excess; the 5 MB figure is Low Latency | Boomi D7 row: 503 for HTTP Request Rate excess, input-size rejection without a documented status, public-cloud 5 MB labelled Low Latency |
+
+### Third review (Astra, head `e8d24f3`)
+
+Reviewer: GPT-6.2 Astra (OpenAI), https://github.com/nurtuo/nurtuo/pull/92#issuecomment-7171018980,
+on head `e8d24f3` against `main` `6e43918` (after #99). Verdict: request changes (3 blockers, 6
+majors, 1 minor). Claude Opus's answer below changes design detail and tests only; D1-D14 and the
+Boomi alignment are unchanged.
+
+| Item | Finding | Change in this spec |
+|---|---|---|
+| 1 (blocker) | pre-body authorization omits the instance-permission branch | Architecture item 2: the pre-body decision is the `main` middleware decision (`userOnly`, CSRF, `instance:workspace_create`, workspace, permission, audited denials) moved before the body read; precedence lists it; T26 |
+| 2 (blocker) | `known_hosts` conversion ignores markers | "API and UI": OpenSSH marker semantics, positive unmarked match only, `@revoked` removes the key, `@cert-authority` and unknown markers rejected, `reason` on the D12 400; T22 and acceptance extended |
+| 3 (blocker) | worker heap limits are no process-wide bound | "Memory budget": `M_proc = H_parent + E_parent + W + N` validated at startup; where each byte lives (transfer window, worker-side database reads and writes, backpressured response); exclusive admission capped at `W` with request-only 500 above it; T24 gates RSS ≤ `M_proc` and gateway liveness for oversized upload **and** readback |
+| 4 (major) | list size and rows in separate reads | one `REPEATABLE READ` snapshot with a `number` cutoff (PostgreSQL), one synchronous capture (memory); T11 append-between-reads in both repositories |
+| 5 (major) | unmatched routes would become 404/405 | "Unmatched routes": 401 / 403 `no_policy` (auth enabled) and 404/405 (auth disabled) kept, only the body read removed; Failure modes; T27 with empty and malformed bodies in both modes |
+| 6 (major) | SCIM/SAML are public 501 stubs | new `stub` class (body never read, response unchanged); SCIM removed from `control` and the failed-auth bucket; T28 tests OIDC, SAML and SCIM separately |
+| 7 (major) | P90 work assigned to #90 | P90 mapped to #100 / #101 / #102; reuses #99's permission matrix, migration 0104, D9 404, disconnect signal and logout; duplicate `nurtuo flow` classification task dropped (row already on `main`) |
+| 8 (major) | forwarded-HTTPS trust needs a trusted-proxy invariant | "Trusted-proxy deployment invariant"; rule (a) needs exactly one `https`; rule (b) refuses requests with forwarded headers; Gaps #12; T17 extended |
+| 9 (major) | T14 contradicts login | T14 restricted to pre-body denials, with login cases (valid body, overflow, pre-admission 429 with zero bytes); acceptance aligned |
+| 10 (minor) | open questions under a closed gate | each remaining implementation question has an owner, decision point and blocked phase exit; question 4 (D4 name) stays with Łukasz |
 
 ## Boomi alignment
 
@@ -976,19 +1138,17 @@ Options as presented to Łukasz:
   - Either way the D4 and D14 rows above carry the agreed text, and Łukasz approves them like every
     D item (approved 2026-11-24).
 
-Earlier open questions:
+Remaining implementation questions. None reopens a D item; each has an owner, the point at which
+it is decided and the phase exit it blocks. A phase cannot exit while its question is open.
 
-1. Final D3 value for login after checking field sizes, encodings and existing clients.
-2. Benchmarks for the D14 threshold, expansion factor `k`, budgets, ingress and rate placeholders, on
-   both repositories. No production size distribution, PostgreSQL boundary measurement or load-test
-   result has been supplied to the council (Astra R3).
-3. Does any instance hold trial data in the #90 connection/secret tables that must be migrated, or
-   is re-entry acceptable (assumed acceptable; absent or unbound volatile credentials are treated as
-   `missing`)?
-4. Name of the D4 configuration surface.
-5. Is c-ares DNS (no `/etc/hosts`, different search resolution) acceptable for Run, or is a bounded
-   threadpool resolver required?
-6. Candidate `knownHosts` length cap (64 KiB) for the `secret-bearing` envelope.
+| # | Question | Owner | Decided at | Blocks exit of |
+|---|---|---|---|---|
+| 1 | Final D3 value for login after checking field sizes, encodings and existing clients | L1a implementer, proposes; Łukasz approves in the L1a PR | L1a PR review, from the field/encoding/client evidence attached to it | L1a |
+| 2 | Benchmarks for the D14 threshold, `k`, `W`, `E_parent`, budgets, ingress and rate placeholders, on both repositories. No production size distribution, PostgreSQL boundary measurement or load-test result has been supplied to the council (Astra R3) | L1a implementer; values recorded in the changelog | T24 run on the reference configuration, before the L1a release | L1a release (T24 gate) |
+| 3 | Does any instance hold trial data in the #90 connection/secret tables that must be migrated, or is re-entry acceptable (assumed acceptable; absent or unbound volatile credentials are treated as `missing`)? | Łukasz | before #100 merges | #100 |
+| 4 | Name of the D4 configuration surface (reserved for Łukasz by D4) | **Łukasz** | before the L1a PR that adds the surface is opened; the implementer does not choose it | L1a |
+| 5 | Is c-ares DNS (no `/etc/hosts`, different search resolution) acceptable for Run, or is a bounded threadpool resolver required? | #101 implementer proposes with the T9 result; Łukasz approves if the threadpool option is chosen (it changes Gaps #9) | #101 PR review | #101 |
+| 6 | Candidate `knownHosts` length cap (64 KiB) for the `secret-bearing` envelope | #100 implementer; T12 envelope test | #100 PR review (a lower value only tightens; a higher one needs a spec change) | #100 |
 
 ## Improvement opportunities
 
@@ -1047,3 +1207,12 @@ Earlier open questions:
   (major 2); D5's Boomi comparison treats the Test Mode byte quota as observable only (nit 1); D7's
   Boomi row ties 503 to HTTP Request Rate excess and labels the public-cloud 5 MB figure Low Latency
   (nit 2). Open questions closed. Status approved; the PR is not merged.
+- 2026-11-25: Claude Opus's spec-only edit answering the Astra review of `e8d24f3`
+  (https://github.com/nurtuo/nurtuo/pull/92#issuecomment-7171018980, 3 blockers, 6 majors, 1
+  minor), after merging `main` `6e43918` (#99, #64). Pre-body authorization reuses the `main`
+  middleware decision including `instance:workspace_create`; `known_hosts` conversion follows
+  OpenSSH markers; the D14 budget gets a physical process bound and byte locations; list size and
+  rows come from one snapshot; unmatched routes keep 401/403 `no_policy` and 404/405; SAML/SCIM
+  stubs get a body-free profile; P90 is mapped to #100-#102; the trusted-proxy invariant is
+  stated; T14 is restricted to pre-body denials; T26-T28 added; open questions get owners. D1-D14
+  unchanged; status stays approved.
