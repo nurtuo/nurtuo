@@ -171,7 +171,7 @@ func parseFlowRunArgs(args []string) (*flowRunOptions, error) {
 		case "max-documents":
 			badLimit = badLimit || o.maxDocuments <= 0
 		case "max-output-bytes":
-			badLimit = badLimit || o.maxOutputBytes <= 0 || o.maxOutputBytes > (1<<60)
+			badLimit = badLimit || o.maxOutputBytes <= 0 || o.maxOutputBytes > (1<<30)
 		}
 	})
 	if badLimit {
@@ -501,6 +501,7 @@ func flowRun(args []string, stdout, stderr io.Writer, reg *connhost.Registry) in
 	eng.MaxReturnedDocuments = opts.maxDocuments
 	eng.MaxReturnedBytes = opts.maxOutputBytes
 	if opts.maxOutputBytes > 0 {
+		eng.Eval = engine.NewBoundedEvaluator(opts.maxOutputBytes)
 		eng.Spool = docs.NewSpool(docs.SpoolConfig{DiskBudget: opts.maxOutputBytes})
 	}
 	eng.Registry.RegisterConnectorLookup(mgr) // start is a pass-through when no runner is registered
