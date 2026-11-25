@@ -23,18 +23,21 @@ var errDirectoryBudget = errors.New("sftp: directory response exceeds the wire b
 
 // SFTP v3 packet types used by the streaming directory reader.
 const (
-	fxpInit    = 1
-	fxpVersion = 2
-	fxpOpenDir = 11
-	fxpReadDir = 12
-	fxpStatus  = 101
-	fxpHandle  = 102
-	fxpName    = 104
+	fxpInit     = 1
+	fxpVersion  = 2
+	fxpLstat    = 7
+	fxpOpenDir  = 11
+	fxpReadDir  = 12
+	fxpReadLink = 19
+	fxpStatus   = 101
+	fxpHandle   = 102
+	fxpName     = 104
+	fxpAttrs    = 105
 )
 
 // pkg/sftp's ReadDirContext accumulates the entire listing. Use a dedicated
-// subsystem channel so we can stop inside a NAME packet and discard the rest
-// without affecting the regular client used for path confinement.
+// streaming subsystem for both path confinement and listing. Closing it also
+// discards any unread bytes in the last NAME packet.
 func (s *session) readBoundedDir(dir string, remaining int64, visit func(string, *pkgsftp.FileStat) (bool, error)) (err error) {
 	channel, err := s.ssh.NewSession()
 	if err != nil {
@@ -74,26 +77,11 @@ func (s *session) readBoundedDir(dir string, remaining int64, visit func(string,
 		_, err := input.Write(append(binary.BigEndian.AppendUint32(nil, uint32(len(payload))), payload...))
 		return err
 	}
-	readPacket := func(id uint32) (byte, *directoryPacket, error) {
-		var header [5]byte
-		if _, err := io.ReadFull(wire, header[:]); err != nil {
-			return 0, nil, err
-		}
-		length := binary.BigEndian.Uint32(header[:4])
-		if length < 5 || length > 256<<10 {
-			return 0, nil, errors.New("sftp: invalid directory packet length")
-		}
-		packet := &directoryPacket{LimitedReader: io.LimitedReader{R: wire, N: int64(length) - 1}}
-		if got := packet.uint32(); packet.err == nil && got != id {
-			return 0, nil, errors.New("sftp: unexpected directory response identifier")
-		}
-		return header[4], packet, packet.err
-	}
 
 	if err := request(fxpInit, 3, nil); err != nil {
 		return err
 	}
-	kind, packet, err := readPacket(3)
+	kind, packet, err := readDirectoryPacket(wire, 3)
 	if err != nil {
 		return err
 	}
@@ -103,10 +91,52 @@ func (s *session) readBoundedDir(dir string, remaining int64, visit func(string,
 	if err := packet.skip(packet.N); err != nil {
 		return err
 	}
-	if err := request(fxpOpenDir, 1, []byte(dir)); err != nil {
+	id := uint32(0)
+	call := func(kind byte, value string) (byte, *directoryPacket, error) {
+		id++
+		if err := request(kind, id, []byte(value)); err != nil {
+			return 0, nil, err
+		}
+		return readDirectoryPacket(wire, id)
+	}
+	symlink := func(path string) (bool, error) {
+		kind, packet, err := call(fxpLstat, path)
+		if err != nil {
+			return false, err
+		}
+		if kind != fxpAttrs {
+			return false, packet.statusError(kind)
+		}
+		stat := packet.attributes()
+		if packet.err == nil && packet.N != 0 {
+			return false, errors.New("sftp: trailing data in directory attributes")
+		}
+		return stat.FileMode()&os.ModeSymlink != 0, packet.err
+	}
+	readLink := func(path string) (string, error) {
+		kind, packet, err := call(fxpReadLink, path)
+		if err != nil {
+			return "", err
+		}
+		if kind != fxpName {
+			return "", packet.statusError(kind)
+		}
+		if packet.uint32() != 1 {
+			return "", errors.New("sftp: invalid symlink response count")
+		}
+		target := string(packet.readString())
+		_ = packet.skip(int64(packet.uint32()))
+		_ = packet.attributes()
+		if packet.err == nil && packet.N != 0 {
+			return "", errors.New("sftp: trailing data in symlink response")
+		}
+		return target, packet.err
+	}
+	confined, err := s.confineWith(dir, true, symlink, readLink)
+	if err != nil {
 		return err
 	}
-	kind, packet, err = readPacket(1)
+	kind, packet, err = call(fxpOpenDir, confined)
 	if err != nil {
 		return err
 	}
@@ -121,11 +151,8 @@ func (s *session) readBoundedDir(dir string, remaining int64, visit func(string,
 		return errors.New("sftp: trailing data in directory handle")
 	}
 
-	for id := uint32(2); ; id++ {
-		if err := request(fxpReadDir, id, handle); err != nil {
-			return err
-		}
-		kind, packet, err := readPacket(id)
+	for {
+		kind, packet, err := call(fxpReadDir, string(handle))
 		if err != nil {
 			return err
 		}
@@ -139,29 +166,55 @@ func (s *session) readBoundedDir(dir string, remaining int64, visit func(string,
 		if kind != fxpName {
 			return fmt.Errorf("sftp: unexpected directory response type %d", kind)
 		}
-		count := packet.uint32()
-		for range count {
-			name := string(packet.readString())
-			_ = packet.skip(int64(packet.uint32())) // longname
-			stat := packet.attributes()
-			if packet.err != nil {
-				return packet.err
-			}
-			if name == "." || name == ".." {
-				continue
-			}
-			more, err := visit(path.Base(name), &stat)
-			if err != nil || !more {
-				return err
-			}
-		}
-		if packet.err != nil {
-			return packet.err
-		}
-		if packet.N != 0 {
-			return errors.New("sftp: trailing data in directory listing")
+		more, err := packet.visitEntries(visit)
+		if err != nil || !more {
+			return err
 		}
 	}
+}
+
+func readDirectoryPacket(wire io.Reader, id uint32) (byte, *directoryPacket, error) {
+	var header [5]byte
+	if _, err := io.ReadFull(wire, header[:]); err != nil {
+		return 0, nil, err
+	}
+	length := binary.BigEndian.Uint32(header[:4])
+	if length < 5 || length > 256<<10 {
+		return 0, nil, errors.New("sftp: invalid directory packet length")
+	}
+	packet := &directoryPacket{LimitedReader: io.LimitedReader{R: wire, N: int64(length) - 1}}
+	if got := packet.uint32(); packet.err == nil && got != id {
+		return 0, nil, errors.New("sftp: unexpected directory response identifier")
+	}
+	return header[4], packet, packet.err
+}
+func (packet *directoryPacket) visitEntries(visit func(string, *pkgsftp.FileStat) (bool, error)) (bool, error) {
+	count := packet.uint32()
+	if packet.err == nil && int64(count) > packet.N/12 {
+		return false, errors.New("sftp: invalid directory entry count")
+	}
+	for range count {
+		name := string(packet.readString())
+		_ = packet.skip(int64(packet.uint32())) // longname
+		stat := packet.attributes()
+		if packet.err != nil {
+			return false, packet.err
+		}
+		if name == "." || name == ".." {
+			continue
+		}
+		more, err := visit(path.Base(name), &stat)
+		if err != nil || !more {
+			return false, err
+		}
+	}
+	if packet.err != nil {
+		return false, packet.err
+	}
+	if packet.N != 0 {
+		return false, errors.New("sftp: trailing data in directory listing")
+	}
+	return true, nil
 }
 
 type directoryPacket struct {

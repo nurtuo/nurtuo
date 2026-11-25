@@ -73,7 +73,7 @@ that the recommendation's wording named something that does not exist, the wordi
 | ID | Question | Decision (as recommended, accepted) | Applied as |
 |---|---|---|---|
 | D1 | Sync or async test run? | **Synchronous** `POST .../test-runs` returning the full result, bounded by the D2 timeout; the response carries a `runId` so job + poll can be added later without breaking clients | as decided |
-| D2 | Timeouts and size limits? | **Run timeout 30 s default, client may ask up to 120 s; request body ≤ 1 MiB (413); returned payload ≤ 1 MiB total decoded and ≤ 20 documents (else the run fails with `output_too_large`); 2 concurrent runs per workspace, 4 per instance (429)** | as decided; also bounds the child's spool, see Phase 3 step 7 |
+| D2 | Timeouts and size limits? | **For test-run execution: timeout 30 s default, client may ask up to 120 s; request body ≤ 1 MiB (413); returned payload ≤ 1 MiB total decoded and ≤ 20 documents (else the run fails with `output_too_large`); 2 concurrent runs per workspace, 4 per instance (429)** | as decided; also bounds the child's spool, see Phase 3 step 7 |
 | D3 | Where are secrets stored in M1, and how does the canvas refer to them? | **Workspace-scoped control-plane secret store behind a `SecretStore` interface, in-memory backend only in this slice** (values live in the control-plane process, never on disk, lost on restart; a persistent encrypted backend is a separate spec). The canvas and connections refer to secrets only as `secret://<name>`; the password is never in the flow JSON, the connection JSON, a response, a log or the audit log | as decided |
 | D4 | How is the SFTP host key accepted in the UI? | **TOFU (server scans, user confirms the fingerprint) plus paste of a fingerprint or `known_hosts` content, never an insecure option.** Nothing is stored until the user presses "Trust this key"; the trusted key is saved as `hostKeyPolicy: fingerprint`. `hostKeyPolicy: insecure` is rejected by the API (400) and there is no UI for it. A later mismatch is a hard error, never a re-prompt that overwrites | as decided; the scan reports the key the connector actually negotiates (Phase 5) |
 | D5 | Is run history persisted? | **Not persisted.** The result lives in canvas memory and is cleared on any edit, reload or logout; the server keeps only the audit row (action `test_run.execute`, status, no payload) | as decided |
@@ -93,8 +93,7 @@ that the recommendation's wording named something that does not exist, the wordi
 
 None blocking: Q1–Q16 are answered by D1–D16. Remaining items are non-blocking and are tracked where
 they occur: confirm Rebex's file path for the manual smoke test (Tests), confirm that Chromium keeps
-the `Secure` cookie on `127.0.0.1` (Gaps #10), check existing revision sizes against the 1 MiB body
-limit before Phase 2 ships (Gaps #9), and a structured `connection`/`stop` field and a
+the `Secure` cookie on `127.0.0.1` (Gaps #10), and a structured `connection`/`stop` field and a
 `--max-output-bytes` flag in the CLI as later additive follow-ups (Gaps #7, Improvement opportunities).
 
 ## Scope
@@ -221,10 +220,9 @@ New module `core/control-plane/src/connections/` (D3, D6, D8):
   another secret in the workspace (409 `secret_name_collision`, D12). `envVar(name)` is a TypeScript
   port of Go `secrets.EnvVar` **including** the `NURTUO_SECRET_` prefix, pinned by a shared fixture
   (`a-b`, `a_b`, `A.b`, digits) that is also run against the Go function.
-- Request body limit in `createHttpServer`: 1 MiB, 413 `payload_too_large` before JSON parsing (D2;
-  control-plane gap 2 had suggested 4 MiB, D2 fixes 1 MiB). It applies to every `/v1/` route and is
-  documented in `openapi.yaml`; whether bundles posted as revision `content` can exceed it is a
-  non-blocking check before this phase ships (Gaps #9).
+- Request body limits follow the operation profiles in PR #92. Bounded operations return 413
+  `payload_too_large` before JSON parsing when their limits are exceeded. Test runs have a 1 MiB
+  request limit (D2), and revision uploads retain their existing defaults.
 - Routes are auth-module endpoints so they receive `EndpointCtx.workspace`: `createAuthHook` gains
   an option `extraEndpoints?: Record<string, Endpoint>` merged into the `endpoints` lookup
   (`auth/middleware.ts`), and `main.ts` passes the connection, secret and test-run endpoints. When
@@ -252,7 +250,7 @@ New module `core/control-plane/src/testrun/` (D1, D2, D7, D10, D11, D12):
 
 `TestRunner.run(ws, request, signal)`:
 
-1. Limits: body ≤ 1 MiB (Phase 2), `timeoutMs` in 1000..120000 (default 30000), at most 64 input
+1. Limits: test-run body ≤ 1 MiB, `timeoutMs` in 1000..120000 (default 30000), at most 64 input
    properties, keys `^[A-Za-z_][A-Za-z0-9_.-]{0,63}$`, values ≤ 4 KiB. Concurrency semaphore 2 per
    workspace, 4 per instance -> 429 `too_many_runs` with `retry-after: 5`.
 2. Validate `flow` with `validateFlow` from `@nurtuo/flow-validate` (the same library as the canvas);
@@ -405,9 +403,7 @@ See [Tests](#tests). Changes `.github/workflows/ci.yml` (the `web-e2e` job from 
 
 Each phase is additive. Phase 1 adds JSON fields. Phases 2-5 add routes, a table, permissions and a
 role-seed migration (and the explicit 404 in `route()`); rollback = remove the routes from `main.ts` (data in `connections` is inert);
-the table can be dropped by a later migration. Phase 4 UI is inert without a control plane. No
-existing behaviour changes except the 1 MiB request body limit (Phase 2), which is a single
-constant.
+the table can be dropped by a later migration. Phase 4 UI is inert without a control plane. The limits on the new endpoints roll back with their routes.
 
 ### Alternatives considered
 
@@ -437,7 +433,7 @@ spec) and are labelled so in `docs/cli.md` and `docs/operations.md`.
 | `PUT\|DELETE /v1/workspaces/{ws}/secrets/{name}` | new; PUT body `{ value }`, 204, value never returned; 409 `secret_name_collision` | experimental |
 | `POST /v1/workspaces/{ws}/connections/host-key-scan` | new (Phase 5) | experimental |
 | `POST /v1/workspaces/{ws}/test-runs` | new; request and response as in Design | experimental |
-| Request body limit | all `/v1/` routes: 413 `payload_too_large` above 1 MiB, documented in `openapi.yaml` (applies to STABLE paths; see Compatibility) | new behaviour |
+| Request body limit | operation-specific profiles in PR #92; 413 `payload_too_large` above the selected limit; no new default ceiling on revision uploads | new behaviour |
 | Permissions | new resources `connection` (`read`, `write`, `delete`), `secret` (`write`, `delete`), `test_run` (`execute`) in `auth/permissions.ts`; role seed migration `0104_auth_seed_connection_permissions.sql` | experimental |
 | Environment | `NURTUO_FLOW_RUN_BIN`, `NURTUO_TEST_RUN_ALLOW_PRIVATE` (control plane) | experimental (by exception to STABLE env vars) |
 | `nurtuo flow run --json` | additive `steps` in the envelope and the JSON error (D16) | experimental (as PR #51) |
@@ -449,11 +445,9 @@ of this spec is that request.
 
 ## Compatibility
 
-- REST: only new paths and new permissions; existing clients are unaffected (the
-  [backward-compatibility contract](2026-11-22-backward-compatibility-contract.md) treats `/v1/` paths
-  as STABLE and response fields as ADDITIVE-ONLY; nothing existing changes). The 1 MiB body limit
-  is the one behaviour change: a client posting a larger revision today would get 413 (none known;
-  see Gaps #9).
+- REST: the [backward-compatibility contract](2026-11-22-backward-compatibility-contract.md)
+  treats `/v1/` paths as STABLE and response fields as ADDITIVE-ONLY. Revision uploads and full
+  readback retain their existing default behavior under the operation-specific profiles in PR #92.
 - Roles: built-in roles gain permissions per D6 (`runtime` gains none). Editors lack `member:manage`,
   so `canGrant` is unchanged in practice (it matters only for owner and admin). The `0104` seed keeps
   `permissions.ts` and SQL in sync (drift test, with its permission regex widened for `test_run`).
@@ -728,7 +722,7 @@ egress, secrets in the control plane), `docs/getting-started.md` (Run in the can
 | 6 | Secrets are in the child's environment; another process of the same OS user can read `/proc/<pid>/environ` during the run | low | security | same user as the control plane, which holds the values anyway; runs are short; D12 alternative documented |
 | 7 | A hostile or buggy flow produces 4 GiB of output; Node buffers it | medium | reliability | stdout cap 1.5 MiB then kill. `TMPDIR=<tmp>` only moves the child's `docs.Spool` files and does not bound them, so the runner polls the size of `<tmp>` and kills the child above 64 MiB; the child's `writeOutput` loads each returned payload into memory (`p.Bytes()`) before the stdout cap applies, a residual memory risk until a later additive CLI limit (`--max-output-bytes`, not part of D16) exists; temp dir removed after |
 | 8 | The child hangs on a stalled SFTP server (SFTP gap 1: `timeoutMs` covers only connect) | medium | reliability | `--timeout` in the child plus SIGTERM/SIGKILL from the control plane; PR #51 made transfers cancellable |
-| 9 | The new 1 MiB body limit rejects an existing client that posts a large revision (a bundle as `content`) | medium | compatibility | check bundle sizes in `nurtuoctl push` before Phase 2; make the limit per route if needed (D2) |
+| 9 | A bounded operation profile is incorrectly applied to a revision upload | medium | compatibility | retain the revision profile without a default byte ceiling and test uploads above 1 MiB (PR #92) |
 | 10 | The `Secure` session cookie is not stored when the canvas is served over plain `http://` on a non-localhost address (for example a LAN IP in `make dev`) | medium | UX | document `127.0.0.1`/`localhost` or TLS; Chromium treats loopback as secure (non-blocking: confirm in Phase 4) |
 | 11 | A user trusts a TOFU fingerprint without comparing it, on a network with a MITM; credentials are then sent to the attacker | medium | security | explicit wording, show the fingerprint prominently, never auto-trust; paste path for out-of-band fingerprints |
 | 12 | The server rotates its host key; every run fails and users ask for an "ignore" switch | low | UX | message explains rotation; replacing the key is the same TOFU/paste flow with the old one shown; no insecure switch |

@@ -93,12 +93,14 @@ func (s *session) Close() {
 	// Close the socket before joining the SFTP receiver. A peer may ignore
 	// the channel close or stop sending data after a local budget rejection.
 	_ = s.ssh.Close()
-	_ = s.fs.Close()
+	if s.fs != nil {
+		_ = s.fs.Close()
+	}
 }
 
 // dial connects and handshakes, honouring ctx cancellation and cfg.Timeout for the whole
 // connect + SSH handshake.
-func dial(ctx context.Context, cfg *config) (*session, error) {
+func dial(ctx context.Context, cfg *config, openSFTP bool) (*session, error) {
 	sc, err := cfg.sshConfig()
 	if err != nil {
 		return nil, err
@@ -127,6 +129,9 @@ func dial(ctx context.Context, cfg *config) (*session, error) {
 	// The AfterFunc stays armed (until session.Close): cancelling ctx closes the connection,
 	// which unblocks any read or write in flight.
 	c := ssh.NewClient(sshConn, chans, reqs)
+	if !openSFTP {
+		return &session{cfg: cfg, ssh: c, stop: stop}, nil
+	}
 	fs, err := pkgsftp.NewClient(c)
 	if err != nil {
 		stop()
@@ -154,7 +159,7 @@ func (*Connector) Test(ctx context.Context, req *connectorv1.TestRequest) (*conn
 	if err != nil {
 		return &connectorv1.TestResponse{Diagnostic: redact(err.Error(), nil)}, nil
 	}
-	s, err := dial(ctx, cfg)
+	s, err := dial(ctx, cfg, true)
 	if err != nil {
 		return &connectorv1.TestResponse{Diagnostic: redact(err.Error(), cfg.secrets())}, nil
 	}
@@ -212,11 +217,19 @@ func (*Connector) Execute(stream connectorv1.ConnectorService_ExecuteServer) err
 	if err != nil {
 		return err
 	}
-	s, err := dial(stream.Context(), cfg)
-	if err != nil {
-		return redactErr(err, cfg)
+	budget, supportsBudget := stream.(outputBudget)
+	boundedList := false
+	if op == opList && supportsBudget {
+		_, boundedList = budget.OutputBytesRemaining()
 	}
-	defer s.Close()
+	s := &session{cfg: cfg}
+	if !boundedList {
+		s, err = dial(stream.Context(), cfg, true)
+		if err != nil {
+			return redactErr(err, cfg)
+		}
+		defer s.Close()
+	}
 	dir := str(start.GetOptions(), "directory")
 
 	isPut := op == opPut || op == opCreate
@@ -329,7 +342,7 @@ const maxSymlinkHops = 40
 
 // walk resolves p (absolute) component by component with Lstat/Readlink, following symlinks.
 // Components that do not exist are appended verbatim (they cannot be links).
-func (s *session) walk(p string) (string, error) {
+func walk(p string, symlink func(string) (bool, error), readLink func(string) (string, error)) (string, error) {
 	cur := "/"
 	parts := splitPath(p)
 	hops := 0
@@ -344,18 +357,18 @@ func (s *session) walk(p string) (string, error) {
 			continue
 		}
 		next := path.Join(cur, c)
-		fi, err := s.fs.Lstat(next)
+		isLink, err := symlink(next)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				return path.Join(append([]string{next}, parts...)...), nil
 			}
 			return "", err
 		}
-		if fi.Mode()&os.ModeSymlink != 0 {
+		if isLink {
 			if hops++; hops > maxSymlinkHops {
 				return "", fmt.Errorf("%w: too many symbolic links", errBadInput)
 			}
-			tgt, err := s.fs.ReadLink(next)
+			tgt, err := readLink(next)
 			if err != nil {
 				return "", err
 			}
@@ -380,13 +393,20 @@ func within(root, p string) bool {
 // points outside is refused. The root itself is refused unless allowRoot. (There is an unavoidable
 // check-then-use window; the SFTP protocol has no openat.)
 func (s *session) confine(p string, allowRoot bool) (string, error) {
+	return s.confineWith(p, allowRoot, func(p string) (bool, error) {
+		info, err := s.fs.Lstat(p)
+		return err == nil && info.Mode()&os.ModeSymlink != 0, err
+	}, s.fs.ReadLink)
+}
+
+func (s *session) confineWith(p string, allowRoot bool, symlink func(string) (bool, error), readLink func(string) (string, error)) (string, error) {
 	lex := s.cfg.remote(p)
 	root := path.Clean(s.cfg.Root)
-	realRoot, err := s.walk(root)
+	realRoot, err := walk(root, symlink, readLink)
 	if err != nil {
 		return "", err
 	}
-	real, err := s.walk(lex)
+	real, err := walk(lex, symlink, readLink)
 	if err != nil {
 		return "", err
 	}
@@ -550,10 +570,6 @@ func (s *session) list(stream connectorv1.ConnectorService_ExecuteServer, d *doc
 	if p == "" {
 		p = "/"
 	}
-	rp, err := s.confine(p, true)
-	if err != nil {
-		return err
-	}
 	budget, bounded := stream.(outputBudget)
 	remaining := int64(0)
 	if bounded {
@@ -585,7 +601,14 @@ func (s *session) list(stream connectorv1.ConnectorService_ExecuteServer, d *doc
 		return true, nil
 	}
 	if bounded {
-		err := s.readBoundedDir(rp, remaining, func(name string, stat *pkgsftp.FileStat) (bool, error) {
+		// A truncated NAME packet leaves unread bytes on the subsystem. Each bounded
+		// document gets its own connection, even when multiple documents share a batch.
+		listing, err := dial(stream.Context(), s.cfg, false)
+		if err != nil {
+			return err
+		}
+		defer listing.Close()
+		err = listing.readBoundedDir(p, remaining, func(name string, stat *pkgsftp.FileStat) (bool, error) {
 			return appendEntry(name, int64(stat.Size), stat.ModTime(), stat.FileMode())
 		})
 		if errors.Is(err, errDirectoryBudget) {
@@ -595,6 +618,10 @@ func (s *session) list(stream connectorv1.ConnectorService_ExecuteServer, d *doc
 			return err
 		}
 	} else {
+		rp, err := s.confine(p, true)
+		if err != nil {
+			return err
+		}
 		infos, err := s.fs.ReadDir(rp)
 		if err != nil {
 			return err

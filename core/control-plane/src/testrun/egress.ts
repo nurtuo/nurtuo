@@ -64,9 +64,10 @@ function groups6(ip: string): number[] | undefined {
 }
 
 function blockedV4(o: number[]): boolean {
-  const [a, b] = [o[0]!, o[1]!];
+  const [a, b, c] = [o[0]!, o[1]!, o[2]!];
   return a === 0 || a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) ||
-    (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254);
+    (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) ||
+    (a === 192 && b === 0 && c === 0) || (a === 198 && (b === 18 || b === 19)) || a >= 224;
 }
 
 /** True for addresses a test run must not dial by default. Unparseable input is blocked (fail closed). */
@@ -78,6 +79,10 @@ export function isBlockedAddress(ip: string): boolean {
     if (!g) return true;
     if (g.every((n, i) => (i < 7 ? n === 0 : n <= 1))) return true; // :: and ::1
     if (g.slice(0, 5).every((n) => n === 0) && g[5] === 0xffff) return blockedV4([g[6]! >> 8, g[6]! & 255, g[7]! >> 8, g[7]! & 255]); // ::ffff:a.b.c.d
+    // Block transition and translation prefixes whose routing can reach another address family.
+    if (g.slice(0, 6).every((n) => n === 0)) return true; // IPv4-compatible
+    if (g[0] === 0x64 && g[1] === 0xff9b && g.slice(2, 6).every((n) => n === 0)) return true; // NAT64
+    if (g[0] === 0x2002) return true; // 6to4
     if ((g[0]! & 0xfe00) === 0xfc00) return true; // fc00::/7 (incl. fd00:ec2::254)
     if ((g[0]! & 0xffc0) === 0xfe80) return true; // fe80::/10
     return false;

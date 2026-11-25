@@ -146,11 +146,17 @@ func serveSFTPConn(nc net.Conn, cfg *ssh.ServerConfig, h pkgsftp.Handlers) {
 		return
 	}
 	go ssh.DiscardRequests(reqs)
+	accepted := false
 	for nch := range chans {
 		if nch.ChannelType() != "session" {
 			_ = nch.Reject(ssh.UnknownChannelType, "no")
 			continue
 		}
+		if accepted {
+			_ = nch.Reject(ssh.ResourceShortage, "one session per connection")
+			continue
+		}
+		accepted = true
 		ch, creqs, err := nch.Accept()
 		if err != nil {
 			return
@@ -633,7 +639,7 @@ func TestFlowRunSFTPBudgetChild(t *testing.T) {
 	t.Fatal("missing child flow arguments")
 }
 
-func TestFlowRunSFTPBoundedQuery(t *testing.T) {
+func TestFlowRunSFTPBoundedQuerySingleSession(t *testing.T) {
 	fx := startSFTPFixture(t)
 	env := newSFTPEnv(t, fx, "password")
 	env.flow = writeTemp(t, t.TempDir(), "query.json", strings.Replace(flowJSON(manualStart, "sftp", "private-sftp"), `"GET"`, `"QUERY"`, 1))
