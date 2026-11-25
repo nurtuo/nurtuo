@@ -302,7 +302,7 @@ func TestLiveQueryBufferBudget(t *testing.T) {
 		return runBatch(t, c, &connectorv1.ExecuteStart{
 			Connection: conn, OperationType: connectorv1.OperationType_OPERATION_TYPE_QUERY,
 			Options: &structpb.Struct{Fields: map[string]*structpb.Value{"transaction": structpb.NewBoolValue(transaction)}},
-		}, query, query)
+		}, []string{query, query})
 	}
 	for _, r := range run(false) {
 		if r.Status != connectorv1.DocumentStatus_DOCUMENT_STATUS_SUCCESS || len(r.OutputDocumentIds) != 1 {
