@@ -372,3 +372,11 @@ func TestControlPlaneEnvFlowRunBin(t *testing.T) {
 		t.Fatal("control plane environment must point to the running nurtuo executable")
 	}
 }
+
+func TestStandaloneRuntimeConfigSetsStateDir(t *testing.T) {
+	root := t.TempDir()
+	cfg := standaloneRuntimeConfig("127.0.0.1:1", RuntimeEnv{Creds: &Credentials{}, Dirs: NewDataDirs(root)})
+	if want := filepath.Join(root, "runtime"); cfg.StateDir != want {
+		t.Fatalf("StateDir = %q, want %q", cfg.StateDir, want)
+	}
+}

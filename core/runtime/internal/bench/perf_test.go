@@ -72,8 +72,9 @@ func measure(ctx context.Context, t *testing.T, lc LoadConfig) perfRun {
 	}
 	floor.Scenario = "queue_pickup_memory_floor"
 
-	// The gated number: real embedded JetStream through queue.QueueBackend (natsjs).
-	js, err := natsjs.New(natsjs.Options{StoreDir: t.TempDir()})
+	// Measure the existing pickup budget with JetStream's temporary store and
+	// periodic disk sync. A configured state directory syncs each write.
+	js, err := natsjs.New(natsjs.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

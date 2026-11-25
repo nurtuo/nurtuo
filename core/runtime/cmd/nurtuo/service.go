@@ -188,8 +188,16 @@ func runServiceAction(sa serviceArgs, stdout io.Writer) error {
 	}
 	switch sa.Action {
 	case "install":
-		if _, err := runtime.LoadConfig(cfgPath); err != nil {
+		cfg, err := runtime.LoadConfig(cfgPath)
+		if err != nil {
 			return fmt.Errorf("refusing to install with invalid config: %w", err)
+		}
+		// Installed services always get a state_dir: queued messages and the revision survive restarts.
+		sd := defaultServiceStateDir(goos(), os.Getenv)
+		if added, err := ensureStateDirConfigured(cfgPath, sd, cfg.StateDir != ""); err != nil {
+			return err
+		} else if added {
+			_, _ = fmt.Fprintf(stdout, "state_dir not set in %s: added %s\n", cfgPath, sd)
 		}
 		if err := svc.Install(); err != nil {
 			return err

@@ -10,9 +10,13 @@ Harness: `core/runtime/internal/bench` (AGPL). Components:
   time (open loop, avoids coordinated omission).
 - `RunQueuePickup`: publish -> consumer-handler latency via the local `PickupBench` interface.
   `QueuePickup` (`pickup_queue.go`) adapts any `queue.QueueBackend`; `TestPerfBudget` gates on the
-  real embedded JetStream backend (`queue/natsjs`, scenario `queue_pickup_natsjs`) and also records
+  real embedded JetStream backend (`queue/natsjs`, scenario `queue_pickup_natsjs`) using a
+  temporary file store with periodic disk sync, and also records
   the in-memory channel implementation as an informational scheduler floor
   (`queue_pickup_memory_floor`).
+- A runtime with `state_dir` configured syncs each persistent write. Its pickup latency depends on
+  the storage device. The abrupt-exit recovery test in `internal/queue/natsjs` checks durability
+  for this configuration.
 - `TestPerfBudget`: measures every scenario `-perf.repeats` times (default 3) and fails only when the
   **median** of the p99 values exceeds a budget (or when any run reports errors), so one noisy run
   does not fail it. It writes JSON results. It is skipped unless `NURTUO_PERF=1` is set, because a
