@@ -281,7 +281,7 @@ func TestQueueMessagesSurviveRuntimeRestart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer qb.Close()
+		defer func() { _ = qb.Close() }()
 		if err := qb.Ensure(ctx, queue.QueueDef{Name: queueName}); err != nil {
 			t.Fatal(err)
 		}

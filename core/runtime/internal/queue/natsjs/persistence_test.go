@@ -46,7 +46,7 @@ func TestPublishSurvivesAbruptExit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 	if err := b.Ensure(ctx, def); err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestShutdownCancelsAndRecoversInFlightDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 	if err := b.Ensure(ctx, def); err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestShutdownCancelsAndRecoversInFlightDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
+	defer func() { _ = reopened.Close() }()
 	if err := reopened.Ensure(ctx, def); err != nil {
 		t.Fatal(err)
 	}
