@@ -225,11 +225,11 @@ flowchart LR
     VAL["flow-validate\n(Apache lib)"]
     REPO["component repo\npackaging, deploy\ndesired state"]
     GW["runtime gateway\n(Connect/gRPC)"]
+    BUNDLES["signed bundle cache\n(control-plane memory)"]
     ING["telemetry ingest"]
   end
   PG[("PostgreSQL\ncomponents, desired state,\noutbox, checkpoints")]
   CH[("ClickHouse\nreporting")]
-  S3[("S3-compatible\nbundles, artifacts")]
   REG[("connector registry\nOCI, signed")]
 
   subgraph RT["Runtime: one Go binary (AGPL)"]
@@ -250,9 +250,9 @@ flowchart LR
   MCP --> VAL
   AI --> MCP
   API --> REPO --> PG
-  REPO --> S3
   GW <-- "outbound-only\nmTLS stream" --> SUP
   REPO --> GW
+  REPO --> BUNDLES --> GW
   SUP --> ENG
   LIS --> ENG
   Q --> LIS
