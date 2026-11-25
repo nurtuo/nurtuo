@@ -78,10 +78,9 @@ func (*Connector) Browse(context.Context, *connectorv1.BrowseRequest) (*connecto
 }
 
 type session struct {
-	cfg       *config
-	ssh       *ssh.Client
-	fs        *pkgsftp.Client
-	directory *directoryReader
+	cfg *config
+	ssh *ssh.Client
+	fs  *pkgsftp.Client
 	// stop disarms the ctx-cancellation watcher that closes the connection; it stays armed
 	// for the whole session so a stalled transfer is interrupted by cancellation.
 	stop func() bool
@@ -99,7 +98,7 @@ func (s *session) Close() {
 
 // dial connects and handshakes, honouring ctx cancellation and cfg.Timeout for the whole
 // connect + SSH handshake.
-func dial(ctx context.Context, cfg *config, boundedDirectory bool) (*session, error) {
+func dial(ctx context.Context, cfg *config) (*session, error) {
 	sc, err := cfg.sshConfig()
 	if err != nil {
 		return nil, err
@@ -128,13 +127,7 @@ func dial(ctx context.Context, cfg *config, boundedDirectory bool) (*session, er
 	// The AfterFunc stays armed (until session.Close): cancelling ctx closes the connection,
 	// which unblocks any read or write in flight.
 	c := ssh.NewClient(sshConn, chans, reqs)
-	var fs *pkgsftp.Client
-	var directory *directoryReader
-	if boundedDirectory {
-		fs, directory, err = newDirectoryClient(c)
-	} else {
-		fs, err = pkgsftp.NewClient(c)
-	}
+	fs, err := pkgsftp.NewClient(c)
 	if err != nil {
 		stop()
 		_ = c.Close()
@@ -143,7 +136,7 @@ func dial(ctx context.Context, cfg *config, boundedDirectory bool) (*session, er
 		}
 		return nil, fmt.Errorf("sftp subsystem: %w", err)
 	}
-	return &session{cfg: cfg, ssh: c, fs: fs, directory: directory, stop: stop}, nil
+	return &session{cfg: cfg, ssh: c, fs: fs, stop: stop}, nil
 }
 
 func redact(msg string, secrets []string) string {
@@ -161,7 +154,7 @@ func (*Connector) Test(ctx context.Context, req *connectorv1.TestRequest) (*conn
 	if err != nil {
 		return &connectorv1.TestResponse{Diagnostic: redact(err.Error(), nil)}, nil
 	}
-	s, err := dial(ctx, cfg, false)
+	s, err := dial(ctx, cfg)
 	if err != nil {
 		return &connectorv1.TestResponse{Diagnostic: redact(err.Error(), cfg.secrets())}, nil
 	}
@@ -219,11 +212,7 @@ func (*Connector) Execute(stream connectorv1.ConnectorService_ExecuteServer) err
 	if err != nil {
 		return err
 	}
-	var boundedDirectory bool
-	if budget, ok := stream.(outputBudget); ok && op == opList {
-		_, boundedDirectory = budget.OutputBytesRemaining()
-	}
-	s, err := dial(stream.Context(), cfg, boundedDirectory)
+	s, err := dial(stream.Context(), cfg)
 	if err != nil {
 		return redactErr(err, cfg)
 	}
@@ -570,41 +559,58 @@ func (s *session) list(stream connectorv1.ConnectorService_ExecuteServer, d *doc
 	if bounded {
 		remaining, bounded = budget.OutputBytesRemaining()
 	}
-	var infos []os.FileInfo
-	if bounded {
-		infos, err = s.readBoundedDir(stream.Context(), rp, remaining)
-		if errors.Is(err, errDirectoryBudget) {
-			return budget.RejectOutputLimit()
-		}
-	} else {
-		infos, err = s.fs.ReadDir(rp)
-	}
-	if err != nil {
-		return err
-	}
 	var output bytes.Buffer
 	output.WriteByte('[')
 	count := 0
-	for _, fi := range infos {
-		if isTempName(fi.Name()) {
-			continue // in-flight upload
+	appendEntry := func(name string, size int64, modified time.Time, mode os.FileMode) (bool, error) {
+		if isTempName(name) {
+			return true, nil // in-flight upload
 		}
 		if count >= s.cfg.MaxListEntries {
 			res.Tracked["truncated"] = "true"
-			break
+			return false, nil
 		}
-		data, err := json.Marshal(entry{Name: fi.Name(), Path: path.Join("/", p, fi.Name()), Size: fi.Size(), IsDir: fi.IsDir(), ModTime: fi.ModTime().UTC(), Mode: fi.Mode().String()})
+		data, err := json.Marshal(entry{Name: name, Path: path.Join("/", p, name), Size: size, IsDir: mode.IsDir(), ModTime: modified.UTC(), Mode: mode.String()})
 		if err != nil {
-			return err
+			return false, err
 		}
 		if count > 0 {
 			output.WriteByte(',')
 		}
 		if bounded && int64(output.Len()+len(data)+1) > remaining {
-			return budget.RejectOutputLimit()
+			return false, budget.RejectOutputLimit()
 		}
 		output.Write(data)
 		count++
+		return true, nil
+	}
+	if bounded {
+		err := s.readBoundedDir(rp, remaining, func(name string, stat *pkgsftp.FileStat) (bool, error) {
+			return appendEntry(name, int64(stat.Size), stat.ModTime(), stat.FileMode())
+		})
+		if errors.Is(err, errDirectoryBudget) {
+			return budget.RejectOutputLimit()
+		}
+		if err != nil {
+			return err
+		}
+	} else {
+		infos, err := s.fs.ReadDir(rp)
+		if err != nil {
+			return err
+		}
+		for _, fi := range infos {
+			more, err := appendEntry(fi.Name(), fi.Size(), fi.ModTime(), fi.Mode())
+			if err != nil {
+				return err
+			}
+			if !more {
+				break
+			}
+		}
+	}
+	if bounded && int64(output.Len()+1) > remaining {
+		return budget.RejectOutputLimit()
 	}
 	output.WriteByte(']')
 	outID := d.id + ".out"

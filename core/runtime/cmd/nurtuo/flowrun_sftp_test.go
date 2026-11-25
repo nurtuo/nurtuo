@@ -643,6 +643,35 @@ func TestFlowRunSFTPBoundedQuery(t *testing.T) {
 	}
 }
 
+func TestFlowRunSFTPBoundedQueryTruncatesLargeDirectory(t *testing.T) {
+	listing := &largeSFTPDir{}
+	fx := startSFTPFixtureWith(t, func(h *pkgsftp.Handlers) {
+		listing.FileLister = h.FileList
+		h.FileList = listing
+	})
+	env := newSFTPEnv(t, fx, "password", "maxListEntries", "3")
+	env.flow = writeTemp(t, t.TempDir(), "query.json", strings.Replace(flowJSON(manualStart, "sftp", "private-sftp"), `"GET"`, `"QUERY"`, 1))
+	code, out, stderr := runFlow(t, nil, env.args("--set", "path=/downloads", "--max-output-bytes", "4096")...)
+	if code != exitOK || stderr != "" {
+		t.Fatalf("truncated QUERY: exit %d, stdout %s, stderr %s", code, out, stderr)
+	}
+	var entries []struct{ Name string }
+	if err := json.Unmarshal([]byte(out), &entries); err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("expected three entries, got %d", len(entries))
+	}
+	for i, entry := range entries {
+		if want := strconv.Itoa(i) + strings.Repeat("x", 224); entry.Name != want {
+			t.Fatalf("entry %d: got %q, want %q", i, entry.Name, want)
+		}
+	}
+	if served := listing.entries.Load(); served < 4 || served > 100 {
+		t.Fatalf("server produced %d entries, expected only one directory page", served)
+	}
+}
+
 func TestFlowRunSFTPOutputLimit(t *testing.T) {
 	const budget = 2 << 20
 	for _, op := range []string{"GET", "QUERY"} {
