@@ -3,6 +3,7 @@ import { STEP_ID_PATTERN, type Step } from "@nurtuo/flow-schema";
 import { useState } from "react";
 import type { ConnectionItem } from "../api/controlPlane";
 import { configSchemaOf } from "../model/catalog";
+import { configureWorkspaceConnector, workspaceOperations } from "../model/connectorOperations";
 import { fieldsOf, fromText, toText, withField, type Field } from "../model/formSchema";
 import { configPatch, type FlowStore } from "../model/flowStore";
 
@@ -16,6 +17,15 @@ export function ConfigDialog({ store, step, onClose, onRenamed, connections }: {
   onRenamed: (id: string) => void;
 }) {
   const fields = fieldsOf(configSchemaOf(step.kind));
+  const connector = step.config.connector;
+  const operation = String(step.config.operation ?? "");
+  const bound = connections?.find((c) => c.id === step.config.connection && c.connector === connector);
+  const allowed = step.kind === "connector" ? workspaceOperations(bound?.connector) : undefined;
+  const operations = step.config.objectType === undefined && (!operation || allowed?.includes(operation.toUpperCase()))
+    ? allowed?.map((choice) => choice === operation.toUpperCase() ? operation : choice)
+    : undefined;
+  const connectionChoices = connections?.filter((c) => !connector || c.connector === connector
+    || (!!workspaceOperations(connector) && !!workspaceOperations(c.connector)));
   const [error, setError] = useState<string | null>(null);
 
   const run = (ops: Parameters<FlowStore["dispatch"]>[0]) => {
@@ -27,7 +37,8 @@ export function ConfigDialog({ store, step, onClose, onRenamed, connections }: {
   const commit = (f: Field, text: string): string | null => {
     const p = fromText(f, text);
     if (!p.ok) return p.error;
-    const next = withField(step.config, f.name, p.value);
+    const selected = f.name === "connection" ? connections?.find((c) => c.id === p.value) : undefined;
+    const next = selected ? configureWorkspaceConnector(step.config, selected) : withField(step.config, f.name, p.value);
     const patch = configPatch(step.config, next);
     if (Object.keys(patch).length > 0) run([{ op: "updateConfig", id: step.id, patch }]);
     return null;
@@ -63,12 +74,12 @@ export function ConfigDialog({ store, step, onClose, onRenamed, connections }: {
             }}
           />
         </label>
-        {fields.map((f) => (
+        {fields.filter((f) => !operations || (f.name !== "connector" && f.name !== "objectType")).map((f) => (
           // key includes the stored value so undo/redo resets the editor text
           <FieldEditor key={`${step.id}:${f.name}:${JSON.stringify(step.config[f.name])}`} field={f} value={step.config[f.name]} onCommit={(t) => commit(f, t)}
-            {...(step.kind === "connector" && f.name === "connection" && connections
-              ? { choices: connections.filter((c) => !step.config["connector"] || c.connector === step.config["connector"]).map((c) => c.id) }
-              : {})} />
+            choices={step.kind === "connector" && f.name === "connection"
+              ? (connectionChoices?.length ? connectionChoices.map((c) => c.id) : undefined)
+              : step.kind === "connector" && f.name === "operation" ? operations : undefined} />
         ))}
         {fields.length === 0 && <p>This step has no configuration.</p>}
         {error && <p className="err">{error}</p>}
@@ -78,7 +89,7 @@ export function ConfigDialog({ store, step, onClose, onRenamed, connections }: {
   );
 }
 
-function FieldEditor({ field, value, onCommit, choices }: { field: Field; value: unknown; onCommit: (text: string) => string | null; choices?: string[] }) {
+function FieldEditor({ field, value, onCommit, choices }: { field: Field; value: unknown; onCommit: (text: string) => string | null; choices?: readonly string[] }) {
   const [text, setText] = useState(toText(field, value));
   const [err, setErr] = useState<string | null>(null);
   const commit = (t: string) => setErr(onCommit(t));
@@ -88,7 +99,7 @@ function FieldEditor({ field, value, onCommit, choices }: { field: Field; value:
     const cur = typeof value === "string" && value !== "" && !choices.includes(value) ? [value] : [];
     control = (
       <select aria-label={field.name} value={text} onChange={(e) => { setText(e.target.value); commit(e.target.value); }}>
-        <option value="" />
+        {(!field.required || !text) && <option value="" disabled={field.required} />}
         {[...cur, ...choices].map((c) => <option key={c} value={c}>{c}</option>)}
       </select>
     );
