@@ -1,27 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Postgres-backed auth tests. Skipped unless DATABASE_URL points at a throwaway database
-// (the test DROPs the public schema), e.g.
-//   docker run -d --rm -p 55432:5432 -e POSTGRES_PASSWORD=pw postgres:16-alpine
-//   DATABASE_URL=postgres://postgres:pw@localhost:55432/postgres pnpm test
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createHandler } from "../api.js";
-import { PgRepository, migrate, type Db } from "../pg-repository.js";
+import { PgRepository, migrate } from "../pg-repository.js";
 import { ROLES, ROLE_PERMISSIONS } from "./permissions.js";
 import { createAuthHook } from "./middleware.js";
 import { PgAuthRepository } from "./pg-repository.js";
 import { AuthService } from "./service.js";
+import { openTestSchema } from "../pg-test-schema.js";
 
 const url = process.env.DATABASE_URL;
 
 test("postgres auth: migrations, seed matches code, constraints, audit immutability, handler smoke", { skip: !url && "DATABASE_URL not set" }, async () => {
-  const mod = "pg";
-  const pg = (await import(mod)) as { default: { Pool: new (o: { connectionString: string }) => Db & { end(): Promise<void> } } };
-  const pool = new pg.default.Pool({ connectionString: url! });
+  const { pool, close } = await openTestSchema(url!);
   try {
-    await pool.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public");
     const applied = await migrate(pool, fileURLToPath(new URL("../../migrations", import.meta.url)));
     for (const m of ["0100_auth_identity.sql", "0101_auth_tokens_sessions.sql", "0102_audit_log.sql", "0103_auth_seed_roles.sql", "0104_auth_seed_connection_permissions.sql"]) assert.ok(applied.includes(m), m);
 
@@ -71,5 +65,5 @@ test("postgres auth: migrations, seed matches code, constraints, audit immutabil
     const before = (await pool.query("SELECT count(*) AS n FROM audit_log")).rows[0].n;
     await authRepo.deleteWorkspace(workspaceId);
     assert.equal((await pool.query("SELECT count(*) AS n FROM audit_log")).rows[0].n, before);
-  } finally { await pool.end(); }
+  } finally { await close(); }
 });

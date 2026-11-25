@@ -8,7 +8,7 @@ test("deleting a workspace purges its connections and secrets (memory)", async (
   const { ws } = await w.owner("o@x.io", "ws-a");
   const { ws: other } = await w.owner("p@x.io", "ws-b");
   const o = await w.login("o@x.io");
-  const auth = { cookie: o.cookie, csrf: o.csrf };
+  const auth = { cookie: o.cookie, csrf: o.csrf, ip: "127.0.0.1" };
   await w.call("PUT", `/v1/workspaces/${ws.id}/connections/c1`, { ...auth, body: sftpConn() });
   const ref = String((await w.connections.get(ws.id, "c1"))?.settings.password).slice(9);
   assert.equal(await w.secrets.has(ws.id, ref), true);

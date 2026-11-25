@@ -278,12 +278,15 @@ func (x *exec) runStep(ctx context.Context, step flow.Step, cfg any, set *docs.S
 		x.failAll(set, &docs.Error{Step: step.ID, Code: "no_runner", Message: err.Error(), Cause: err})
 		return set, nil
 	}
-	sc := &StepContext{Flow: x.f, Step: step, Config: cfg, Process: x.proc, Eval: x.e.Eval, Spool: x.e.Spool}
+	sc := &StepContext{Flow: x.f, Step: step, Config: cfg, Process: x.proc, Eval: x.e.Eval, Spool: x.e.Spool, maxConnectorOutputBytes: x.e.MaxReturnedBytes}
 	out, err := sr.Run(ctx, sc, set)
 	if out == nil {
 		out = set
 	}
 	if err != nil {
+		if errors.Is(err, ErrReturnLimit) {
+			return out, err
+		}
 		if ctx.Err() != nil {
 			return out, ctx.Err()
 		}

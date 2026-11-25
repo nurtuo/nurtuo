@@ -13,8 +13,8 @@ async function world(over: Parameters<typeof setup>[0] = {}) {
   await w.member(ws.id, "vw@x.io", "viewer");
   await w.member(ws.id, "dp@x.io", "deployer");
   const ed = await w.login("ed@x.io");
-  const as = { cookie: ed.cookie, csrf: ed.csrf };
-  await w.call("PUT", `/v1/workspaces/${ws.id}/connections/c1`, { ...as, body: sftpConn() });
+  const as = { cookie: ed.cookie, csrf: ed.csrf, ip: "127.0.0.1" };
+  assert.equal((await w.call("PUT", `/v1/workspaces/${ws.id}/connections/c1`, { ...as, body: sftpConn() })).status, 201);
   const run = (props: Record<string, string> = {}, who = as) => w.call("POST", `/v1/workspaces/${ws.id}/test-runs`, { ...who, body: { flow: flowOf(), input: { properties: props } } });
   return { ...w, ws, ed, as, run };
 }
@@ -44,7 +44,7 @@ test("audit: test_run.execute carries runId/status hashes, never output", async 
 
 test("viewer, deployer and API tokens are 403; anonymous is 401", async () => {
   const w = await world();
-  for (const e of ["vw@x.io", "dp@x.io"]) { const s = await w.login(e); assert.equal((await w.run({}, { cookie: s.cookie, csrf: s.csrf })).status, 403, e); }
+  for (const e of ["vw@x.io", "dp@x.io"]) { const s = await w.login(e); assert.equal((await w.run({}, { cookie: s.cookie, csrf: s.csrf, ip: "127.0.0.1" })).status, 403, e); }
   const { token } = await w.member(w.ws.id, "tk@x.io", "editor");
   assert.equal((await w.call("POST", `/v1/workspaces/${w.ws.id}/test-runs`, { token: token.raw, body: { flow: flowOf() } })).status, 403);
   assert.equal((await w.call("POST", `/v1/workspaces/${w.ws.id}/test-runs`, { body: { flow: flowOf() } })).status, 401);

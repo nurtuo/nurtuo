@@ -263,7 +263,7 @@ test("a stored credential from a different destination, field or connection neve
   } });
   const { ws } = await w.owner("binding@x.io", "binding");
   const session = await w.login("binding@x.io");
-  const auth = { cookie: session.cookie, csrf: session.csrf };
+  const auth = { cookie: session.cookie, csrf: session.csrf, ip: "127.0.0.1" };
   const base = `/v1/workspaces/${ws.id}`;
   const url = `${base}/connections/c1`;
   const initial = await w.call("PUT", url, { ...auth, body: sftpConn() });
