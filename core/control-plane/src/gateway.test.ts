@@ -451,3 +451,39 @@ test("a newer connection for the same runtime replaces the older one", async () 
   await eventually(async () => gw.connectedRuntimes().length === 0);
   await new Promise((r) => setTimeout(r, 50));
 });
+
+test("Hello replay cannot send an older generation after an outbox push", { timeout: 5000 }, async (t) => {
+  const runtimeId = "rt-san";
+  const { c, r } = await seed("hello-outbox-order");
+  const initial = await repo.deploy({ componentId: c.id, revisionId: r.id, runtimeId });
+  await gw.publishOutbox();
+  const getDesiredState = repo.getDesiredState.bind(repo);
+  let signalSnapshot!: () => void;
+  const snapshotRead = new Promise<void>((resolve) => { signalSnapshot = resolve; });
+  let releaseHello!: () => void;
+  const resumeHello = new Promise<void>((resolve) => { releaseHello = resolve; });
+  t.mock.method(repo, "getDesiredState", async (id: string) => {
+    const snapshot = await getDesiredState(id);
+    signalSnapshot();
+    await resumeHello;
+    return snapshot;
+  }, { times: 1 });
+
+  const rt = new Rt("rt-san.pem");
+  try {
+    rt.hello(runtimeId);
+    await snapshotRead;
+    const next = (await repo.createRevision(c.id, { updated: true }, "sha256:updated"))!;
+    const deployment = await repo.deploy({ componentId: c.id, revisionId: next.id, runtimeId });
+    assert.equal(deployment.desiredState.generation, initial.desiredState.generation + 1);
+    await gw.publishOutbox();
+    assert.equal((await rt.desired()).revision, BigInt(deployment.desiredState.generation));
+    releaseHello();
+    // The duplicate Hello ends the stream after the replay has had a chance to enqueue.
+    rt.hello(runtimeId);
+    await assert.rejects(rt.next(), { code: Code.InvalidArgument });
+  } finally {
+    releaseHello();
+    rt.close();
+  }
+});
