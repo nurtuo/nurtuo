@@ -296,6 +296,109 @@ func TestDataDirsEnsureUnixModes(t *testing.T) {
 	}
 }
 
+func TestDataDirsEnsureBundles(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("POSIX modes; Windows ACLs are checked separately")
+	}
+	d := NewDataDirs(t.TempDir())
+	if d.Bundles != filepath.Join(d.Root, "bundles") {
+		t.Fatal("unexpected bundle cache path")
+	}
+	for _, existing := range []bool{false, true} {
+		if existing {
+			if err := os.Chmod(d.Bundles, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := d.Ensure(); err != nil {
+			t.Fatal(err)
+		}
+		fi, err := os.Stat(d.Bundles)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Mode().Perm() != 0o700 {
+			t.Fatalf("bundle cache mode %#o, want 0700", fi.Mode().Perm())
+		}
+	}
+}
+
+func TestBundleSigningKeyStableAndPrivate(t *testing.T) {
+	d := NewDataDirs(t.TempDir())
+	b := NewLocalBootstrapper()
+	c, err := b.Bootstrap(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(d.Secrets, "bundle-signing.key")
+	if c.BundleSigningKeyFile != path || c.BundlePublicKey == "" {
+		t.Fatal("bundle signing credentials missing")
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if goruntime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
+		t.Fatalf("signing key mode %#o, want 0600", fi.Mode().Perm())
+	}
+
+	corrupt := []byte("malformed test fixture")
+	if err := os.WriteFile(path, corrupt, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Bootstrap(d); err == nil || !strings.Contains(err.Error(), "bundle-signing.key is invalid") {
+		t.Fatal("bootstrap must reject a corrupt signing key")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != string(corrupt) {
+		t.Fatal("bootstrap replaced the corrupt signing key")
+	}
+}
+
+func TestLoadOrGenSigningKeyConcurrent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bundle-signing.key")
+	start := make(chan struct{})
+	const count = 12
+	type result struct {
+		publicKey string
+		err       error
+	}
+	results := make(chan result, count)
+	for range count {
+		go func() {
+			<-start
+			pub, err := loadOrGenSigningKey(path)
+			results <- result{pub, err}
+		}()
+	}
+	close(start)
+	want, err := loadOrGenSigningKey(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range count {
+		got := <-results
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		if got.publicKey != want {
+			t.Fatal("concurrent calls returned different signing keys")
+		}
+	}
+}
+
+func TestStandaloneRuntimeConfig(t *testing.T) {
+	d := NewDataDirs(t.TempDir())
+	c, err := NewLocalBootstrapper().Bootstrap(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := standaloneRuntimeConfig("127.0.0.1:9443", RuntimeEnv{Dirs: d, Creds: c})
+	if cfg.BundleDir != d.Bundles || len(cfg.TrustedKeys) != 1 || cfg.TrustedKeys[0] != c.BundlePublicKey {
+		t.Fatal("standalone runtime must use the local bundle cache and trust the install key")
+	}
+}
+
 func TestLocalBootstrapIdempotentAndUsableForMTLS(t *testing.T) {
 	d := NewDataDirs(t.TempDir())
 	if err := d.Ensure(); err != nil {
@@ -310,7 +413,7 @@ func TestLocalBootstrapIdempotentAndUsableForMTLS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c1.DBPassword == "" || c1.AdminToken == "" || *c1 != *c2 {
+	if c1.DBPassword == "" || c1.AdminToken == "" || c1.BundlePublicKey == "" || *c1 != *c2 {
 		t.Fatal("secrets missing or not stable")
 	}
 	if _, err := tls.LoadX509KeyPair(c1.ServerCertFile, c1.ServerKeyFile); err != nil {
@@ -349,14 +452,40 @@ func TestResolveControlPlaneEntry(t *testing.T) {
 }
 
 func TestControlPlaneEnvWiresGatewayAndAuth(t *testing.T) {
-	c := &Credentials{CAFile: "ca.pem", ServerCertFile: "s.pem", ServerKeyFile: "s.key", AdminToken: strings.Repeat("a", 48)}
+	c := &Credentials{CAFile: "ca.pem", ServerCertFile: "s.pem", ServerKeyFile: "s.key", BundleSigningKeyFile: "bundle-signing.key", AdminToken: strings.Repeat("a", 48)}
 	got := strings.Join(controlPlaneEnv("postgres://x", c, 8080, "127.0.0.1:9443"), "\n")
 	for _, want := range []string{
 		"DATABASE_URL=postgres://x", "PORT=8080", "GATEWAY_PORT=9443", "GATEWAY_CERT=s.pem", "GATEWAY_KEY=s.key",
-		"GATEWAY_CA=ca.pem", "NURTUO_AUTH_SECRET=" + c.AdminToken, "NURTUO_BOOTSTRAP_EMAIL=admin@nurtuo.local",
+		"GATEWAY_CA=ca.pem", "NURTUO_BUNDLE_SIGNING_KEY_FILE=bundle-signing.key", "NURTUO_AUTH_SECRET=" + c.AdminToken, "NURTUO_BOOTSTRAP_EMAIL=admin@nurtuo.local",
 	} {
 		if !strings.Contains(got, want) {
-			t.Errorf("env lacks %q:\n%s", want, got)
+			t.Error("control plane environment is missing an expected setting")
+		}
+	}
+}
+
+func TestPublishSigningKeyWithoutHardLinks(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bundle-signing.key")
+	staged := filepath.Join(dir, "staged")
+	for _, seed := range []string{"complete first seed", "complete second seed"} {
+		if err := os.WriteFile(staged, []byte(seed), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		err := publishSigningKey(staged, path)
+		if seed == "complete first seed" {
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Lstat(staged); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("publisher did not move staged file: %v", err)
+			}
+		} else if !errors.Is(err, os.ErrExist) {
+			t.Fatalf("second publication returned %v", err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil || string(got) != "complete first seed" {
+			t.Fatalf("published file did not preserve the complete first seed: %v", err)
 		}
 	}
 }

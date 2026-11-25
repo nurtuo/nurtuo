@@ -4,6 +4,7 @@ package main
 
 import (
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
@@ -11,6 +12,7 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"math/big"
 	"net"
 	"net/url"
@@ -18,6 +20,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/nurtuo/nurtuo/core/deploy/bundle"
 	"github.com/nurtuo/nurtuo/core/runtime/internal/secrets"
 )
 
@@ -37,6 +40,7 @@ type Credentials struct {
 	CAFile, ServerCertFile, ServerKeyFile, ClientCertFile, ClientKeyFile string
 	DBPassword                                                           string
 	AdminToken                                                           string
+	BundleSigningKeyFile, BundlePublicKey                                string
 }
 
 // Bootstrapper creates (first run) or loads (later runs) the install's secrets.
@@ -60,14 +64,21 @@ func (b localBootstrapper) Bootstrap(dirs DataDirs) (*Credentials, error) {
 	if _, err := secrets.EnsurePrivateDir(s); err != nil {
 		return nil, err
 	}
+	if err := checkStandaloneSecretsDir(s); err != nil {
+		return nil, err
+	}
 	c := &Credentials{
-		CAFile:         filepath.Join(s, "ca.pem"),
-		ServerCertFile: filepath.Join(s, "server.pem"),
-		ServerKeyFile:  filepath.Join(s, "server.key"),
-		ClientCertFile: filepath.Join(s, "client.pem"),
-		ClientKeyFile:  filepath.Join(s, "client.key"),
+		CAFile:               filepath.Join(s, "ca.pem"),
+		ServerCertFile:       filepath.Join(s, "server.pem"),
+		ServerKeyFile:        filepath.Join(s, "server.key"),
+		ClientCertFile:       filepath.Join(s, "client.pem"),
+		ClientKeyFile:        filepath.Join(s, "client.key"),
+		BundleSigningKeyFile: filepath.Join(s, "bundle-signing.key"),
 	}
 	var err error
+	if c.BundlePublicKey, err = loadOrGenSigningKey(c.BundleSigningKeyFile); err != nil {
+		return nil, err
+	}
 	if c.DBPassword, err = loadOrGenSecret(filepath.Join(s, "db-password")); err != nil {
 		return nil, err
 	}
@@ -154,6 +165,61 @@ func loadOrGenSecret(path string) (string, error) {
 	}
 	v := hex.EncodeToString(raw)
 	return v, os.WriteFile(path, []byte(v), 0o600)
+}
+
+// loadOrGenSigningKey returns the hex public key. It publishes the private seed
+// atomically without replacing an existing key, so a concurrent reader sees a
+// complete seed and a concurrent writer can reread the winning key on EEXIST.
+func loadOrGenSigningKey(path string) (string, error) {
+	pub, err := readBundlePublicKey(path)
+	if !errors.Is(err, os.ErrNotExist) {
+		return pub, err
+	}
+
+	publicKey, privateKey, err := bundle.GenerateKey()
+	if err != nil {
+		return "", err
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), ".bundle-signing-*")
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = os.Remove(f.Name()) }()
+	_, writeErr := f.WriteString(bundle.EncodePrivateKey(privateKey))
+	if writeErr == nil {
+		writeErr = f.Sync()
+	}
+	if err := errors.Join(writeErr, f.Close()); err != nil {
+		return "", err
+	}
+	if err := publishSigningKey(f.Name(), path); errors.Is(err, os.ErrExist) {
+		return readBundlePublicKey(path)
+	} else if err != nil {
+		return "", err
+	}
+	return bundle.EncodePublicKey(publicKey), nil
+}
+
+func readBundlePublicKey(path string) (string, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("%s: bundle signing key must be a regular file", path)
+	}
+	if err := checkSigningKeyPermissions(path, info); err != nil {
+		return "", err
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	key, err := bundle.DecodePrivateKey(string(raw))
+	if err != nil {
+		return "", errors.New("bundle-signing.key is invalid; restore it from backup or delete it to generate a new key")
+	}
+	return bundle.EncodePublicKey(key.Public().(ed25519.PublicKey)), nil
 }
 
 func writePEM(path, typ string, der []byte, mode os.FileMode) error {

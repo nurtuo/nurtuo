@@ -224,6 +224,7 @@ func controlPlaneEnv(dsn string, c *Credentials, port int, gatewayAddr string) [
 	}
 	env = append(env,
 		"GATEWAY_CERT="+c.ServerCertFile, "GATEWAY_KEY="+c.ServerKeyFile, "GATEWAY_CA="+c.CAFile,
+		"NURTUO_BUNDLE_SIGNING_KEY_FILE="+c.BundleSigningKeyFile,
 		"NURTUO_AUTH_SECRET="+c.AdminToken,
 		"NURTUO_BOOTSTRAP_EMAIL="+standaloneAdminEmail, "NURTUO_BOOTSTRAP_PASSWORD="+c.AdminToken,
 	)

@@ -102,13 +102,34 @@ func TestDataDirsEnsureSecretsPrivate(t *testing.T) {
 	if _, err := NewLocalBootstrapper().Bootstrap(d); err != nil {
 		t.Fatal(err)
 	}
-	if n := wantSecretsPrivate(t, d.Secrets); n < 8 { // dir + db-password, admin-token, 3 pem, 2 keys
+	if n := wantSecretsPrivate(t, d.Secrets); n != 9 { // dir + db-password, admin-token, 3 pem, 2 TLS keys, signing key
 		t.Fatalf("only %d objects under %s", n, d.Secrets)
 	}
 	repaired, err := d.EnsureReport()
 	if err != nil || len(repaired) != 0 {
 		t.Fatalf("second run: repaired=%v err=%v", repaired, err)
 	}
+}
+
+func TestDataDirsEnsureBundlesPrivate(t *testing.T) {
+	root := t.TempDir()
+	grantUsersInheritable(t, root)
+	d := NewDataDirs(root)
+	if err := os.Mkdir(d.Bundles, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cache := filepath.Join(d.Bundles, "cached.bundle")
+	if err := os.WriteFile(cache, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	repaired, err := d.EnsureReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repaired) == 0 {
+		t.Fatal("expected a repair for the inherited Users ACE")
+	}
+	wantSecretsPrivate(t, d.Bundles)
 }
 
 func TestStandaloneRepairsLegacySecretsACL(t *testing.T) {

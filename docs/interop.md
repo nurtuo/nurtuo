@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # Runtime <-> control-plane interop (as implemented)
 
 Verified by `core/runtime/internal/interop` (Go test driving the real `runtime.RunWith` against the
@@ -61,3 +61,7 @@ revisions and serves it only to runtimes whose desired state references it. A re
 with an explicit `digest` still requires a manually placed archive. Runtimes with empty
 `trusted_keys` read local `<hex>.json` files only. See the distributed setup steps in
 [operations.md](operations.md#enable-signing-for-distributed-runtimes).
+
+Standalone enables signing and establishes runtime trust at bootstrap. CI jobs that use
+standalone start with the same defaults, so they can deploy derived revisions with an empty
+cache. See [the standalone data directory layout](operations.md#data-directory-layout-standalone).
