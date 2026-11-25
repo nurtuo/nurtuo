@@ -23,7 +23,7 @@ if (signingKeyFile !== undefined) {
     console.error(err instanceof Error ? err.message : "NURTUO_BUNDLE_SIGNING_KEY_FILE: cannot load signing key");
     process.exit(1);
   }
-  console.log(`gateway: bundle signing enabled (key id ${signingKey.keyId})`);
+  console.log(`gateway: bundle signing key loaded (key id ${signingKey.keyId})`);
 }
 
 const insecure = process.env.NURTUO_INSECURE_NO_AUTH === "1";
@@ -65,7 +65,7 @@ const { GATEWAY_CERT, GATEWAY_KEY, GATEWAY_CA } = process.env;
 if (GATEWAY_CERT && GATEWAY_KEY && GATEWAY_CA) {
   const { readFileSync } = await import("node:fs");
   const { Gateway, createGatewayServer } = await import("./gateway.js");
-  const gw = new Gateway(repo, { signingKey, log: (m) => console.log(`gateway: ${m}`) });
+  const gw = new Gateway(repo, { signingKey, deliverArtifacts: false, log: (m) => console.log(`gateway: ${m}`) });
   gw.startOutboxPublisher();
   const gport = Number(process.env.GATEWAY_PORT ?? 8443);
   createGatewayServer(gw, { cert: readFileSync(GATEWAY_CERT), key: readFileSync(GATEWAY_KEY), ca: readFileSync(GATEWAY_CA) })

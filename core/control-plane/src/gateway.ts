@@ -56,6 +56,8 @@ export interface GatewayOptions {
   onCommandResult?: (runtimeId: string, r: pb.CommandResult) => void;
   log?: (msg: string) => void;
   signingKey?: SigningKey;
+  /** Enable archive digests only when the gateway can serve their bytes. */
+  deliverArtifacts?: boolean;
 }
 
 export class Gateway {
@@ -109,10 +111,12 @@ export class Gateway {
       if (!rev) continue;
       // deployment_id is the component id: one slot per component per runtime.
       let bundleDigest = rev.digest;
-      try {
-        bundleDigest = (await this.artifactFor(rev))?.digest ?? bundleDigest;
-      } catch {
-        this.opts.log?.(`cannot pack revision ${rev.id}`);
+      if (this.opts.deliverArtifacts) {
+        try {
+          bundleDigest = (await this.artifactFor(rev))?.digest ?? bundleDigest;
+        } catch {
+          this.opts.log?.(`cannot pack revision ${rev.id}`);
+        }
       }
       deployments.push(create(pb.DeploymentSchema, { deploymentId: componentId, bundleDigest }));
     }
@@ -208,7 +212,8 @@ export class Gateway {
           registered = true;
           prev?.out.close(); // newest connection wins
           const ds = await this.desiredStateMessage(certId);
-          if (ds && ds.revision !== m.value.desiredStateRevision) {
+          // Signing configuration can change the payload at the same stored generation.
+          if (ds) {
             out.push(create(pb.ConnectResponseSchema, { msg: { case: "desiredState", value: ds } }));
           }
           continue;

@@ -35,9 +35,9 @@ class Rt {
   private wake?: () => void;
   private done = false;
   private it: AsyncIterator<pb.ConnectResponse>;
-  constructor(certName: string, keyName = certName.replace(".pem", ".key"), ca = "ca.pem") {
+  constructor(certName: string, keyName = certName.replace(".pem", ".key"), ca = "ca.pem", address = port) {
     const client = createClient(pb.RuntimeGatewayService, createGrpcTransport({
-      baseUrl: `https://localhost:${port}`,
+      baseUrl: `https://localhost:${address}`,
       nodeOptions: { cert: cert(certName), key: cert(keyName), ca: cert(ca) },
     }));
     const self = this;
@@ -61,11 +61,6 @@ class Rt {
     const r = await Promise.race([this.pull(), t]);
     assert.ok(!r.done, "stream ended");
     return r.value;
-  }
-  async expectNone(ms = 150) {
-    const timeout = Symbol();
-    const r = await Promise.race([this.pull(), new Promise<symbol>((res) => setTimeout(() => res(timeout), ms).unref())]);
-    assert.equal(r, timeout, "unexpected message");
   }
   async desired(): Promise<pb.DesiredState> {
     const m = (await this.next()).msg;
@@ -121,14 +116,53 @@ test("optional bundle signing advertises stable archive digests for derived revi
   }
   const legacy = { [derived.id]: derivedRev.digest, [external.id]: externalDigest, [invalid.id]: invalidRev.digest };
   assert.deepEqual(await digests(new Gateway(repo)), legacy);
+  assert.deepEqual(await digests(new Gateway(repo, { signingKey, deliverArtifacts: false })), legacy);
   const lookup = t.mock.method(repo, "getComponent");
-  const signing = new Gateway(repo, { signingKey });
+  const signing = new Gateway(repo, { signingKey, deliverArtifacts: true });
   const signed = { ...legacy, [derived.id]: archiveDigest };
   assert.deepEqual(await digests(signing), signed);
   assert.deepEqual(await digests(signing), signed);
   // The invalid revision is retried, the derived revision is cached, and the external one is skipped.
   assert.equal(lookup.mock.callCount(), 3);
-  assert.deepEqual(await digests(new Gateway(repo, { signingKey })), signed);
+  assert.deepEqual(await digests(new Gateway(repo, { signingKey, deliverArtifacts: true })), signed);
+});
+
+test("matching-generation reconnects receive current digests across signing changes", async (t) => {
+  const repo = new MemoryRepository();
+  const runtimeId = "rt-1";
+  await repo.upsertRuntime({ id: runtimeId, name: runtimeId, environment: "dev" });
+  const component = await repo.createComponent({ name: "resume", kind: "flow", description: "" });
+  const content = { a: "flow" };
+  const revision = (await repo.createRevision(component.id, content, digestOf(content)))!;
+  await repo.deploy({ componentId: component.id, revisionId: revision.id, runtimeId });
+  const { privateKey } = generateKeyPairSync("ed25519");
+  const signingKey = { privateKey, keyId: "0123456789abcdef" };
+
+  async function reconnect(deliverArtifacts: boolean) {
+    const server = createGatewayServer(new Gateway(repo, { signingKey, deliverArtifacts }), {
+      cert: cert("server.pem"), key: cert("server.key"), ca: cert("ca.pem"),
+    });
+    const sessions = new Set<{ destroy(): void }>();
+    server.on("session", (session) => sessions.add(session));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    t.after(async () => {
+      for (const session of sessions) session.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    });
+    const rt = new Rt("rt-1.pem", "rt-1.key", "ca.pem", (server.address() as AddressInfo).port);
+    try {
+      rt.hello(runtimeId, 1);
+      const desired = await rt.desired();
+      assert.equal(desired.revision, 1n);
+      return desired.deployments[0]!.bundleDigest;
+    } finally {
+      rt.close();
+    }
+  }
+
+  assert.equal(await reconnect(false), revision.digest);
+  assert.notEqual(await reconnect(true), revision.digest);
+  assert.equal(await reconnect(false), revision.digest);
 });
 
 test("runtimeIdFromCert prefers URI SAN over CN", () => {
@@ -224,13 +258,13 @@ test("client cert from an untrusted CA is refused at the TLS layer", async () =>
   await assert.rejects(rt.next());
 });
 
-test("desired state is pushed after deploy() via the outbox; matching revision gets no message", async () => {
+test("desired state is pushed after deploy() via the outbox; matching revision is replayed", async () => {
   const { c, r } = await seed("push");
   await repo.deploy({ componentId: c.id, revisionId: r.id, runtimeId: "rt-2" });
   await gw.publishOutbox();
   const rt = new Rt("rt-2.pem");
   rt.hello("rt-2", 1); // already at current revision
-  await rt.expectNone();
+  assert.equal((await rt.desired()).revision, 1n);
   const c2 = await seed("push2");
   await repo.deploy({ componentId: c2.c.id, revisionId: c2.r.id, runtimeId: "rt-2" });
   assert.equal((await repo.listOutbox({ unpublishedOnly: true })).length, 1);
@@ -259,7 +293,7 @@ test("reconnect resends state missed while offline", async () => {
 test("a newer connection for the same runtime replaces the older one", async () => {
   const a = new Rt("rt-1.pem");
   a.hello("rt-1", 2);
-  await eventually(async () => gw.connectedRuntimes().includes("rt-1"));
+  assert.equal((await a.desired()).revision, 2n);
   const b = new Rt("rt-1.pem");
   b.hello("rt-1", 2);
   await a.next().then(() => assert.fail("expected stream end"), () => {});
