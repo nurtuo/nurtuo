@@ -4,15 +4,21 @@
 // openapi.yaml has no policy, so adding a route to api.ts without deciding who may call it breaks CI.
 import type { Permission, Role } from "./permissions.js";
 import { permissionsIn } from "./authz.js";
+import type { InstancePermission } from "./instance.js";
 import type { Principal } from "./types.js";
 
 export interface RoutePolicy {
   method: string;
   /** "/v1/components/:id"; segments starting with ":" are parameters. */
   pattern: string;
-  /** public: no credentials needed (login, SSO callbacks); authenticated: any valid principal; permission: needs `permission`. */
-  access: "public" | "authenticated" | "permission";
+  /**
+   * public: no credentials needed (login, SSO callbacks); authenticated: any valid principal;
+   * permission: needs workspace `permission`; instance: needs instance-level `instancePermission`.
+   */
+  access: "public" | "authenticated" | "permission" | "instance";
   permission?: Permission;
+  /** For access "instance": the instance-level permission (see instance.ts). */
+  instancePermission?: InstancePermission;
   /**
    * Where the workspace comes from. path: the :ws parameter; context: X-Nurtuo-Workspace header,
    * the token's own workspace, or the caller's only membership; none: not workspace-scoped.
@@ -32,6 +38,8 @@ const perm = (permission: Permission, resource: string, action: string, extra: P
   ({ access: "permission", permission, workspace: "context", resource, action, ...extra });
 const wsPerm = (permission: Permission, resource: string, action: string, extra: Partial<RoutePolicy> = {}) => perm(permission, resource, action, { workspace: "path", ...extra });
 const pub = (resource: string, action: string): Omit<RoutePolicy, "method" | "pattern"> => ({ access: "public", workspace: "none", resource, action });
+const inst = (instancePermission: InstancePermission, resource: string, action: string, extra: Partial<RoutePolicy> = {}): Omit<RoutePolicy, "method" | "pattern"> =>
+  ({ access: "instance", instancePermission, workspace: "none", resource, action, ...extra });
 const authed = (resource: string, action: string, extra: Partial<RoutePolicy> = {}): Omit<RoutePolicy, "method" | "pattern"> => ({ access: "authenticated", workspace: "none", resource, action, ...extra });
 
 const compPath = (p: Record<string, string>) => `/v1/components/${p.id}`;
@@ -78,7 +86,7 @@ export const POLICIES: readonly RoutePolicy[] = [
   // ---- workspaces, members, tokens, audit ----
   P("GET", "/v1/roles", authed("role", "role.list")),
   P("GET", "/v1/workspaces", authed("workspace", "workspace.list", { userOnly: true })),
-  P("POST", "/v1/workspaces", authed("workspace", "workspace.create", { userOnly: true })),
+  P("POST", "/v1/workspaces", inst("instance:workspace_create", "workspace", "workspace.create", { userOnly: true })),
   P("GET", "/v1/workspaces/:ws", wsPerm("workspace:read", "workspace", "workspace.get")),
   P("PATCH", "/v1/workspaces/:ws", wsPerm("workspace:manage", "workspace", "workspace.update")),
   P("DELETE", "/v1/workspaces/:ws", wsPerm("workspace:delete", "workspace", "workspace.delete")),

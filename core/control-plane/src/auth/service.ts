@@ -5,8 +5,9 @@ import { DEFAULT_SCRYPT, PASSWORD_MAX, PASSWORD_MIN, TOKEN_PREFIX, generateApiTo
 import type { Role } from "./permissions.js";
 import { isPermission, type Permission } from "./permissions.js";
 import type { AuthRepository } from "./repository.js";
+import { DEFAULT_INSTANCE_CONFIG, instancePermissionsFor, type InstanceConfig, type InstancePermission } from "./instance.js";
 import { FailureTracker, RateLimiter } from "./throttle.js";
-import type { ApiTokenRecord, Principal, Session, User } from "./types.js";
+import { isEmailSyntax, type ApiTokenRecord, type Principal, type Session, type User } from "./types.js";
 
 export class RateLimited extends ApiError {
   constructor(public retryAfterSec: number, code = "rate_limited", message = "too many attempts, try again later") { super(429, code, message); }
@@ -21,6 +22,8 @@ export interface AuthServiceOptions {
   maxFailures?: number; lockMs?: number;
   loginsPerMinutePerIp?: number;
   now?: () => Date;
+  /** Instance admins and workspace-create mode (see instance.ts). Omitted: no admins, mode "admins" (fail closed). */
+  instance?: InstanceConfig;
 }
 
 export const SESSION_COOKIE = "__Host-nurtuo_session";
@@ -43,6 +46,7 @@ export class AuthService {
   private ipLimiter: RateLimiter; private unknownFailures: FailureTracker;
   private dummyHash: Promise<string>;
   now: () => Date;
+  readonly instance: InstanceConfig;
 
   constructor(readonly repo: AuthRepository, private o: AuthServiceOptions) {
     if (o.secret.length < 32) throw new Error("auth secret must be at least 32 bytes");
@@ -56,11 +60,12 @@ export class AuthService {
     this.ipLimiter = new RateLimiter(o.loginsPerMinutePerIp ?? 30, 60_000, () => this.now().getTime());
     this.unknownFailures = new FailureTracker(this.maxFailures, this.lockMs, () => this.now().getTime());
     this.dummyHash = hashPassword(randomBytes(16).toString("hex"), this.scrypt);
+    this.instance = o.instance ?? DEFAULT_INSTANCE_CONFIG;
   }
 
   // ---- users -----------------------------------------------------------------------------------
   validateEmail(e: unknown): string {
-    if (typeof e !== "string" || e.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) throw new ApiError(400, "bad_request", "email is invalid");
+    if (typeof e !== "string" || !isEmailSyntax(e)) throw new ApiError(400, "bad_request", "email is invalid");
     return e.trim().toLowerCase();
   }
   validatePassword(p: unknown): string {
@@ -169,6 +174,20 @@ export class AuthService {
       tokenScopes: new Set(rec.scopes), tokenExpiresAt: rec.expiresAt, memberships: new Map([[rec.workspaceId, m.role]]), viaCookie: false,
     };
   }
+
+  // ---- instance permissions ------------------------------------------------------------------------
+  /**
+   * Instance-level permissions of the caller. API tokens never hold any (they are bound to one
+   * workspace). The user is read per request, so new accounts with an admin email count at once.
+   */
+  async instancePermissions(p: Principal): Promise<ReadonlySet<InstancePermission>> {
+    if (p.kind !== "user") return new Set();
+    const user = await this.repo.getUserById(p.userId);
+    return instancePermissionsFor(user?.email, this.instance);
+  }
+
+  /** True when `email` is in the instance-admin set, regardless of the workspace-create mode. */
+  isInstanceAdminEmail(email: string): boolean { return this.instance.admins.has(email.trim().toLowerCase()); }
 
   // ---- API tokens ----------------------------------------------------------------------------------
   /**
