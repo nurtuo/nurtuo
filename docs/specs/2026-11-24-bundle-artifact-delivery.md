@@ -50,7 +50,8 @@ Goals:
 - Every fetched byte is checked against the digest. In signed mode the Ed25519 signature is checked
   (`bundle.Verify`) before anything is parsed.
 - `nurtuo standalone` deploys reach `running` without a manual copy into `bundle_dir`. This
-  includes existing installs, with no operator action after upgrade.
+  includes existing installs whose bundle and secrets directories and any existing signing key
+  pass the validation below.
 - No proto change and no REST change. Existing `bundle_dir` / `trusted_keys` semantics are kept.
 - Phase 1 of #58 (#71) is not weakened: a runtime without `bundle_dir` still never reports `running`.
 
@@ -281,15 +282,21 @@ Three phases (D13), each shippable on its own. Component names exist today unles
 #### C. Standalone D3 defaults (Go, `core/runtime/cmd/nurtuo/`)
 
 1. `DataDirs.Bundles = <root>/bundles` (`NewDataDirs`). `Ensure` creates it with
-   `os.MkdirAll(…, 0o700)` and then `os.Chmod(…, 0o700)`, so an older, looser directory is
-   tightened on Unix. On Windows, call `secrets.EnsurePrivateDir(d.Bundles)` (D11).
+   mode `0700` on Unix. For an existing directory, open `bundles` relative to the data-root
+   directory descriptor with `O_DIRECTORY | O_NOFOLLOW`, validate that the opened object is a
+   directory owned by the effective user, then tighten its mode to `0700` using `fchmod` on
+   that same descriptor. If creation races with an existing entry, apply the same checks.
+   Reject a symlink before changing permissions or writing any bundle. On Windows, call
+   `secrets.EnsurePrivateDir(d.Bundles)` (D11).
 2. `localBootstrapper.Bootstrap` creates or loads `<secrets>/bundle-signing.key` with a *new*
    `loadOrGenSigningKey(path)`:
    - On Unix, require a real secrets directory owned by the effective user with mode `0700`
      and a regular signing key owned by that user with mode `0600`. Windows uses the
      standalone private DACL and ownership checks from #57. Reject symlinks (including
      dangling links) and Windows reparse points at either path before reading or creating
-     the key. Validate ownership and permissions on the objects used for key I/O.
+     the key. Validate ownership and permissions on the objects used for key I/O. If ownership
+     or mode fails validation, report the affected path and the expected owner and mode so the
+     operator can correct them and restart. Leave any existing key untouched.
    - If the file exists, read it and `bundle.DecodePrivateKey`. A corrupt file fails bootstrap
      with "bundle-signing.key is invalid; restore it from backup or delete it to generate a new
      key". It is never silently regenerated, because silent regeneration would be a rotation (D3).
@@ -415,11 +422,14 @@ and `service install` will default to `trusted_keys`. #61 does not change `Signe
 - **No proto, REST, CLI or `runtime.yaml` schema change.** `buf breaking` is unaffected. The one
   new public surface is the additive control-plane env variable (D5).
 - **Existing standalone installs (D6 interim, D12).** On the first start after upgrade, `Ensure`
-  creates `bundles/` and bootstrap generates `bundle-signing.key`. The control plane child gets
+  prepares `bundles/` and bootstrap loads or generates `bundle-signing.key` if the secrets
+  directory and any existing key pass validation. The control plane child gets
   the key and the runtime trusts it. The runtime restarts with revision 0, so the control plane
   resends the desired state on Hello. Deployments that were `failed` ("no bundle_dir configured")
   are applied again, fetched, and move `failed` → `pending` → `running`. No manual step and no
-  data migration. This goes in the release note.
+  data migration is needed for those installs. Bootstrap fails closed on a legacy Unix secrets
+  directory with loose permissions or foreign ownership. The operator must correct its owner
+  or mode and restart. The release note documents both outcomes.
 - **Distributed control plane, unchanged config.** Without the new variable nothing changes:
   revision digests, `bundle_dir` copies, `FetchArtifact` returns `FAILED_PRECONDITION`.
   Signed-mode runtimes now show a clearer message for a missing file.
@@ -508,9 +518,11 @@ the matching key, reaches `running` with an empty `bundle_dir`.
 
 ### Phase 3: standalone D3 defaults (`core/runtime/cmd/nurtuo`), only after Phases 1 and 2 are on `main` (D2)
 
-Exit: `nurtuo standalone` deploys reach `running` with no manual step; key and directory modes as D3.
+Exit: `nurtuo standalone` deploys reach `running` automatically when the data directories and
+signing key pass D3 validation.
 
-10. `DataDirs.Bundles` plus `Ensure` (`0700`, tighten existing). Verified by
+10. `DataDirs.Bundles` plus `Ensure` (`0700`, tighten validated existing directories and reject
+    symlinks on Unix). Verified by
     `TestDataDirsEnsureBundles` in `standalone_test.go`.
 11. `loadOrGenSigningKey`, plus `Credentials.BundleSigningKeyFile` and `BundlePublicKey`. Verified
     by an extended `TestLocalBootstrapIdempotentAndUsableForMTLS` and a new
@@ -519,7 +531,8 @@ Exit: `nurtuo standalone` deploys reach `running` with no manual step; key and d
 12. `controlPlaneEnv` plus `standaloneRuntimeConfig`. Verified by an extended
     `TestControlPlaneEnvWiresGatewayAndAuth` and a new `TestStandaloneRuntimeConfig`.
 13. Flip `TestStandaloneE2EHandshakeAndDeploy` to expect `running` with a real flow and the
-    archive cached in `bundles/`. With PostgreSQL, create a failed deployment with signing
+    archive cached in `bundles/`. Add the Unix legacy secrets-directory upgrade test below.
+    With PostgreSQL, create a failed deployment with signing
     disabled, then upgrade and verify the same deployment reaches `running` without a new
     deploy POST. Restart again and check the same key, digest and untouched cache file.
     Remove `TODO(#64)`. Update `operations.md` (standalone limitation removed, data-dir table)
@@ -554,7 +567,14 @@ Exit: `nurtuo standalone` deploys reach `running` with no manual step; key and d
 - WHEN Windows standalone creates `bundles\` or encounters a legacy directory with an
   ordinary-users read ACE THEN `Ensure` leaves it protected by #57's private DACL.
 - WHEN an existing standalone install that showed `failed` ("no bundle_dir configured") is upgraded
-  and started THEN, without operator action, those deployments move to `running`.
+  and started with the bundle and secrets directories and any existing signing key passing validation
+  THEN, without operator action, those deployments move to `running`.
+- WHEN a legacy Unix install has a loose or foreign-owned secrets directory containing an
+  existing signing key THEN startup fails with the affected path and expected owner and mode,
+  and the key bytes and metadata are preserved. After the operator fixes the directory and
+  restarts, bootstrap reuses the same key.
+- WHEN a legacy Unix install has a symlink at `bundles/` THEN startup rejects it and leaves
+  the target directory mode and contents unchanged.
 - WHEN the fetched bytes do not hash to the digest THEN the deployment is `failed` with
   "fetched artifact does not match digest" and nothing is left in `bundle_dir`.
 - WHEN the fetched archive is signed by a key not in `trusted_keys` (or its manifest or a file was
@@ -596,9 +616,10 @@ No key material is committed or printed.
 | `TestFetchArtifactSignedByControlPlane` in `internal/interop/interop_test.go` | real TS gateway (`startControlPlane` with `extraEnv` `NURTUO_BUNDLE_SIGNING_KEY_FILE=<tempdir file>`), runtime trusting the matching public key, empty `bundle_dir`: deployment `running`, flow serving, archive cached; second deployment of a new revision fetched too | `cd core/runtime && go test -race ./internal/interop/...` | verify locally with Node 20+ and a built control plane. May skip in the current `go` job until [#89](https://github.com/nurtuo/nurtuo/issues/89) |
 | `TestFetchArtifactWrongKeyRejected`, `TestFetchArtifactForeignDigestNotFound`, `TestFetchArtifactNoSigningKey` (interop) | runtime trusts another key → `failed` with "signature verification failed"; rt-2 fetching rt-1's digest → `NOT_FOUND`; control plane without key → `failed` with "no bundle signing key" | same | |
 | `TestSignedBundleArtifactPath` (existing, message assertion updated) | externally supplied digest still works from `bundle_dir`; the missing case now carries the `NOT_FOUND` text | same | |
-| `TestDataDirsEnsureBundles` in `cmd/nurtuo/standalone_test.go` | `bundles/` created `0700`; a pre-existing `0755` dir tightened to `0700` (Unix) | `cd core/runtime && go test -race ./cmd/nurtuo -run TestDataDirs` | `t.TempDir()` |
+| `TestDataDirsEnsureBundles` in `cmd/nurtuo/standalone_test.go` | `bundles/` created `0700`; a pre-existing `0755` dir tightened to `0700`; a legacy symlink to a directory with a sentinel file is rejected and the target mode and contents stay unchanged (Unix) | `cd core/runtime && go test -race ./cmd/nurtuo -run TestDataDirs` | `t.TempDir()` |
 | `TestBundleSigningKeyStableAndPrivate` (new) and `TestLocalBootstrapIdempotentAndUsableForMTLS` (extended) | key created `0600`; second `Bootstrap` returns the same public key and file bytes; corrupt file → error, file untouched; `bundle.DecodePrivateKey` accepts it; no key bytes in the error | `go test -race ./cmd/nurtuo -run 'Bootstrap|SigningKey'` | |
 | `TestBundleSigningKeyRejectsUnsafePaths` (new) | loose or foreign-owned secrets dir, symlinked secrets dir or key (including a dangling link), key mode other than `0600`, foreign-owned key and non-regular key all fail without using or replacing the key. Windows exercises reparse points and invalid key ACL or ownership at the signing-key loader | `cd core/runtime && go test -race ./cmd/nurtuo -run SigningKey` | use a privileged fixture for foreign-owner cases when required |
+| `TestStandaloneLegacySecretsDirUpgrade` (new, Unix) | a legacy `0755` secrets directory with a valid `0600` signing key fails startup with the directory path and expected owner and mode; the key bytes, mode and owner are preserved; after tightening the directory to `0700`, restart loads the same public key | `cd core/runtime && go test -race ./cmd/nurtuo -run TestStandaloneLegacySecretsDirUpgrade` | use a pre-upgrade layout |
 | `TestBundleSigningKeyConcurrentBootstrap` (new) | overlap two bootstrap processes after both stage different seeds. Only one publishes, both return the same public key, the final file decodes and staged files are removed | same | exercise the native publisher on Linux, macOS and Windows |
 | `TestBundleSigningKeyPublishFallback` (new) | simulate exclusive rename unavailable on Unix and verify hard-link publication. Simulate no hard-link support with native rename available and verify success. With all applicable primitives unavailable, verify the error, absent final file and temp cleanup | same | inject unsupported results at the publication boundary |
 | `TestDataDirsEnsureBundlesPrivate` (new, Windows) | a fresh `bundles\` and a legacy directory with a `BUILTIN\Users` read ACE both end with #57's protected DACL | `go-windows` job | reuse #57's DACL assertions |
@@ -623,7 +644,7 @@ approval.
 | D9 | Serve unsigned content over `FetchArtifact` to runtimes without `trusted_keys`? | (a) no, signed only in this issue (`FAILED_PRECONDITION` without key; unsigned runtimes do not fetch); (b) yes, serve `canonicalJson(content)` for derived digests, runtime verifies SHA-256 | **(a)** | lowest blast radius; nudges towards `trusted_keys` (#61 direction); (b) is a later additive change through the same seam | decided (Łukasz, 2026-11-24, 12:29 Europe/Warsaw, accepted recommendation) |
 | D10 | Runtime fetch/cache behaviour | — | fetch in `Apply` when `<hex>.bundle` is missing or fails verification; temp file `.fetch-*` (`0600`) in `bundle_dir`, digest and signature checks, component decoding, fsync, rename; preserve the prior file on failure; no eviction; `Remove` keeps the file; 5 min per-fetch deadline; no new config key | reuses `SignedBundleSource` and the existing file layout; no data loss; reversible | implementer-default |
 | D11 | Sequencing against #57 on Windows | ship independently and wire the DACL once #57 is available | #57 shipped in #85. Phase 3 calls `secrets.EnsurePrivateDir(<data-dir>\bundles)` | reuses the shipped Windows directory protection | decided (Łukasz, 2026-11-24, 12:29 Europe/Warsaw, accepted recommendation) |
-| D12 | Existing standalone installs after upgrade | — | automatic: `Ensure` creates `bundles/`, bootstrap generates the key on first start, desired state is resent on Hello, `failed` → `running`; release note; no migration | no operator action; nothing persisted to convert | implementer-default |
+| D12 | Existing standalone installs after upgrade | — | automatic when the secrets directory and any existing key pass validation: `Ensure` prepares `bundles/`, bootstrap loads or generates the key, desired state is resent on Hello, `failed` → `running` | no data migration; unsafe legacy Unix secrets directories require ownership or mode correction before restart; document in the release note | implementer-default |
 | D13 | Split into more than one spec? | (a) one spec, three shippable phases (control plane, runtime, standalone); (b) separate specs per side | **(a)** | one capability (artifact delivery) end to end; phases ship independently; script modules split out (Non-goals) | implementer-default |
 | D14 | Interaction with #62 | — | none required: content-addressed cache, component id as manifest id, no new flow-id-keyed state | keeps #62 unblocked | implementer-default (informational) |
 | D15 | Interaction with #60 / PR #75 | — | no dependency; #75 is merged, so `ApplyDesiredState` runs off the receive loop and a long fetch does not block it (Gaps #3) | fetch is its own HTTP/2 stream | implementer-default (informational) |
