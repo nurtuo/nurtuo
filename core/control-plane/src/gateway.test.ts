@@ -43,8 +43,8 @@ class Rt {
   private wake?: () => void;
   private done = false;
   private it: AsyncIterator<pb.ConnectResponse>;
-  constructor(certName: string, keyName = certName.replace(".pem", ".key"), ca = "ca.pem") {
-    const client = runtimeClient(port, certName, keyName, ca);
+  constructor(certName: string, keyName = certName.replace(".pem", ".key"), ca = "ca.pem", address = port) {
+    const client = runtimeClient(address, certName, keyName, ca);
     const self = this;
     this.it = client.connect((async function* () {
       for (;;) {
@@ -66,11 +66,6 @@ class Rt {
     const r = await Promise.race([this.pull(), t]);
     assert.ok(!r.done, "stream ended");
     return r.value;
-  }
-  async expectNone(ms = 150) {
-    const timeout = Symbol();
-    const r = await Promise.race([this.pull(), new Promise<symbol>((res) => setTimeout(() => res(timeout), ms).unref())]);
-    assert.equal(r, timeout, "unexpected message");
   }
   async desired(): Promise<pb.DesiredState> {
     const m = (await this.next()).msg;
@@ -150,6 +145,37 @@ async function listen(t: TestContext, server: ReturnType<typeof createGatewaySer
   return (server.address() as AddressInfo).port;
 }
 
+test("matching-generation reconnects receive current digests across signing changes", async (t) => {
+  const repo = new MemoryRepository();
+  const runtimeId = "rt-1";
+  await repo.upsertRuntime({ id: runtimeId, name: runtimeId, environment: "dev" });
+  const component = await repo.createComponent({ name: "resume", kind: "flow", description: "" });
+  const content = { a: "flow" };
+  const revision = (await repo.createRevision(component.id, content, digestOf(content)))!;
+  await repo.deploy({ componentId: component.id, revisionId: revision.id, runtimeId });
+  const { privateKey } = generateKeyPairSync("ed25519");
+  const signingKey = { privateKey, keyId: "0123456789abcdef" };
+
+  async function reconnect(signed: boolean) {
+    const address = await listen(t, createGatewayServer(new Gateway(repo, { signingKey: signed ? signingKey : undefined }), {
+      cert: cert("server.pem"), key: cert("server.key"), ca: cert("ca.pem"),
+    }));
+    const rt = new Rt("rt-1.pem", "rt-1.key", "ca.pem", address);
+    try {
+      rt.hello(runtimeId, 1);
+      const desired = await rt.desired();
+      assert.equal(desired.revision, 1n);
+      return desired.deployments[0]!.bundleDigest;
+    } finally {
+      rt.close();
+    }
+  }
+
+  assert.equal(await reconnect(false), revision.digest);
+  assert.notEqual(await reconnect(true), revision.digest);
+  assert.equal(await reconnect(false), revision.digest);
+});
+
 const fetchClient = (client: ReturnType<typeof runtimeClient>) => async (digest: string) => {
   const chunks: Uint8Array[] = [];
   for await (const chunk of client.fetchArtifact({ digest }, { timeoutMs: 5000 })) chunks.push(chunk.data);
@@ -175,12 +201,12 @@ test("FetchArtifact serves signed, bounded chunks only to a runtime that current
   await deploy("invalid", []);
 
   const opts = { signingKey: { privateKey, keyId } };
-  const state = await new Gateway(repo, opts).desiredStateMessage("rt-1");
+  const gateway = new Gateway(repo, opts);
+  const state = await gateway.desiredStateMessage("rt-1");
   const digest = state!.deployments.find((d) => d.deploymentId === componentId)!.bundleDigest;
   assert.notEqual(digest, digestOf(content));
 
-  // Fetch against a fresh gateway so the archive must first be reconstructed from desired state.
-  const address = await listen(t, createGatewayServer(new Gateway(repo, opts), {
+  const address = await listen(t, createGatewayServer(gateway, {
     cert: cert("server.pem"), key: cert("server.key"), ca: cert("ca.pem"),
   }));
   const owner = runtimeClient(address, "rt-1.pem");
@@ -228,6 +254,40 @@ test("FetchArtifact serves signed, bounded chunks only to a runtime that current
   const revised = (await repo.createRevision(componentId, {}, digestOf({})))!;
   await repo.deploy({ componentId, revisionId: revised.id, runtimeId: "rt-1" });
   await assert.rejects(fetch(digest), notFound);
+});
+
+test("FetchArtifact repacks only an authorized cache miss", async (t) => {
+  const repo = new MemoryRepository();
+  for (const id of ["rt-1", "rt-2"]) await repo.upsertRuntime({ id, name: id, environment: "dev" });
+  for (const name of ["one", "two", "three"]) {
+    const component = await repo.createComponent({ name, kind: "flow", description: "" });
+    const content = { name };
+    const revision = (await repo.createRevision(component.id, content, digestOf(content)))!;
+    await repo.deploy({ componentId: component.id, revisionId: revision.id, runtimeId: "rt-1" });
+  }
+  const { privateKey } = generateKeyPairSync("ed25519");
+  const gateway = new Gateway(repo, { signingKey: { privateKey, keyId: "0123456789abcdef" }, artifactCacheBytes: 5120 });
+  const address = await listen(t, createGatewayServer(gateway, {
+    cert: cert("server.pem"), key: cert("server.key"), ca: cert("ca.pem"),
+  }));
+  const rt = new Rt("rt-1.pem", "rt-1.key", "ca.pem", address);
+  t.after(() => rt.close());
+  rt.hello("rt-1");
+  const desired = await rt.desired();
+  const digest = desired.deployments[0]!.bundleDigest;
+  const lookup = t.mock.method(repo, "getComponent");
+  const fetch = fetchClient(runtimeClient(address, "rt-1.pem"));
+  const foreignFetch = fetchClient(runtimeClient(address, "rt-2.pem"));
+  const notFound = { code: Code.NotFound, rawMessage: "artifact not found for this runtime" };
+  await assert.rejects(foreignFetch(digest), notFound);
+  await assert.rejects(fetch(`sha256:${"b".repeat(64)}`), notFound);
+  assert.equal(lookup.mock.callCount(), 0);
+  const archives = await Promise.all([fetch(digest), fetch(digest)]);
+  for (const chunks of archives) {
+    assert.equal(`sha256:${createHash("sha256").update(Buffer.concat(chunks)).digest("hex")}`, digest);
+  }
+  assert.equal(lookup.mock.callCount(), 1);
+  assert.deepEqual(lookup.mock.calls[0]!.arguments, [desired.deployments[0]!.deploymentId]);
 });
 
 test("FetchArtifact fails closed without a signing key or without a certificate identity", async (t) => {
@@ -346,13 +406,13 @@ test("client cert from an untrusted CA is refused at the TLS layer", async () =>
   await assert.rejects(rt.next());
 });
 
-test("desired state is pushed after deploy() via the outbox; matching revision gets no message", async () => {
+test("desired state is pushed after deploy() via the outbox; matching revision is replayed", async () => {
   const { c, r } = await seed("push");
   await repo.deploy({ componentId: c.id, revisionId: r.id, runtimeId: "rt-2" });
   await gw.publishOutbox();
   const rt = new Rt("rt-2.pem");
   rt.hello("rt-2", 1); // already at current revision
-  await rt.expectNone();
+  assert.equal((await rt.desired()).revision, 1n);
   const c2 = await seed("push2");
   await repo.deploy({ componentId: c2.c.id, revisionId: c2.r.id, runtimeId: "rt-2" });
   assert.equal((await repo.listOutbox({ unpublishedOnly: true })).length, 1);
@@ -381,7 +441,7 @@ test("reconnect resends state missed while offline", async () => {
 test("a newer connection for the same runtime replaces the older one", async () => {
   const a = new Rt("rt-1.pem");
   a.hello("rt-1", 2);
-  await eventually(async () => gw.connectedRuntimes().includes("rt-1"));
+  assert.equal((await a.desired()).revision, 2n);
   const b = new Rt("rt-1.pem");
   b.hello("rt-1", 2);
   await a.next().then(() => assert.fail("expected stream end"), () => {});

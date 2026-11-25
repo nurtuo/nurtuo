@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { createHash, createPrivateKey, createPublicKey, sign, type KeyObject } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { canonicalJson } from "./api.js";
 
 export const bundleNamePattern = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 export const maxBundleSize = 256 * 1024 * 1024;
+export const maxBundleEntrySize = 64 * 1024 * 1024;
 const blockSize = 512;
+const signatureSize = 64;
 const signingKeyEnv = "NURTUO_BUNDLE_SIGNING_KEY_FILE";
 
 export interface SigningKey {
@@ -76,6 +77,25 @@ function writeHeader(header: Buffer, path: string, size: number): void {
 
 const paddedSize = (size: number) => Math.ceil(size / blockSize) * blockSize;
 
+const wellFormed = (value: string) => value.replace(/[\uD800-\uDFFF]/gu, "\uFFFD");
+const quote = (value: string) => JSON.stringify(wellFormed(value)).replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
+
+function canonicalBundleJson(value: unknown): string {
+  if (typeof value === "string") return quote(value);
+  if (typeof value === "number" && !Number.isFinite(value)) throw new Error("bundle: non-finite number");
+  if (Array.isArray(value)) return `[${value.map(canonicalBundleJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value).map(([key, item]) => ({ key: wellFormed(key), item }));
+    if (new Set(entries.map(({ key }) => key)).size !== entries.length) {
+      throw new Error("bundle: duplicate JSON key");
+    }
+    const sorted = entries.map((entry) => ({ ...entry, bytes: Buffer.from(entry.key) }))
+      .sort((a, b) => a.bytes.compare(b.bytes));
+    return `{${sorted.map(({ key, item }) => `${quote(key)}:${canonicalBundleJson(item)}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
 /** Pack one deployed component into a deterministic, signed nurtuo.bundle/v1 archive. */
 export function packBundle(input: BundleInput, key: SigningKey): Buffer {
   const { kind, id, revision, document } = input.component;
@@ -87,9 +107,9 @@ export function packBundle(input: BundleInput, key: SigningKey): Buffer {
     throw new Error("bundle: component document must be a JSON object");
   }
   const createdAt = new Date(input.createdAt).toISOString().replace(/\.\d{3}Z$/, "Z");
-  const documentJson = canonicalJson(document);
+  const documentJson = canonicalBundleJson(document);
   const documentSize = Buffer.byteLength(documentJson);
-  if (documentSize > maxBundleSize) throw new Error(`bundle: archive exceeds ${maxBundleSize} bytes`);
+  if (documentSize > maxBundleEntrySize) throw new Error(`bundle: entry exceeds ${maxBundleEntrySize} bytes`);
   const config = "{}";
   const path = `components/${kind}/${id}/${revision}.json`;
   const manifest = JSON.stringify({
@@ -100,17 +120,21 @@ export function packBundle(input: BundleInput, key: SigningKey): Buffer {
     config: { path: "config.json", sha256: sha256(config), size: config.length },
     connectors: [],
   });
-  const signature = sign(null, Buffer.from(`nurtuo-bundle-v1\n${manifest}`), key.privateKey);
-  const signatureDoc = JSON.stringify({ alg: "ed25519", keyId: key.keyId, sig: signature.toString("base64") });
+  const signatureDoc = (sig: string) => JSON.stringify({ alg: "ed25519", keyId: key.keyId, sig });
   const entries = [
     { path: "manifest.json", data: manifest, size: Buffer.byteLength(manifest) },
     { path: "config.json", data: config, size: config.length },
     { path, data: documentJson, size: documentSize },
-    { path: "manifest.sig", data: signatureDoc, size: signatureDoc.length },
+    { path: "manifest.sig", data: "", size: Buffer.byteLength(signatureDoc("A".repeat(Math.ceil(signatureSize / 3) * 4))) },
   ];
+  if (entries.some((entry) => entry.size > maxBundleEntrySize)) {
+    throw new Error(`bundle: entry exceeds ${maxBundleEntrySize} bytes`);
+  }
   const size = entries.reduce((total, entry) => total + blockSize + paddedSize(entry.size), 2 * blockSize);
   if (size > maxBundleSize) throw new Error(`bundle: archive exceeds ${maxBundleSize} bytes`);
 
+  const signature = sign(null, Buffer.from(`nurtuo-bundle-v1\n${manifest}`), key.privateKey);
+  entries[3]!.data = signatureDoc(signature.toString("base64"));
   const archive = Buffer.alloc(size);
   let offset = 0;
   for (const entry of entries) {

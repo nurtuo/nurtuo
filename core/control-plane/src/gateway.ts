@@ -27,6 +27,7 @@ export function runtimeIdFromCert(cert: { subject?: { CN?: string | string[] }; 
 
 const peerKey = createContextKey<string | undefined>(undefined, { description: "runtime id from mTLS client cert" });
 const artifactChunkSize = 1024 * 1024;
+const maxArtifactStreams = 8;
 
 /** runtime-reported state (open set) -> persisted deployment status. Unknown states are ignored. */
 const STATE_MAP: Record<string, DeploymentStatus> = { applying: "pending", running: "running", paused: "stopped", error: "failed", stopped: "stopped" };
@@ -52,12 +53,20 @@ interface Session { runtimeId: string; out: Queue<pb.ConnectResponse>; lastSeen:
 interface Artifact { data: Buffer; digest: string; references: number }
 class BundlePackError extends Error {}
 
+interface ArtifactReference {
+  componentId: string;
+  revisionId: string;
+  packed: boolean;
+  packError?: string;
+}
+
 export interface GatewayOptions {
   /** A session with no message for this long is closed (default 0 = disabled). */
   idleTimeoutMs?: number;
   onCommandResult?: (runtimeId: string, r: pb.CommandResult) => void;
   log?: (msg: string) => void;
   signingKey?: SigningKey;
+  artifactCacheBytes?: number;
 }
 
 export class Gateway {
@@ -68,6 +77,9 @@ export class Gateway {
   private artifacts = new Map<string, string>(); // revision and key id -> archive digest
   private artifactsByDigest = new Map<string, Artifact>();
   private artifactBytes = 0;
+  private packing = new Map<string, Promise<Artifact | undefined>>();
+  private artifactViews = new Map<string, { generation: number; byDigest: Map<string, ArtifactReference[]> }>();
+  private activeArtifactStreams = 0;
 
   constructor(private repo: Repository, private opts: GatewayOptions = {}) {}
 
@@ -79,13 +91,17 @@ export class Gateway {
     const cacheKey = `${rev.id}:${key.keyId}`;
     const cached = this.artifacts.get(cacheKey);
     if (cached) return this.artifactsByDigest.get(cached)!;
-    if (rev.digest !== digestOf(rev.content)) return undefined;
+    const pending = this.packing.get(cacheKey);
+    if (pending) return pending;
+    const packing = this.packArtifact(rev, key, cacheKey).finally(() => this.packing.delete(cacheKey));
+    this.packing.set(cacheKey, packing);
+    return packing;
+  }
 
+  private async packArtifact(rev: Revision, key: SigningKey, cacheKey: string): Promise<Artifact | undefined> {
+    if (rev.digest !== digestOf(rev.content)) return undefined;
     const component = await this.repo.getComponent(rev.componentId);
     if (!component) throw new BundlePackError("bundle: revision component is missing");
-    // A concurrent desired-state computation may have filled the cache during the lookup.
-    const packed = this.artifacts.get(cacheKey);
-    if (packed) return this.artifactsByDigest.get(packed)!;
     let data: Buffer;
     try {
       data = packBundle({
@@ -97,7 +113,9 @@ export class Gateway {
       throw new BundlePackError(error instanceof Error ? error.message : "bundle packing failed");
     }
     const digest = `sha256:${createHash("sha256").update(data).digest("hex")}`;
-    while (!this.artifactsByDigest.has(digest) && this.artifactBytes + data.length > maxBundleSize) {
+    const capacity = this.opts.artifactCacheBytes ?? maxBundleSize;
+    if (data.length > capacity) return { data, digest, references: 0 };
+    while (!this.artifactsByDigest.has(digest) && this.artifactBytes + data.length > capacity) {
       const oldest = this.artifacts.entries().next().value!;
       this.artifacts.delete(oldest[0]);
       const evicted = this.artifactsByDigest.get(oldest[1])!;
@@ -133,12 +151,22 @@ export class Gateway {
     const ds = await this.repo.getDesiredState(runtimeId);
     if (!ds) return undefined;
     const deployments: pb.Deployment[] = [];
+    const byDigest = new Map<string, ArtifactReference[]>();
     for (const [componentId, revisionId] of Object.entries(ds.items).sort(([a], [b]) => a.localeCompare(b))) {
       const rev = await this.repo.getRevisionById(revisionId);
       if (!rev) continue;
       // deployment_id is the component id: one slot per component per runtime.
-      const { digest: bundleDigest } = await this.resolveArtifact(rev);
+      const { digest: bundleDigest, artifact, packError } = await this.resolveArtifact(rev);
+      if (this.opts.signingKey) {
+        const reference = { componentId, revisionId, packed: artifact !== undefined, packError };
+        const references = byDigest.get(bundleDigest);
+        if (references) references.push(reference);
+        else byDigest.set(bundleDigest, [reference]);
+      }
       deployments.push(create(pb.DeploymentSchema, { deploymentId: componentId, bundleDigest }));
+    }
+    if (this.opts.signingKey && (this.artifactViews.get(runtimeId)?.generation ?? -1) <= ds.generation) {
+      this.artifactViews.set(runtimeId, { generation: ds.generation, byDigest });
     }
     return create(pb.DesiredStateSchema, { revision: BigInt(ds.generation), deployments });
   }
@@ -215,30 +243,44 @@ export class Gateway {
       throw new ConnectError("control plane has no bundle signing key configured (NURTUO_BUNDLE_SIGNING_KEY_FILE)", Code.FailedPrecondition);
     }
     const digest = `sha256:${hex}`;
+    const notFound = new ConnectError("artifact not found for this runtime", Code.NotFound);
+    const references = this.artifactViews.get(certId)?.byDigest.get(digest);
+    if (!references) throw notFound;
     const state = await this.repo.getDesiredState(certId);
-    let unavailable = new ConnectError("artifact not found for this runtime", Code.NotFound);
-    for (const revisionId of Object.values(state?.items ?? {})) {
-      if (ctx.signal.aborted) return;
-      const rev = await this.repo.getRevisionById(revisionId);
-      if (!rev) continue;
-      // Resolve each current deployment just as DesiredState does. A cache hit alone
-      // grants no access, and an evicted archive can be regenerated here.
-      const resolved = await this.resolveArtifact(rev);
-      if (resolved.digest !== digest) continue;
-      if (resolved.artifact) {
-        const { data } = resolved.artifact;
-        for (let offset = 0; offset < data.length && !ctx.signal.aborted; offset += artifactChunkSize) {
-          yield create(pb.FetchArtifactResponseSchema, { data: data.subarray(offset, offset + artifactChunkSize) });
-        }
-        return;
+    const current = references.filter(({ componentId, revisionId }) => state?.items[componentId] === revisionId);
+    const reference = current.find(({ packed }) => packed);
+    if (!reference) {
+      const packError = current.find((entry) => entry.packError)?.packError;
+      if (packError) throw new ConnectError(packError, Code.FailedPrecondition);
+      if (current.length) {
+        throw new ConnectError("artifact is not stored by the control plane; place it in bundle_dir", Code.NotFound);
       }
-      if (resolved.packError) {
-        unavailable = new ConnectError(resolved.packError, Code.FailedPrecondition);
-      } else if (unavailable.code !== Code.FailedPrecondition) {
-        unavailable = new ConnectError("artifact is not stored by the control plane; place it in bundle_dir", Code.NotFound);
-      }
+      throw notFound;
     }
-    throw unavailable;
+    if (ctx.signal.aborted) return;
+    if (this.activeArtifactStreams >= maxArtifactStreams) {
+      throw new ConnectError("too many active artifact streams", Code.ResourceExhausted);
+    }
+    this.activeArtifactStreams++;
+    try {
+      let artifact = this.artifactsByDigest.get(digest);
+      if (!artifact) {
+        const rev = await this.repo.getRevisionById(reference.revisionId);
+        if (!rev) throw notFound;
+        const resolved = await this.resolveArtifact(rev);
+        if (resolved.packError) throw new ConnectError(resolved.packError, Code.FailedPrecondition);
+        artifact = resolved.artifact;
+      }
+      if (!artifact || artifact.digest !== digest) throw notFound;
+      // Reject an artifact that was superseded while its archive was being rebuilt.
+      const latest = await this.repo.getDesiredState(certId);
+      if (latest?.items[reference.componentId] !== reference.revisionId) throw notFound;
+      for (let offset = 0; offset < artifact.data.length && !ctx.signal.aborted; offset += artifactChunkSize) {
+        yield create(pb.FetchArtifactResponseSchema, { data: artifact.data.subarray(offset, offset + artifactChunkSize) });
+      }
+    } finally {
+      this.activeArtifactStreams--;
+    }
   }
 
   private async *connect(reqs: AsyncIterable<pb.ConnectRequest>, ctx: HandlerContext): AsyncGenerator<pb.ConnectResponse> {
@@ -270,7 +312,8 @@ export class Gateway {
           registered = true;
           prev?.out.close(); // newest connection wins
           const ds = await this.desiredStateMessage(certId);
-          if (ds && ds.revision !== m.value.desiredStateRevision) {
+          // Signing configuration can change the payload at the same stored generation.
+          if (ds) {
             out.push(create(pb.ConnectResponseSchema, { msg: { case: "desiredState", value: ds } }));
           }
           continue;

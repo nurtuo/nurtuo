@@ -47,10 +47,9 @@ func TestVerifyControlPlaneUnicodeAndNumbers(t *testing.T) {
 	} else if err != nil {
 		t.Fatal(err)
 	}
-	pub, priv, err := GenerateKey()
-	if err != nil {
-		t.Fatal(err)
-	}
+	seed := sha256.Sum256([]byte("nurtuo-golden-bundle-key"))
+	priv := ed25519.NewKeyFromSeed(seed[:])
+	pub := priv.Public().(ed25519.PublicKey)
 	keyPath := filepath.Join(t.TempDir(), "seed")
 	if err := os.WriteFile(keyPath, []byte(EncodePrivateKey(priv)), 0o600); err != nil {
 		t.Fatal(err)
@@ -77,7 +76,20 @@ process.stdout.write(archive);
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []byte("{\"é\":\"\u2028\",\"𐀀\":1e+21,\"\ue000\":[1e-7,-2.75,9007199254740991]}")
+	want := []byte(`{"é":"\u2028","":[1e-7,-2.75,9007199254740991],"𐀀":1e+21}`)
+	goArchive, err := Pack(Input{
+		Name:      "interop",
+		CreatedAt: time.Date(2026, 11, 24, 12, 34, 56, 0, time.UTC),
+		Components: []Component{
+			{Kind: "flow", ID: strings.Repeat("a", 128), Revision: 1, Document: want},
+		},
+	}, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, expected := sum(data), sum(goArchive); got != expected {
+		t.Fatalf("TypeScript archive SHA-256 = %s, Go = %s", got, expected)
+	}
 	path := "components/flow/" + strings.Repeat("a", 128) + "/1.json"
 	if got := verified.Files[path]; !bytes.Equal(got, want) {
 		t.Fatalf("verified component = %q, want %q", got, want)
