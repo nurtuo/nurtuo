@@ -17,10 +17,15 @@ export function ConfigDialog({ store, step, onClose, onRenamed, connections }: {
   onRenamed: (id: string) => void;
 }) {
   const fields = fieldsOf(configSchemaOf(step.kind));
-  const operations = step.kind === "connector" && connections ? workspaceOperations(step.config.connector) : undefined;
-  const connectionChoices = connections?.filter((c) => operations
-    ? !!workspaceOperations(c.connector)
-    : !step.config.connector || c.connector === step.config.connector);
+  const connector = step.config.connector;
+  const operation = String(step.config.operation ?? "");
+  const bound = connections?.find((c) => c.id === step.config.connection && c.connector === connector);
+  const allowed = step.kind === "connector" ? workspaceOperations(bound?.connector) : undefined;
+  const operations = step.config.objectType === undefined && (!operation || allowed?.includes(operation.toUpperCase()))
+    ? allowed?.map((choice) => choice === operation.toUpperCase() ? operation : choice)
+    : undefined;
+  const connectionChoices = connections?.filter((c) => !connector || c.connector === connector
+    || (!!workspaceOperations(connector) && !!workspaceOperations(c.connector)));
   const [error, setError] = useState<string | null>(null);
 
   const run = (ops: Parameters<FlowStore["dispatch"]>[0]) => {
@@ -73,7 +78,7 @@ export function ConfigDialog({ store, step, onClose, onRenamed, connections }: {
           // key includes the stored value so undo/redo resets the editor text
           <FieldEditor key={`${step.id}:${f.name}:${JSON.stringify(step.config[f.name])}`} field={f} value={step.config[f.name]} onCommit={(t) => commit(f, t)}
             choices={step.kind === "connector" && f.name === "connection"
-              ? connectionChoices?.map((c) => c.id)
+              ? (connectionChoices?.length ? connectionChoices.map((c) => c.id) : undefined)
               : step.kind === "connector" && f.name === "operation" ? operations : undefined} />
         ))}
         {fields.length === 0 && <p>This step has no configuration.</p>}
@@ -94,7 +99,7 @@ function FieldEditor({ field, value, onCommit, choices }: { field: Field; value:
     const cur = typeof value === "string" && value !== "" && !choices.includes(value) ? [value] : [];
     control = (
       <select aria-label={field.name} value={text} onChange={(e) => { setText(e.target.value); commit(e.target.value); }}>
-        {!field.required && <option value="" />}
+        {(!field.required || !text) && <option value="" disabled={field.required} />}
         {[...cur, ...choices].map((c) => <option key={c} value={c}>{c}</option>)}
       </select>
     );

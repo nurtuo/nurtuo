@@ -70,6 +70,20 @@ async function dirSize(dir: string): Promise<number> {
   return total;
 }
 
+async function untilAbort<T>(signal: AbortSignal, work: () => Promise<T>): Promise<T> {
+  signal.throwIfAborted();
+  let onAbort!: () => void;
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([aborted, work()]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+}
+
 export class TestRunner {
   private coordinator: ConnectionCoordinator;
 
@@ -108,14 +122,17 @@ export class TestRunner {
 
       // 3. connections and secrets of this workspace only
       const ids = [...new Set(uses.map((u) => u.connection))];
-      const { conns, env, secretValues } = await this.coordinator.withWorkspace(workspaceId, async () => {
+      const { conns, env, secretValues } = await untilAbort(operation, () => this.coordinator.withWorkspace(workspaceId, async () => {
         operation.throwIfAborted();
         await authorize?.();
+        operation.throwIfAborted();
         const conns = [];
         for (const id of ids) {
           operation.throwIfAborted();
           const reconciled = await this.coordinator.reconcile(d.connections, d.secrets, workspaceId, id);
+          operation.throwIfAborted();
           const c = reconciled ?? await d.connections.get(workspaceId, id);
+          operation.throwIfAborted();
           if (!c) throw new ApiError(404, "connection_not_found", `connection "${id}" not found`);
           if (uses.some((use) => use.connection === id && use.connector !== c.connector)) {
             throw new ApiError(400, "connection_type_mismatch", `connection "${id}" does not match the connector step`);
@@ -151,7 +168,7 @@ export class TestRunner {
           }
         }
         return { conns, env, secretValues };
-      });
+      }));
       // 4. egress
       const dialPlan = { http: new Map<string, string>(), postgres: new Map<string, string>() };
       const settingsForChild = [];

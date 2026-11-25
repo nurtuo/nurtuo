@@ -13,8 +13,9 @@ Related: [workspace-isolation](2026-11-22-workspace-isolation.md) (draft).
 > 2026-11-23 (see [Decisions](#decisions)). Items still open are labelled **non-blocking** where they
 > occur (they are verifications and follow-ups, not product decisions).
 
-The approved [operation limits and credential binding spec](2026-11-24-operation-limits-and-credential-binding.md)
-amends D2–D4, D6 and D11 for PR #90. Its later rollout phases have separate scope.
+The approved operation limits and credential binding decisions in
+[PR #92](https://github.com/nurtuo/nurtuo/pull/92) supersede this spec where they overlap, including
+the original global request body limit and separate credential writes.
 
 ## TLDR
 
@@ -32,7 +33,7 @@ process per run (Decision D7).
 
 | | |
 |---|---|
-| Pull requests | spec: https://github.com/nurtuo/nurtuo/pull/68 (merged); implementation issue https://github.com/nurtuo/nurtuo/issues/87, implementation PRs follow. **Dependencies satisfied (merged):** https://github.com/nurtuo/nurtuo/pull/51 (`nurtuo flow run`; Phases 1, 3, 5 and decision D7 build on it), https://github.com/nurtuo/nurtuo/pull/53 (`web-e2e` job; Phase 6), https://github.com/nurtuo/nurtuo/pull/49 (`AGENTS.md`) and the flow-run spec https://github.com/nurtuo/nurtuo/pull/50 (`d5adeeb`). Nothing is blocked on an open PR any more |
+| Pull requests | spec: https://github.com/nurtuo/nurtuo/pull/68; implementation PRs follow. Depends on https://github.com/nurtuo/nurtuo/pull/51 (`nurtuo flow run`, open) and https://github.com/nurtuo/nurtuo/pull/53 (`web-e2e` job, open); its spec https://github.com/nurtuo/nurtuo/pull/50 is merged (`d5adeeb`); `AGENTS.md` is https://github.com/nurtuo/nurtuo/pull/49 (open) |
 | ADRs | [ADR 0010](../adr/0010-connections-and-secrets.md) (connections and secrets), [ADR 0005](../adr/0005-set-at-a-time-engine-with-per-document-status.md) (per-document status), [ADR 0009](../adr/0009-outbound-only-runtime-gateway.md) (gateway; not used here) |
 | Issues | https://github.com/nurtuo/nurtuo/issues/54, https://github.com/nurtuo/nurtuo/issues/55 (workspace isolation), https://github.com/nurtuo/nurtuo/issues/56 (standalone handshake, bypassed) |
 | Code (existing) | `core/web/src/ui/{App,Canvas,ConfigDialog}.tsx`, `core/web/src/model/*.ts`, `core/control-plane/src/{api,main}.ts`, `core/control-plane/src/auth/{middleware,policy,permissions,endpoints}.ts`, `core/control-plane/openapi.yaml`, `core/runtime/internal/engine/interp.go`, `core/runtime/cmd/nurtuo/standalone.go`, `connectors/sftp/{config,sftp}.go`, `core/runtime/internal/secrets/env.go`; on PR #51: `core/runtime/cmd/nurtuo/{flow,flowrun}.go`, `core/web/e2e/flow-run-export.spec.ts` |
@@ -72,36 +73,34 @@ that the recommendation's wording named something that does not exist, the wordi
 | ID | Question | Decision (as recommended, accepted) | Applied as |
 |---|---|---|---|
 | D1 | Sync or async test run? | **Synchronous** `POST .../test-runs` returning the full result, bounded by the D2 timeout; the response carries a `runId` so job + poll can be added later without breaking clients | as decided |
-| D2 | Timeouts and size limits? | **Run timeout 30 s default, client may ask up to 120 s; test-run request body ≤ 1 MiB (413); returned payload ≤ 1 MiB total decoded and ≤ 20 documents (else the run fails with `output_too_large`); 2 concurrent runs per workspace, 4 per instance (429)** | Scan has a separate request envelope and 10 s deadline. Scan shares Run slots. Connection PUT uses the secret-bearing envelope |
-| D3 | Where are secrets stored in M1, and how does the canvas refer to them? | **Workspace-scoped control-plane secret store behind a `SecretStore` interface, in-memory backend only in this slice** (values live in the control-plane process, never on disk, lost on restart; a persistent encrypted backend is a separate spec). The connection PUT accepts write-only credentials, and the server assigns versioned `secret://<name>` references bound to the destination and trust settings; the password is never in the flow JSON, the connection JSON, a response, a log or the audit log | as decided |
-| D4 | How is the SFTP host key accepted in the UI? | **TOFU (server scans, user confirms the fingerprint) plus paste of a fingerprint or `known_hosts` content, never an insecure option.** Nothing is stored until the user presses "Trust this key"; the trusted key is saved as `hostKeyPolicy: fingerprint`. `hostKeyPolicy: insecure` is rejected by the API (400) and there is no UI for it. When pasted content contains one matching host key, the API saves its fingerprint. Ambiguous entries require an explicit fingerprint. Changing trust requires re-entry | as decided; the scan reports the key the connector actually negotiates (Phase 5) |
+| D2 | Timeouts and size limits? | **For test-run execution: timeout 30 s default, client may ask up to 120 s; request body ≤ 1 MiB (413); returned payload ≤ 1 MiB total decoded and ≤ 20 documents (else the run fails with `output_too_large`); 2 concurrent runs per workspace, 4 per instance (429)** | as decided; also bounds the child's spool, see Phase 3 step 7 |
+| D3 | Where are secrets stored in M1, and how does the canvas refer to them? | **Workspace-scoped control-plane secret store behind a `SecretStore` interface, in-memory backend only in this slice** (values live in the control-plane process, never on disk, lost on restart; a persistent encrypted backend is a separate spec). The canvas and connections refer to secrets only as `secret://<name>`; the password is never in the flow JSON, the connection JSON, a response, a log or the audit log | as decided |
+| D4 | How is the SFTP host key accepted in the UI? | **TOFU (server scans, user confirms the fingerprint) plus paste of a fingerprint or `known_hosts` content, never an insecure option.** Nothing is stored until the user presses "Trust this key"; the trusted key is saved as `hostKeyPolicy: fingerprint`. `hostKeyPolicy: insecure` is rejected by the API (400) and there is no UI for it. A later mismatch is a hard error, never a re-prompt that overwrites | as decided; the scan reports the key the connector actually negotiates (Phase 5) |
 | D5 | Is run history persisted? | **Not persisted.** The result lives in canvas memory and is cleared on any edit, reload or logout; the server keeps only the audit row (action `test_run.execute`, status, no payload) | as decided |
-| D6 | Who may create connections, set secrets and press Run? | **New permissions `connection:read`, `connection:write`, `connection:delete`, `secret:write`, `secret:delete`, `test_run:execute`. `connection:read` for owner, admin, editor, viewer and deployer; every other new permission for owner, admin and editor. `viewer` and `deployer` read connections only; `runtime` gets none. Credential writes require a browser session, CSRF and trusted HTTPS or a loopback peer. Run and scan require a session.** The API reports `set` or `missing` per credential field | the role list is explicit (the recommendation's phrase "all roles that have `component:read`" would have included `runtime`, which D6 itself excludes; F8) |
+| D6 | Who may create connections, set secrets and press Run? | **New permissions `connection:read`, `connection:write`, `connection:delete`, `secret:write`, `secret:delete`, `test_run:execute`. `connection:read` for owner, admin, editor, viewer and deployer; every other new permission for owner, admin and editor. `viewer` and `deployer` read connections only; `runtime` gets none. In this slice the secret and test-run routes are `userOnly` (no API tokens).** Secret values are never readable by anyone (no `secret:read` of values; listing returns names only) | the role list is explicit (the recommendation's phrase "all roles that have `component:read`" would have included `runtime`, which D6 itself excludes; F8) |
 | D7 | Execution path? | **The control plane runs the engine via the `nurtuo` binary as a child (`nurtuo flow run --json`), no deploy.** Same engine and connector registry as PR #51, one process per run, no bundle, no gateway, so #56 does not block it. **Explicitly deferred:** test runs on a deployed runtime through the gateway (after #56), test runs of saved component revisions, async jobs, MCP `test_run` tool | as decided |
 | D8 | Workspace isolation for this slice? | **Required now:** all new routes are path-scoped `/v1/workspaces/{ws}/...` (the membership check in `resolveWorkspace` already isolates them); new data (connections, secrets) is keyed by `workspace.id` from day one; a run resolves connections and secrets only from the URL's workspace; per-run temp dir and minimal child environment; a foreign id is 404. **Can wait:** #55 and #54, because the run takes the flow inline and never reads a component. **Condition:** if D10 later allows running a saved component, #55 must land first | #54 being open is accepted for this slice; because any session user can create a workspace and become owner, the host-key scan shares the run semaphore (Phase 5) |
 | D9 | API shape and auth; how the canvas talks to the control plane | **Path-scoped routes + session cookie + CSRF, canvas same-origin through a proxy.** Routes under `/v1/workspaces/{ws}/` implemented as auth-module endpoints that receive the resolved `workspace`. Canvas: minimal login (`POST /v1/auth/login`), workspace picker (`GET /v1/workspaces`), `X-Nurtuo-Csrf` from the login response (restored from `GET /v1/auth/me` after a reload); dev and Playwright use a Vite `server.proxy` for `/v1`. **The new routes are not served when `NURTUO_INSECURE_NO_AUTH=1`: 404** | the legacy `route()` answers 405 for unknown `/v1/workspaces/...` paths today (F2); to keep the decided 404 the implementation adds an explicit 404 for them (Phase 2) |
 | D10 | How does the canvas ship the flow; can unsaved state run? | **Inline flow JSON only.** The body carries the current `nurtuo.flow/v1` document from `FlowStore` (no layout); the server validates it again. No component id in this slice | as decided |
-| D11 | Egress and side effects of a server-side run (SSRF) | **`sftp` only, read-only operations, private/loopback/link-local addresses refused unless the operator allows them.** Other connectors or operations are 400 `not_allowed_in_test_run`. Resolve both address families under the operation deadline, refuse if any answer is disallowed unless the operator permits private addresses, and pin a vetted address for every dial. Existing `known_hosts` policy connections fail closed | the recommendation named the operations "`GET` and `LIST`"; SFTP has no `LIST` (directory listing is `QUERY`; F1). The decided intent, read-only download and listing, is applied as **`GET` and `QUERY`**; nothing mutating is allowed |
+| D11 | Egress and side effects of a server-side run (SSRF) | **`sftp` only, read-only operations, private/loopback/link-local addresses refused unless the operator allows them.** Other connectors or operations are 400 `not_allowed_in_test_run`. Hosts that resolve to loopback, private, link-local or metadata ranges are refused unless `NURTUO_TEST_RUN_ALLOW_PRIVATE=1` (CI sets it for the container) | the recommendation named the operations "`GET` and `LIST`"; SFTP has no `LIST` (directory listing is `QUERY`; F1). The decided intent, read-only download and listing, is applied as **`GET` and `QUERY`**; nothing mutating is allowed |
 | D12 | How are secret values handed to the child process? | **`NURTUO_SECRET_<NAME>` in a minimal, non-inherited environment**, built from scratch (no `DATABASE_URL`, `NURTUO_AUTH_SECRET`, bootstrap password etc.), `HOME` pointed at the per-run temp dir; secret names whose `EnvVar` form collides in a workspace are refused at write time | the variable name is exactly `secrets.EnvVar(name)`, which already includes the `NURTUO_SECRET_` prefix (F3) |
 | D13 | Which SFTP server does the Playwright test use? | **`atmoz/sftp` container in CI** (pinned digest, random password per job, host key from the scan); **`test.rebex.net` only as a manual smoke test gated by `NURTUO_E2E_REBEX=1`, never in CI** | CI derives the fingerprint of the key the connector negotiates (Tests, CI) |
 | D14 | Split into more than one spec? | **One spec with six independently shippable phases**; the persistent secret backend (D3), runtime-deployed test runs (D7) and run history (D5) are separate future specs | as decided |
 | D15 | How does the user give the SFTP path? | **"Input properties" in the Run dialog**, sent as the initial document's properties (same as `--set`); pre-filled with `path=` when the flow has an SFTP `GET` step; a `setProperties` step keeps working | as decided |
 | D16 | Per-step status from the engine: extend `nurtuo flow run --json`? | **Add an additive `steps` array (from `engine.Result.Trace`) to the `--json` envelope and to the JSON error object**, as a small follow-up to PR #51's experimental contract | as decided and nothing more: no further CLI fields are added; the control plane maps the CLI's existing error shapes (timeout, stop, `Prepare` failures) by code and message, with tests (F6, F7) |
 
-
-### D11 follow-up for issue #94
-
-[Issue #94](https://github.com/nurtuo/nurtuo/issues/94) extends workspace Connections and manual
-Test Run to HTTP request (GET) and PostgreSQL QUERY. The employee fixture uses an outbound HTTP
-connector step, followed by PostgreSQL and Map. The credential lifecycle and actual-dial egress
-rules in [#92](2026-11-24-operation-limits-and-credential-binding.md) apply to both connectors.
-Runs retain the existing deadlines, isolation threshold, and atomic 20-document / 1 MiB result limits.
-
 ## Open questions
 
 None blocking: Q1–Q16 are answered by D1–D16. Remaining items are non-blocking and are tracked where
 they occur: confirm Rebex's file path for the manual smoke test (Tests), confirm that Chromium keeps
-the `Secure` cookie on `127.0.0.1` (Gaps #10) and consider structured CLI `connection`/`stop` fields as later additive follow-ups (Gaps #7, Improvement opportunities).
+the `Secure` cookie on `127.0.0.1` (Gaps #10), and a structured `connection`/`stop` field and a
+`--max-output-bytes` flag in the CLI as later additive follow-ups (Gaps #7, Improvement opportunities).
+
+### D11 follow-up ([#94](https://github.com/nurtuo/nurtuo/issues/94))
+
+Test Run adds HTTP GET and PostgreSQL QUERY. Both use workspace connections, credential
+binding and egress checks at the actual dial. The employee example chains HTTP, PostgreSQL
+and Map.
 
 ## Scope
 
@@ -184,7 +183,7 @@ secret resolution and redaction. Only the entrypoint differs:
 | Flow source | file | inline JSON from `FlowStore`, written to a 0600 temp file |
 | Connections | `--connection` files on disk | workspace connections, written to temp files for the run |
 | Secrets | env / `--secrets-dir` of the user | workspace `SecretStore`, passed as `secrets.EnvVar(name)` variables in a minimal env (D12) |
-| Host key | `--known-hosts`, inline, `~/.ssh/known_hosts`, `--insecure-host-key` | inline fingerprint from the bound connection; the child dials a vetted IP address |
+| Host key | `--known-hosts`, inline, `~/.ssh/known_hosts`, `--insecure-host-key` | inline `fingerprint`/`knownHosts` from the connection only; `HOME` is the temp dir so the `~/.ssh` fallback finds nothing; `--insecure-host-key` is never passed |
 | Output | raw bytes or `--json` | always `--json`, mapped to the API response |
 
 ### Phase 1: per-step status from the CLI (D16)
@@ -209,23 +208,30 @@ New module `core/control-plane/src/connections/` (D3, D6, D8):
   clear of `0100` auth and `0200` workspace isolation):
   `connections(workspace_id text NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, id text NOT NULL, connector text NOT NULL, settings jsonb NOT NULL, created_at, updated_at, PRIMARY KEY (workspace_id, id))`.
   Keyed by `workspace.id`, not slug (today `PATCH /v1/workspaces/{ws}` changes only `name`, so slugs are stable, but the id is the durable key).
-- The connection row includes a server-generated incarnation and publication generation. The
-  in-memory store keeps immutable credential versions with their binding digests. The connection PUT
-  stages new values privately and publishes the referencing row under a workspace lock. Run acquires
-  an exact generation via the same lock. Connection and workspace deletes revoke future acquisitions.
-- Connection PUT accepts nonsecret `settings` and optional write-only `credentials`. Omission keeps
-  a field, a nonempty string sets a new version, and `null` removes it. A changed binding with any
-  retained field returns 409 `credential_rebind_required` before mutation. Credential permissions,
-  a browser session, CSRF and trusted transport apply to the write.
-- The schema is copied into `dist` at build time to identify server-managed credential slots. The
-  API reports whether each slot is set and returns its server-assigned reference. The child receives
-  the credential via `secrets.EnvVar` using the same name grammar as the standalone CLI.
-- The HTTP adapter applies separate operation limits before parsing. The test-run body cap is
-  1 MiB. Scan and connection PUT envelopes use the approved escaped-byte formulas. Revision routes
-  retain their existing request and response behavior.
+- `SecretStore` interface `{ put(ws, name, value), has(ws, name), list(ws), delete(ws, name), reveal(ws, name) }`;
+  `MemorySecretStore` only in this slice (a `Map<workspaceId, Map<name, Buffer>>`). `reveal` is
+  called only by `TestRunner`. The `workspace.delete` handler purges the workspace's connections
+  (memory repository; Pg cascades) and secrets, so nothing outlives the workspace (tested). Values are never serialised into responses, logs or audit details.
+- Validation on `PUT .../connections/{id}`, mirroring the Go rules so the user gets the error at save
+  time (the child re-validates anyway): `id` matches `^[a-z][a-z0-9_-]*$`; `connector` is a
+  registered connector (`sftp` only in this slice, D11); fields marked `writeOnly` /
+  `x-nurtuo-secret` in `connectors/sftp/schemas/connection.json` (password, privateKey, passphrase) must be `secret://<name>`
+  references (literal -> 400 `literal_secret`); `hostKeyPolicy: insecure` -> 400
+  `insecure_host_key_not_allowed`; `known_hosts` without non-empty `knownHosts`, or `fingerprint`
+  without `hostKeyFingerprint` -> 400 `host_key_required`. The schema JSON is copied into `dist` by the control-plane build
+  (`@nurtuo/control-plane` ships only `dist`, `migrations`, `openapi.yaml`), with a test that the copy
+  equals `connectors/sftp/schemas/connection.json`; a missing secret is allowed at save (shown as `missing`).
+- Secret names from the canvas are derived as `<connectionId>-<field>` (for example
+  `rebex-demo-password`); `PUT .../secrets/{name}` refuses a name whose `EnvVar` form equals that of
+  another secret in the workspace (409 `secret_name_collision`, D12). `envVar(name)` is a TypeScript
+  port of Go `secrets.EnvVar` **including** the `NURTUO_SECRET_` prefix, pinned by a shared fixture
+  (`a-b`, `a_b`, `A.b`, digits) that is also run against the Go function.
+- Request body limits follow the operation profiles in PR #92. Bounded operations return 413
+  `payload_too_large` before JSON parsing when their limits are exceeded. Test runs have a 1 MiB
+  request limit (D2), and revision uploads retain their existing defaults.
 - Routes are auth-module endpoints so they receive `EndpointCtx.workspace`: `createAuthHook` gains
   an option `extraEndpoints?: Record<string, Endpoint>` merged into the `endpoints` lookup
-  (`auth/middleware.ts`), and `main.ts` passes the connection and test-run endpoints. When
+  (`auth/middleware.ts`), and `main.ts` passes the connection, secret and test-run endpoints. When
   `auth: "disabled"` these routes are not reachable, by design (D9): the legacy `route()` today
   answers 405 `method_not_allowed` for any `/v1/workspaces/...` path, so `route()` gets an explicit
   404 `not_found` for paths under `/v1/workspaces/` (`api.test.ts` case). Both are fail-closed.
@@ -250,7 +256,7 @@ New module `core/control-plane/src/testrun/` (D1, D2, D7, D10, D11, D12):
 
 `TestRunner.run(ws, request, signal)`:
 
-1. Limits: body ≤ 1 MiB (Phase 2), `timeoutMs` in 1000..120000 (default 30000), at most 64 input
+1. Limits: test-run body ≤ 1 MiB, `timeoutMs` in 1000..120000 (default 30000), at most 64 input
    properties, keys `^[A-Za-z_][A-Za-z0-9_.-]{0,63}$`, values ≤ 4 KiB. Concurrency semaphore 2 per
    workspace, 4 per instance -> 429 `too_many_runs` with `retry-after: 5`.
 2. Validate `flow` with `validateFlow` from `@nurtuo/flow-validate` (the same library as the canvas);
@@ -260,12 +266,15 @@ New module `core/control-plane/src/testrun/` (D1, D2, D7, D10, D11, D12):
    `not_allowed_in_test_run` naming the step. Every connector step must name a `connection`
    explicitly -> otherwise 400 `connection_required` (the CLI's "only connection of that connector"
    default is not used, because the control plane writes only the referenced connections).
-3. Acquire every referenced connection and exact credential version in the workspace. Verify
-   the binding against the logical settings before making network contact. Missing credentials return
-   409 `secret_missing`. Invalid or mismatched bindings return 409 `credential_unbound`.
-4. Resolve the logical hostname with a cancellable resolver and check every A and AAAA answer.
-   Use one vetted IP address for every child dial. Run refuses a stored `known_hosts` policy with
-   409 `dial_enforcement_unavailable`; the SSH verifier uses the pinned fingerprint.
+3. Resolve each referenced connection id in workspace `ws` (`ConnectionRepository.get(ws, id)`);
+   missing -> 404 `connection_not_found` naming the id (the same for an id of another workspace).
+   Collect the `secret://` names; a name not in `SecretStore` for `ws` -> 409 `secret_missing` naming
+   the secret and connection, never a value.
+4. Egress check (D11): resolve `settings.host` (`dns.lookup`, all addresses); refuse `0.0.0.0/8`,
+   `127.0.0.0/8`, `::1`, RFC 1918, `100.64.0.0/10`, `169.254.0.0/16` (including `169.254.169.254`),
+   `fc00::/7` (including `fd00:ec2::254`), `fe80::/10` and IPv4-mapped `::ffff:0:0/96` (checked
+   against the mapped IPv4 address) unless `NURTUO_TEST_RUN_ALLOW_PRIVATE=1` ->
+   400 `host_not_allowed`. Best effort: the child resolves again (DNS rebinding, see Gaps #3).
 5. Create `mkdtemp(<os tmp>/nurtuo-testrun-)` (0700); write `flow.json` and one
    `<id>.connection.json` per connection (0600, non-secret content only).
 6. Spawn `NURTUO_FLOW_RUN_BIN` with argv `flow run <tmp>/flow.json --json --timeout <timeoutMs>ms`
@@ -273,10 +282,12 @@ New module `core/control-plane/src/testrun/` (D1, D2, D7, D10, D11, D12):
    environment is built from scratch: `PATH`, `HOME=<tmp>`, `TMPDIR=<tmp>`, and
    `<envVar(name)>=<value>` per referenced secret, where `envVar` already includes the
    `NURTUO_SECRET_` prefix (never prefix it twice). Nothing else is inherited.
-7. Pass `--max-output-bytes 1048576 --max-documents 20` to bound returned output in the child.
-   The parent also limits stdout and stderr and supervises spool cleanup. The deadline starts before
-   preflight. On deadline or client disconnect the supervisor sends SIGTERM and uses SIGKILL after
-   the teardown grace if the child is still running.
+7. Read stdout up to 1.5 MiB (base64 of 1 MiB plus envelope) and stderr up to 64 KiB; beyond the
+   stdout limit kill the child and report `output_too_large`. `TMPDIR=<tmp>` only moves the child's
+   spool, so the runner also polls the size of `<tmp>` (every 500 ms) and kills the child with
+   `output_too_large` above 64 MiB; the residual memory risk is in Gaps #7. Kill (SIGTERM, then SIGKILL after 5 s)
+   when `timeoutMs + 5 s` passes or the HTTP client disconnects (the `nurtuo` side closes
+   connections on SIGTERM, PR #51 `signal.NotifyContext`).
 8. Map the CLI result (D16 adds only `steps`; everything else comes from the CLI's existing shapes):
    exit 0 -> `succeeded` with `documents` and `steps`; exit 1 or 2 -> `failed` with
    `error {code, message}` (from the CLI's JSON stderr, passed through `redact()` with the run's
@@ -334,10 +345,10 @@ New files in `core/web/src/` (D3, D4, D9, D15). This slice targets `vite dev` on
   hint.
 - `ui/ConnectionsPanel.tsx`: list (`GET .../connections`), SFTP form generated with `fieldsOf` over
   `connectors/sftp/schemas/connection.json`, with `Field` extended by `writeOnly`; the form offers password authentication only in this slice (`privateKey`/`passphrase` are not offered; no `oneOf` handling) and filters `insecure` out of the `hostKeyPolicy` choices (`writeOnly` fields render as `type="password"`, never
-  pre-filled; a "set"/"missing" badge from the list response). Send one connection PUT, with
-  `credentials.password` only when entered and nonsecret setting edits. The server preserves
-  omitted settings and the existing reference when the binding matches. The host-key section accepts
-  a scanned fingerprint after confirmation, a pasted fingerprint, or a single matching known_hosts entry.
+  pre-filled; a "set"/"missing" badge from the list response), save = `PUT .../secrets/<id>-password`
+  (only when the field was typed into) then `PUT .../connections/<id>` with
+  `password: "secret://<id>-password"`. Host-key section: "Fetch host key" (Phase 5) or paste a
+  fingerprint or `known_hosts` content; no insecure choice.
 - `ConfigDialog.tsx`: for `kind: connector` the `connection` field becomes a select of workspace
   connections whose `connector` matches (free text when offline).
 - `model/runState.ts`: `RunState { status, steps: Record<stepId, StepRun>, documents, error, flowHash }`;
@@ -398,9 +409,7 @@ See [Tests](#tests). Changes `.github/workflows/ci.yml` (the `web-e2e` job from 
 
 Each phase is additive. Phase 1 adds JSON fields. Phases 2-5 add routes, a table, permissions and a
 role-seed migration (and the explicit 404 in `route()`); rollback = remove the routes from `main.ts` (data in `connections` is inert);
-the table can be dropped by a later migration. Phase 4 UI is inert without a control plane. No
-existing stable API behaviour changes. Route-specific limits apply to the experimental endpoints.
-constant.
+the table can be dropped by a later migration. Phase 4 UI is inert without a control plane. The limits on the new endpoints roll back with their routes.
 
 ### Alternatives considered
 
@@ -425,10 +434,12 @@ spec) and are labelled so in `docs/cli.md` and `docs/operations.md`.
 | Contract | Change | Stability |
 |---|---|---|
 | `GET /v1/workspaces/{ws}/connections` | new; `{ items: [{ id, connector, settings, secrets: { <field>: "set" \| "missing" }, updatedAt }] }`, secret fields shown only as `secret://<name>` | experimental |
-| `GET\|PUT\|DELETE /v1/workspaces/{ws}/connections/{id}` | PUT accepts `{ connector, settings, credentials? }`; server-assigned refs are read-only; 409 `credential_rebind_required` for a binding change that retains a credential | experimental |
+| `GET\|PUT\|DELETE /v1/workspaces/{ws}/connections/{id}` | new; PUT body `{ connector, settings }`; 400 `literal_secret`, `insecure_host_key_not_allowed`, `host_key_required`, `not_allowed_in_test_run` | experimental |
+| `GET /v1/workspaces/{ws}/secrets` | new; names and `updatedAt` only | experimental |
+| `PUT\|DELETE /v1/workspaces/{ws}/secrets/{name}` | new; PUT body `{ value }`, 204, value never returned; 409 `secret_name_collision` | experimental |
 | `POST /v1/workspaces/{ws}/connections/host-key-scan` | new (Phase 5) | experimental |
 | `POST /v1/workspaces/{ws}/test-runs` | new; request and response as in Design | experimental |
-| Request body limit | 413 `payload_too_large` on test-run, scan and connection PUT above their operation limit | new behaviour |
+| Request body limit | operation-specific profiles in PR #92; 413 `payload_too_large` above the selected limit; no new default ceiling on revision uploads | new behaviour |
 | Permissions | new resources `connection` (`read`, `write`, `delete`), `secret` (`write`, `delete`), `test_run` (`execute`) in `auth/permissions.ts`; role seed migration `0104_auth_seed_connection_permissions.sql` | experimental |
 | Environment | `NURTUO_FLOW_RUN_BIN`, `NURTUO_TEST_RUN_ALLOW_PRIVATE` (control plane) | experimental (by exception to STABLE env vars) |
 | `nurtuo flow run --json` | additive `steps` in the envelope and the JSON error (D16) | experimental (as PR #51) |
@@ -440,25 +451,22 @@ of this spec is that request.
 
 ## Compatibility
 
-- REST: only new paths and new permissions; existing clients are unaffected (the
-  [backward-compatibility contract](2026-11-22-backward-compatibility-contract.md) treats `/v1/` paths
-  as STABLE and response fields as ADDITIVE-ONLY). The 1 MiB cap applies to test-run input.
-  Revision uploads have no new default cap.
+- REST: the [backward-compatibility contract](2026-11-22-backward-compatibility-contract.md)
+  treats `/v1/` paths as STABLE and response fields as ADDITIVE-ONLY. Revision uploads and full
+  readback retain their existing default behavior under the operation-specific profiles in PR #92.
 - Roles: built-in roles gain permissions per D6 (`runtime` gains none). Editors lack `member:manage`,
   so `canGrant` is unchanged in practice (it matters only for owner and admin). The `0104` seed keeps
   `permissions.ts` and SQL in sync (drift test, with its permission regex widened for `test_run`).
 - `nurtuo flow run --json`: additive keys; consumers must ignore unknown fields.
 - Canvas: offline behaviour unchanged; "Save flow" output unchanged.
 - Downgrade: the `connections` table and permissions remain; an older control plane ignores them.
+
 - **D9 status code change (404 instead of 405).** Before this change the legacy `route()` answered
   405 `method_not_allowed` for any `/v1/workspaces/<id>/...` path when the auth module did not serve
   it, which is the case under `NURTUO_INSECURE_NO_AUTH=1`. Those paths now answer 404 `not_found`
   (the bare `/v1/workspaces` and every other resource keep their previous answers). A client that
   relied on 405 for these dev-only paths sees 404; with auth enabled nothing changes. Covered by
-  `api.test.ts` "no-auth mode answers 404 (not 405) for workspace routes".
-- **D16 CLI contract change.** `nurtuo flow run --json` gains the additive `steps` array (success
-  envelope and JSON error when the engine ran). The flow-run spec and `docs/cli.md` are updated in
-  the same change (implementation PR for #87).
+  `api.test.ts` "HTTP without auth returns 404 for workspace ID paths".
 
 ## Security
 
@@ -471,16 +479,16 @@ of this spec is that request.
   `~/.ssh/known_hosts` fallback cannot pick up the server account's file (`HOME=<tmp>`); TOFU stores
   nothing without explicit confirmation; a mismatch fails the run.
 - **Authorization.** Path-scoped routes (`workspace: "path"`, membership check, 404 for foreign
-  workspaces), permissions of D6, user session for credential changes, runs and scans, CSRF for cookie mutations
+  workspaces), permissions of D6, `userOnly` for secrets and runs, CSRF for cookie mutations
   (existing middleware). Routes answer 404 under `NURTUO_INSECURE_NO_AUTH=1`.
 - **Workspace isolation (D8).** New rows carry `workspace_id`; every repository/store call takes
   it; ids from another workspace answer exactly like missing ones; the per-run temp dir contains
   only that run's files; no caching of connections or secrets across runs.
 - **Egress / SSRF (D11).** `sftp` only, `GET`/`QUERY` only, private ranges refused by default (full
-  list in Phase 3 step 4). Run and scan use the vetted address for every dial and share the same semaphore.
-  Credential release checks the logical destination and fingerprint first.
-- **Run limits.** Body 1 MiB, properties 64 × 4 KiB, timeout ≤ 120 s, decoded output ≤ 1 MiB
-  and ≤ 20 documents, concurrency 2/4. Scan has a 10 s deadline and shares the concurrency limit.
+  list in Phase 3 step 4); the host-key scan uses the same check and the same semaphore (#54 is open).
+  Remaining risk: DNS rebinding (Gaps #3).
+- **Input limits.** Body 1 MiB, properties 64 × 4 KiB, timeout ≤ 120 s, output ≤ 1 MiB,
+  concurrency 2/4; spool size cap 64 MiB; argv passed as an array (no shell).
 - **Platform.** POSIX control-plane hosts only in this slice (Non-goals); on Windows test runs answer 503.
 - **Output rendering.** Previews are React text nodes; downloads use `Blob`; no `innerHTML`.
 - **Audit.** `test_run.execute`, `connection.*`, `secret.*` are audited with hashes of non-secret
@@ -489,8 +497,8 @@ of this spec is that request.
 ## Step plan
 
 Phases are independently shippable stories; each step leaves the system working and names its
-verification. Prerequisites (all satisfied, merged): PR #51 (Phases 1, 3, 5), PR #53 (Phase 6), PR #50 (the
-`nurtuo flow run` spec) and PR #49 (`AGENTS.md`). Phase 2 has no prerequisite.
+verification. Prerequisites: PR #51 merged (Phases 1, 3, 5); PR #53 merged (Phase 6). Phase 2 has no
+prerequisite. PR #50 (the `nurtuo flow run` spec) is already on `main`.
 
 ### Phase 1: per-step status in `nurtuo flow run --json` (Go, `core/runtime`)
 
@@ -510,14 +518,14 @@ verification. Prerequisites (all satisfied, merged): PR #51 (Phases 1, 3, 5), PR
    `pg-auth.test.ts` migration list, `rbac.test.ts` role × route matrix extended with an assertion that
    `runtime` has no `connection:*`, `secret:*` or `test_run:*` permission.
 5. Request body limit and `signal` plumbing (`ApiRequest`, `EndpointCtx`) in `createHttpServer`;
-   explicit 404 for `/v1/workspaces/...` in `route()`. Verify: `api.test.ts` "body over 1 MiB is 413
-   before parsing", "no-auth mode answers 404 for workspace routes", "request close aborts the signal".
+   explicit 404 for `/v1/workspaces/...` in `route()`. Verify: `api.test.ts` checks each operation’s request limit
+   before parsing, no-auth workspace 404s and signal cancellation on disconnect.
 6. `ConnectionRepository` (memory + Pg) with migration `0300_workspace_connections.sql`. Verify:
    `connections/repository.test.ts` (memory), `connections/pg-repository.test.ts` (`DATABASE_URL`-gated).
 7. `MemorySecretStore` and the `extraEndpoints` seam in `createAuthHook`. Workspace delete purges
    connections and secrets. Verify:
    `connections/secrets.test.ts`, `connections/workspace-delete.test.ts`, `auth/authn.test.ts` case "extra endpoints receive the resolved workspace".
-8. Connection and credential PUT routes, `openapi.yaml`, `POLICIES`. Verify: `policy.test.ts` (every
+8. Connection and secret routes, `openapi.yaml`, `POLICIES`. Verify: `policy.test.ts` (every
    operation has a policy, 401/403 documented), `connections/routes.test.ts`, `connections/isolation.test.ts`.
 9. Copy `connectors/sftp/schemas/connection.json` into `dist` at build. `@nurtuo/client` types regenerated (`pnpm --filter @nurtuo/client run gen`) and a changeset added (`pnpm changeset`; the package is Apache-2.0 and consumed by users). Verify: `gen:check`, the schema-copy equality test, `pnpm changeset status`.
 
@@ -565,9 +573,9 @@ verification. Prerequisites (all satisfied, merged): PR #51 (Phases 1, 3, 5), PR
   `succeeded`, `documents[0].payload` decodes to the file bytes, and all three steps have status
   `ok`; the canvas shows the text and three green nodes.
 - WHEN the SFTP password is entered in the connection form THEN it is sent only in
-  the write-only `credentials` member of the connection PUT; the server assigns the stored `secret://{name}` reference. No
+  `PUT /v1/workspaces/{ws}/secrets/{name}`; the connection is stored with `secret://{name}`; no
   response, "Save flow" download, audit row or log line contains the password.
-- WHEN `PUT .../connections/{id}` contains a password or reference in settings, `hostKeyPolicy: insecure`, or no host
+- WHEN `PUT .../connections/{id}` contains a literal password, `hostKeyPolicy: insecure`, or no host
   key material THEN it is rejected with 400 and the respective code, and nothing is stored.
 - WHEN the server's host key does not match the stored fingerprint THEN the run is `failed` (code
   `execution`, raised before the engine, so without CLI `steps`), the connector steps using that
@@ -581,7 +589,7 @@ verification. Prerequisites (all satisfied, merged): PR #51 (Phases 1, 3, 5), PR
 - WHEN a user of workspace A sends a connection id, secret name or test run naming a connection
   that exists only in workspace B THEN the answer is the same as for a non-existent id (404) and
   nothing of B is read or returned.
-- WHEN a viewer or deployer calls `POST .../test-runs` or `PUT .../connections/{id}` THEN 403; WHEN an
+- WHEN a viewer or deployer calls `POST .../test-runs` or `PUT .../secrets/{name}` THEN 403; WHEN an
   API token calls them THEN 403 (`userOnly`).
 - WHEN `NURTUO_INSECURE_NO_AUTH=1` THEN the new routes answer 404 (not 405).
 - WHEN the role is `runtime` THEN it holds no `connection:*`, `secret:*` or `test_run:*` permission.
@@ -594,7 +602,7 @@ verification. Prerequisites (all satisfied, merged): PR #51 (Phases 1, 3, 5), PR
   `NURTUO_TEST_RUN_ALLOW_PRIVATE` is not `1` THEN 400 `host_not_allowed` and no process is spawned.
 - WHEN a run exceeds its timeout THEN the child is killed, the temp dir is removed, the response is
   `failed` with code `timeout` (classified by the control plane) and the steps that ran keep their status.
-- WHEN returned output exceeds 1 MiB decoded or 20 documents, or the child hits its output or spill budget, THEN the run is `failed`
+- WHEN the output exceeds 1 MiB, or the child's temp dir exceeds 64 MiB, THEN the run is `failed`
   with `output_too_large` and the child is killed.
 - WHEN the HTTP client disconnects during a run THEN the child is killed and the temp dir removed.
 - WHEN a run ends (any outcome) THEN its temp dir no longer exists and the child has exited.
@@ -609,6 +617,12 @@ verification. Prerequisites (all satisfied, merged): PR #51 (Phases 1, 3, 5), PR
 - WHEN `POST .../connections/host-key-scan` is called while the concurrency limit is reached THEN 429.
 
 ## Tests
+
+- HTTP and PostgreSQL connection editor tests cover write-only credentials, HTTP authentication
+  changes and explicit PostgreSQL password removal.
+- The connector step editor binds HTTP GET and PostgreSQL QUERY, removes the previous object type,
+  and preserves editing for unbound legacy steps and workspaces with no connections.
+- Part 3 runs HTTP GET and PostgreSQL QUERY end to end against local fixtures.
 
 Tests ship in the same PR as the code of each phase. Names are proposed; none exist yet.
 Integration and e2e tests create their own fixtures (temp dirs, generated keys, containers, random
@@ -638,7 +652,7 @@ All handler tests drive `createHandler` in-process with `MemoryRepository`, `Mem
 | isolation | `src/connections/isolation.test.ts`, `src/testrun/isolation.test.ts` | A cannot list/get/put/delete B's connections or secrets (404), cannot run with B's connection id (404), test-run with A's connection never reveals B's secrets (fake binary records env) |
 | permissions | `src/auth/rbac.test.ts` (extended matrix) | viewer/deployer/runtime denied; tokens denied on `userOnly` routes; `runtime` lacks every `connection:*`, `secret:*` and `test_run:*` permission; `connection:read` held by owner, admin, editor, viewer, deployer; drift test (regex widened) sees the `0104` rows |
 | policy/openapi | `src/auth/policy.test.ts` (existing) | every new operation has a policy and documents 401/403 |
-| no-auth mode, limits, abort | `src/api.test.ts` | new routes 404 (not 405) with `auth: "disabled"`; body > 1 MiB is 413; request `close` aborts `ApiRequest.signal` |
+| no-auth mode, limits, abort | `src/api.test.ts` | new routes 404 (not 405) with `auth: "disabled"`; operation-specific body limits return 413 and revision routes retain existing behavior; disconnect before the response completes aborts `ApiRequest.signal` |
 | workspace delete | `src/connections/workspace-delete.test.ts` | deleting a workspace purges its connections and secrets (memory) |
 | envVar port | `src/connections/env-var.test.ts` | TS `envVar` equals the Go fixture, prefix present exactly once; `secret_name_collision` |
 | schema copy | `src/connections/schema.test.ts` | the `dist` copy of `connection.json` equals `connectors/sftp/schemas/connection.json` |
@@ -714,13 +728,13 @@ egress, secrets in the control plane), `docs/getting-started.md` (Run in the can
 |---|---|---|---|---|
 | 1 | An editor points a connection at `10.0.0.5:5432` or `169.254.169.254:80`; the control plane connects from inside the network (SSRF, port probing via error messages and timing) | high | security | D11: `sftp` only, private ranges refused by default; host-key scan uses the same check; document `NURTUO_TEST_RUN_ALLOW_PRIVATE` as dangerous |
 | 2 | A flow with `sftp DELETE` run against production credentials deletes remote files | high | safety | D11: only `GET`/`QUERY`; mutating operations need a later decision (`--read-only` in the CLI was an improvement idea in the `nurtuo flow run` spec) |
-| 3 | DNS rebinding: `evil.example` resolves to a public IP at check time and `127.0.0.1` when the child dials | medium | security | closed for fingerprint connections and scans by pinning a vetted address; stored known_hosts connections are refused |
+| 3 | DNS rebinding: `evil.example` resolves to a public IP at check time and `127.0.0.1` when the child dials | medium | security | follow-up: pass the checked IP to the child (`host` replaced by the address, SNI not relevant for SSH) or an egress proxy; document as best effort |
 | 4 | The control plane restarts; every secret in `MemorySecretStore` is gone; runs fail with `secret_missing` until users re-enter passwords | medium | UX | D3 accepts this for the slice; clear 409 message; persistent encrypted store in a follow-up spec |
 | 5 | Several control-plane replicas: the secret is set on replica 1, the run hits replica 2 and fails with `secret_missing` | medium | operations | memory backend documented as single-replica; persistent backend before HA |
 | 6 | Secrets are in the child's environment; another process of the same OS user can read `/proc/<pid>/environ` during the run | low | security | same user as the control plane, which holds the values anyway; runs are short; D12 alternative documented |
-| 7 | A hostile or buggy flow produces 4 GiB of output; Node buffers it | medium | reliability | the child bounds decoded payload, document count, encoded output and spill writes; parent supervision bounds captured output and removes the temp dir |
+| 7 | A hostile or buggy flow produces 4 GiB of output; Node buffers it | medium | reliability | stdout cap 1.5 MiB then kill. `TMPDIR=<tmp>` only moves the child's `docs.Spool` files and does not bound them, so the runner polls the size of `<tmp>` and kills the child above 64 MiB; the child's `writeOutput` loads each returned payload into memory (`p.Bytes()`) before the stdout cap applies, a residual memory risk until a later additive CLI limit (`--max-output-bytes`, not part of D16) exists; temp dir removed after |
 | 8 | The child hangs on a stalled SFTP server (SFTP gap 1: `timeoutMs` covers only connect) | medium | reliability | `--timeout` in the child plus SIGTERM/SIGKILL from the control plane; PR #51 made transfers cancellable |
-| 9 | The new 1 MiB body limit rejects an existing client that posts a large revision (a bundle as `content`) | medium | compatibility | resolved by scoping limits to Run, scan and connection PUT |
+| 9 | A bounded operation profile is incorrectly applied to a revision upload | medium | compatibility | retain the revision profile without a default byte ceiling and test uploads above 1 MiB (PR #92) |
 | 10 | The `Secure` session cookie is not stored when the canvas is served over plain `http://` on a non-localhost address (for example a LAN IP in `make dev`) | medium | UX | document `127.0.0.1`/`localhost` or TLS; Chromium treats loopback as secure (non-blocking: confirm in Phase 4) |
 | 11 | A user trusts a TOFU fingerprint without comparing it, on a network with a MITM; credentials are then sent to the attacker | medium | security | explicit wording, show the fingerprint prominently, never auto-trust; paste path for out-of-band fingerprints |
 | 12 | The server rotates its host key; every run fails and users ask for an "ignore" switch | low | UX | message explains rotation; replacing the key is the same TOFU/paste flow with the old one shown; no insecure switch |
@@ -730,7 +744,7 @@ egress, secrets in the control plane), `docs/getting-started.md` (Run in the can
 | 16 | Starting a Go process per run costs tens of milliseconds and some memory; a burst of runs from many users exhausts the host | low | performance | concurrency 2/4 (D2); revisit a long-running service (Alternatives) if needed |
 | 17 | PR #51 or #53 changes or is not merged | medium | delivery | Phases 1, 3, 5, 6 wait; Phase 2 and the mocked-API part of Phase 4 can ship independently |
 | 18 | #54 is open: any session user can create a workspace, becomes `owner` and may trigger outbound connections (runs and host-key scans) | medium | security | accepted by D8; scans share the run semaphore (Phase 5); the egress check applies to both; #54 should land before the feature is enabled on a shared instance |
-| 19 | The Gaps #3 mitigation "replace `host` by the checked IP" would break `known_hosts` hostname matching (fingerprint pinning, the only mode stored by this slice, is unaffected) | low | security | stored known_hosts policy is refused before dialing; convert a pasted single matching key to fingerprint on save |
+| 19 | The Gaps #3 mitigation "replace `host` by the checked IP" would break `known_hosts` hostname matching (fingerprint pinning, the only mode stored by this slice, is unaffected) | low | security | apply it for `fingerprint` connections only |
 | 20 | Parsing the CLI's error messages (timeout, stop status, `connection "<id>"`) is brittle if PR #51's wording changes | low | correctness | fixed-message tests in `runner.test.ts` and a Go test in Phase 1 that pins the messages; a structured field is an additive CLI follow-up |
 | 21 | Windows control-plane hosts | low | portability | out of scope (Non-goals); 503 on win32 |
 
@@ -754,23 +768,16 @@ egress, secrets in the control plane), `docs/getting-started.md` (Run in the can
 
 ## Implementation Status
 
-| Phase | Status | Date | Notes |
-|-------|--------|------|-------|
-| Phase 1: per-step status in `nurtuo flow run --json` | Done | 2026-11-24 | `TestFlowRunJSONSteps`, `TestFlowRunJSONErrorSteps`, `TestFlowRunJSONNoStepsBeforeEngine`, `TestFlowRunErrorMessages`; flow-run spec and `docs/cli.md` updated |
-| Phase 2: connections and secrets API | Done | 2026-11-24 | permissions + `0104`, `0300`, route limits, signal, `extraEndpoints`, routes, OpenAPI, client regenerated. No `.changeset` tooling exists in the repo yet, so no changeset file was added |
-| Phase 3: test-run endpoint | Done | 2026-11-24 | `TestRunner`, egress, limiter, `NURTUO_FLOW_RUN_BIN` from `nurtuo standalone`; real-binary test ran against `atmoz/sftp` locally |
-| Phase 4: canvas connections, Run, results (paste host key) | Done | 2026-11-24 | Vitest + mocked-API Playwright |
-| Phase 5: TOFU host-key scan | Done | 2026-11-24 | CLI negotiation, workspace endpoint and explicit trust in the canvas |
-| Phase 6: Playwright e2e in CI | In progress | 2026-11-24 | The `web-e2e` job runs the gated canvas suite with the pinned SFTP fixture |
+[#99](https://github.com/nurtuo/nurtuo/pull/99) adds canvas sign-in, session restoration, workspace
+selection and logout. It also adds the permission matrix and migration `0104`, the no-auth 404
+behavior and the HTTP disconnect signal.
 
-Finding from the real-binary run: against `atmoz/sftp` the connector negotiated the **RSA** host key
-(not ECDSA as assumed in the Tests section); this is why the scan must report the key the connector
-negotiates (Phase 5), and why the e2e fingerprint must not come from `ssh-keyscan -t ecdsa|ed25519`.
+The remaining work from [#90](https://github.com/nurtuo/nurtuo/pull/90) is tracked in
+[#100](https://github.com/nurtuo/nurtuo/pull/100) (connections and secrets),
+[#101](https://github.com/nurtuo/nurtuo/pull/101) (runtime support) and
+[#102](https://github.com/nurtuo/nurtuo/pull/102) (test-run API, canvas and end-to-end tests).
 
 ## Changelog
 
 - 2026-11-23: created as draft
 - 2026-11-23: approved; decisions D1–D16 recorded; pre-implement findings F1–F15 resolved
-- 2026-11-24: implementation started (#87): Phases 1-4 and the gated e2e spec; Recenzent follow-ups on #68 applied (dependency status, D16 docs, D9 compatibility note, analysis readiness)
-
-- 2026-11-24: amended by the approved operation-limits and credential-binding spec for PR #90.

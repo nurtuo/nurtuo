@@ -857,7 +857,7 @@ export interface components {
                 "application/json": components["schemas"]["ErrorBody"];
             };
         };
-        /** @description Request body larger than 1 MiB (`payload_too_large`); applies to every `/v1/` route */
+        /** @description Request body exceeds the limit for this operation (`payload_too_large`). */
         PayloadTooLarge: {
             headers: {
                 [name: string]: unknown;
@@ -1395,6 +1395,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            413: components["responses"]["PayloadTooLarge"];
             429: components["responses"]["Error"];
         };
     };

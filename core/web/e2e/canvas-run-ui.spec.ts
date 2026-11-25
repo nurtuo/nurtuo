@@ -37,13 +37,18 @@ async function mockApi(page: Page, over: Partial<Mock> = {}): Promise<Mock> {
     }
     const c = /\/connections\/([^/]+)$/.exec(pathname);
     if (c && req.method() === "PUT") {
-      const b = req.postDataJSON() as { connector: string; settings: Record<string, unknown>; credentials?: { password?: string } };
+      const b = req.postDataJSON() as { connector: string; settings: Record<string, unknown>; credentials?: Record<string, string | null> };
       m.connectionPuts.push(b);
       const index = m.connections.findIndex((item) => item.id === c[1]);
       const previous = m.connections[index];
       const settings = { ...(previous?.settings as object | undefined), ...b.settings };
-      if (b.credentials?.password) settings.password = "secret://server-assigned";
-      const connection = { id: c[1], connector: b.connector, settings, secrets: { password: "set" }, updatedAt: "now" };
+      const secrets = { ...previous?.secrets as Record<string, string> | undefined };
+      for (const [field, value] of Object.entries(b.credentials ?? {})) {
+        if (value === null) delete secrets[field];
+        else secrets[field] = "set";
+      }
+      if (b.connector === "sftp" && b.credentials?.password) settings.password = "secret://server-assigned";
+      const connection = { id: c[1], connector: b.connector, settings, secrets, updatedAt: "now" };
       m.connections.splice(index < 0 ? m.connections.length : index, index < 0 ? 0 : 1, connection);
       return json(connection);
     }
@@ -268,4 +273,104 @@ test("TOFU stores nothing until Trust", async ({ page }) => {
   await expect(d.locator('[data-connection="rebex-demo"]')).toBeVisible();
   expect(m.connections[0]?.settings.hostKeyPolicy).toBe("fingerprint");
   expect(errors).toEqual([]);
+});
+
+test("editing HTTP authentication clears stale credentials and clears the token after save", async ({ page }) => {
+  const m = await mockApi(page, { connections: [{
+    id: "web", connector: "http", settings: { baseUrl: "https://example.com", auth: { type: "basic", username: "demo" } },
+    secrets: { password: "set" },
+  }] });
+  await open(page);
+  await login(page);
+  await page.getByRole("button", { name: "Connections" }).click();
+  const d = page.getByRole("dialog", { name: "Connections" });
+  await d.locator('[data-connection="web"]').click();
+  await expect(d.getByLabel("baseUrl")).toHaveValue("https://example.com");
+  await expect(d.getByLabel("username")).toHaveValue("demo");
+  await expect(d.getByLabel("password")).toHaveValue("");
+  await d.getByLabel("password").fill("draft-password");
+  await d.getByLabel("type", { exact: true }).selectOption("bearer");
+  await d.getByLabel("token").fill("draft-token");
+  await d.getByLabel("type", { exact: true }).selectOption("basic");
+  await expect(d.getByLabel("password")).toHaveValue("");
+  await d.getByLabel("type", { exact: true }).selectOption("bearer");
+  await expect(d.getByLabel("token")).toHaveValue("");
+  await d.getByLabel("token").fill("replacement-token");
+  await d.getByRole("button", { name: "Save connection" }).click();
+  await expect(d.locator('[data-connection="web"]')).toContainText("token: set");
+  await expect(d.getByLabel("token")).toHaveValue("");
+  expect(m.connectionPuts).toEqual([{
+    connector: "http", settings: { baseUrl: "https://example.com", auth: { type: "bearer" } },
+    credentials: { token: "replacement-token", password: null },
+  }]);
+});
+
+test("editing PostgreSQL prefills settings and explicitly removes the stored password", async ({ page }) => {
+  const settings = { host: "db.example.com", port: 5433, database: "catalog", user: "reader", sslMode: "verify-full" };
+  const m = await mockApi(page, { connections: [{ id: "db", connector: "postgres", settings, secrets: { password: "set" } }] });
+  await open(page);
+  await login(page);
+  await page.getByRole("button", { name: "Connections" }).click();
+  const d = page.getByRole("dialog", { name: "Connections" });
+  await d.locator('[data-connection="db"]').click();
+  await expect(d.getByLabel("host", { exact: true })).toHaveValue(settings.host);
+  await expect(d.getByLabel("port", { exact: true })).toHaveValue("5433");
+  await expect(d.getByLabel("database")).toHaveValue(settings.database);
+  await expect(d.getByLabel("sslMode")).toHaveValue(settings.sslMode);
+  await expect(d.getByLabel("password", { exact: true })).toHaveValue("");
+  const removePassword = d.getByLabel("Remove stored password");
+  await removePassword.check();
+  await expect(d.getByLabel("password", { exact: true })).toBeDisabled();
+  await d.getByRole("button", { name: "Save connection" }).click();
+  await expect(removePassword).toHaveCount(0);
+  expect(m.connectionPuts).toEqual([{ connector: "postgres", settings, credentials: { password: null } }]);
+});
+
+async function openLegacyHttpStep(page: Page) {
+  const flow = JSON.parse(readFileSync(SAMPLE, "utf8"));
+  flow.steps[1].config = { connector: "http", operation: "POST", objectType: "legacy" };
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "legacy.flow.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(flow)),
+  });
+  await page.locator(".react-flow__node[data-id='connector-1']").dblclick();
+  return page.getByRole("dialog", { name: "Configure connector-1" });
+}
+
+test("workspace binding configures HTTP GET and PostgreSQL QUERY and can be cleared", async ({ page }) => {
+  await mockApi(page, { connections: [
+    { id: "web", connector: "http", settings: {}, secrets: {} },
+    { id: "db", connector: "postgres", settings: {}, secrets: {} },
+  ] });
+  await open(page);
+  await login(page);
+  const d = await openLegacyHttpStep(page);
+  await expect(d.getByRole("textbox", { name: "operation" })).toHaveValue("POST");
+  await expect(d.getByRole("textbox", { name: "objectType" })).toHaveValue("legacy");
+
+  for (const [id, connector, operation] of [["web", "http", "GET"], ["db", "postgres", "QUERY"]] as const) {
+    await d.getByLabel("connection", { exact: true }).selectOption(id);
+    await expect(d.getByRole("combobox", { name: "operation" })).toHaveValue(operation);
+    await expect(d.getByRole("textbox", { name: "objectType" })).toHaveCount(0);
+    await d.getByLabel("connection", { exact: true }).selectOption("");
+    await expect(d.getByRole("textbox", { name: "connector", exact: false })).toHaveValue(connector);
+    await expect(d.getByRole("textbox", { name: "operation" })).toHaveValue(operation);
+    await expect(d.getByRole("textbox", { name: "objectType" })).toHaveValue("");
+  }
+});
+
+test("an empty workspace connection list preserves the legacy connector editor", async ({ page }) => {
+  await mockApi(page);
+  await open(page);
+  await login(page);
+  const d = await openLegacyHttpStep(page);
+  await expect(d.getByRole("textbox", { name: "operation" })).toHaveValue("POST");
+  await expect(d.getByRole("textbox", { name: "objectType" })).toHaveValue("legacy");
+  await expect(d.getByRole("textbox", { name: "connection" })).toBeEditable();
+  const connector = d.getByRole("textbox", { name: "connector" });
+  await connector.fill("sftp");
+  await connector.press("Tab");
+  await expect(connector).toHaveValue("sftp");
+  await d.getByRole("button", { name: "Close" }).click();
+  await page.locator(".react-flow__node[data-id='connector-1']").dblclick();
+  await expect(connector).toHaveValue("sftp");
 });

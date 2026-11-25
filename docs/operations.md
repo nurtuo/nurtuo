@@ -218,8 +218,10 @@ The control plane can run a canvas flow once through `nurtuo flow run` (see
 | `NURTUO_TEST_RUN_ALLOW_PRIVATE` | `1` lets test runs and connections reach loopback, private and link-local addresses. Off by default (SSRF protection); turn it on only for local development and tests. |
 
 Workspace secrets set from the canvas live in the control plane's memory and are lost on restart (run
-`secret_missing` until they are entered again). Request bodies of every `/v1/` route are limited to
-1 MiB (413 `payload_too_large`).
+`secret_missing` until they are entered again). Request limits depend on the operation. Sign-in accepts up to 64 KiB and test run requests
+accept up to 1 MiB. Connection saves and host-key scans have their own limits. Requests that
+exceed the applicable limit return 413 `payload_too_large`. The default for revision uploads
+continues to have no byte ceiling.
 
 ## Logs
 

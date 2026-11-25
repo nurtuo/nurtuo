@@ -296,6 +296,13 @@ func (x *exec) runStep(ctx context.Context, step flow.Step, cfg any, set *docs.S
 		}
 		x.failAll(out, de)
 	}
+	if x.e.MaxReturnedBytes > 0 {
+		for _, d := range out.Docs() {
+			if failure := d.Err(); failure != nil && errors.Is(failure, ErrReturnLimit) {
+				return out, ErrReturnLimit
+			}
+		}
+	}
 	return out, nil
 }
 
