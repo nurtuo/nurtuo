@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Spec: ExecuteLargePayload contract test with a memory bound
 
-Status: approved. Date: 2026-11-24.
+Status: implemented. Date: 2026-11-24.
 
 ## Summary
 
@@ -16,8 +16,8 @@ incrementally can opt in. SFTP is the only built-in connector that opts in.
 | Spec PR | [#80](https://github.com/nurtuo/nurtuo/pull/80) |
 | Implementation on main | [#110](https://github.com/nurtuo/nurtuo/pull/110) ([5a24339](https://github.com/nurtuo/nurtuo/commit/5a24339fc0976d412ebcfc97fd97bdc3ce766309)), [#111](https://github.com/nurtuo/nurtuo/pull/111) ([90fe84c](https://github.com/nurtuo/nurtuo/commit/90fe84c19a401a752f14427173956f65e5182670)), [#113](https://github.com/nurtuo/nurtuo/pull/113) ([9a0a6ef](https://github.com/nurtuo/nurtuo/commit/9a0a6ef4df55eeb0aa08de57bfaba7a21dd768f7)) |
 | Issue | [#65](https://github.com/nurtuo/nurtuo/issues/65) |
-| Code | [contracttest/largepayload.go](../../sdk/go/connector/contracttest/largepayload.go) |
-| Parent spec | Gap 2 in [connector contract v1](implemented/2026-11-21-connector-contract-v1.md) |
+| Code | [contracttest/largepayload.go](../../../sdk/go/connector/contracttest/largepayload.go) |
+| Parent spec | Gap 2 in [connector contract v1](2026-11-21-connector-contract-v1.md) |
 | ADRs | None |
 
 ## Approved decisions
@@ -51,14 +51,17 @@ to the test process.
 2. Send one document with ID `contracttest-large` using one reusable chunk buffer. Mark the last
    chunk, send `ExecuteEnd`, and close the send side. While the stream runs, a goroutine samples
    every 5 ms using the same forced GC and `HeapAlloc` read.
-3. Receive through EOF, requiring exactly one `DocumentResult` with the streamed document's ID
-   and the configured status. Stop the sampler and take a final sample. Growth is the highest
+3. On success, receive through EOF and require exactly one `DocumentResult` for the streamed
+   document ID. Responses for other IDs do not count. Stop the sampler and take a final sample.
+   Check the result against the configured status. Growth is the highest
    sampled live heap minus the baseline, with the peak initialised to the baseline. Fail when
    growth exceeds `MaxHeapGrowth`.
 
 The subtest runs serially in the suite and measures the whole Go process, including the connector,
 test client, transport and any in-process fixture. Sampling can miss allocations released between
-samples.
+samples. Live allocations from the fixture or other work in the same process can also push a
+streaming connector over the ceiling. The SFTP fixture counts and discards bytes for the large
+upload to avoid retaining the payload in the measured heap.
 
 ## Scope and compatibility
 
@@ -78,8 +81,13 @@ no runtime input limit or protocol change.
 | `TestLargePayloadRejectsDuplicateResults` | Duplicate results for the streamed document are rejected. | Same as above |
 | SFTP `TestContract` | The default-size upload stays within the heap bound and reaches the fixture in full. | `go test -race ./connectors/sftp -run '^TestContract$'` |
 
+A dedicated deadline regression test would cover a stream that succeeds after the general timeout
+but within the large-payload timeout, and a stalled stream that expires under a short, explicit
+large-payload timeout. The existing SFTP test exercises the default deadline.
+
 ## Changelog
 
 - 2026-11-24. Created as a draft for issue #65.
 - 2026-11-25. Recorded Łukasz's approval of the decisions made via the merged implementation
   and aligned the spec with PRs #110, #111 and #113.
+- 2026-11-25. Moved the decision record to `implemented/` because its scope shipped on main.
