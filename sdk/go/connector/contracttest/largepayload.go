@@ -3,6 +3,7 @@
 package contracttest
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -19,8 +20,9 @@ import (
 // message size, so it can only be delivered as several chunks, and large enough that a connector
 // which buffers the whole document exceeds the heap bound.
 const (
-	DefaultLargePayloadSize = 64 << 20
-	DefaultMaxHeapGrowth    = 24 << 20
+	DefaultLargePayloadSize    = 64 << 20
+	DefaultMaxHeapGrowth       = 24 << 20
+	DefaultLargePayloadTimeout = 30 * time.Second
 )
 
 // LargePayloadCase configures the ExecuteLargePayload subtest: one document of Size bytes is
@@ -44,6 +46,9 @@ type LargePayloadCase struct {
 	MaxHeapGrowth uint64
 	// Want is the required status of the document; defaults to SUCCESS.
 	Want connectorv1.DocumentStatus
+	// Timeout bounds the whole stream; defaults to DefaultLargePayloadTimeout, which is longer
+	// than Options.Timeout because 64 MiB under -race can exceed it.
+	Timeout time.Duration
 }
 
 const largeDocID = "contracttest-large"
@@ -57,6 +62,9 @@ func (c LargePayloadCase) withDefaults() LargePayloadCase {
 	}
 	if c.MaxHeapGrowth == 0 {
 		c.MaxHeapGrowth = DefaultMaxHeapGrowth
+	}
+	if c.Timeout <= 0 {
+		c.Timeout = DefaultLargePayloadTimeout
 	}
 	if c.Want == connectorv1.DocumentStatus_DOCUMENT_STATUS_UNSPECIFIED {
 		c.Want = connectorv1.DocumentStatus_DOCUMENT_STATUS_SUCCESS
@@ -92,7 +100,9 @@ func executeLargePayload(t *testing.T, o *Options) {
 // the live heap (bytes reachable after a GC) over the baseline taken before the stream starts.
 func streamLargePayload(t *testing.T, o *Options, c LargePayloadCase) (*connectorv1.DocumentResult, uint64, error) {
 	cl := client(t, o)
-	stream, err := cl.Execute(ctx(t, o))
+	cctx, cancel := context.WithTimeout(context.Background(), c.Timeout)
+	t.Cleanup(cancel)
+	stream, err := cl.Execute(cctx)
 	if err != nil {
 		return nil, 0, err
 	}
