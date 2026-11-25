@@ -61,6 +61,10 @@ type Backend struct {
 	lanes      map[laneKey]*keyLane
 	ackWait    time.Duration
 	advSub     *nats.Subscription
+	closed     bool // guarded by mu
+	handlers   sync.WaitGroup
+	closeOnce  sync.Once
+	closeErr   error
 }
 
 var _ queue.QueueBackend = (*Backend)(nil)
@@ -316,7 +320,7 @@ func (b *Backend) Publish(ctx context.Context, name string, msg queue.Message) e
 }
 
 // Subscribe creates (or re-attaches to) a durable push consumer.
-func (b *Backend) Subscribe(_ context.Context, name string, opts queue.SubOpts, h queue.Handler) (queue.Subscription, error) {
+func (b *Backend) Subscribe(ctx context.Context, name string, opts queue.SubOpts, h queue.Handler) (queue.Subscription, error) {
 	def, err := b.def(name)
 	if err != nil {
 		return nil, err
@@ -335,8 +339,10 @@ func (b *Backend) Subscribe(_ context.Context, name string, opts queue.SubOpts, 
 	if durable == "" {
 		durable = "default"
 	}
-	s := &subscription{b: b, name: name, def: def, durable: token(durable), durableIdentity: identity(durable, token(durable)), conc: conc, h: h}
+	lifetime, cancel := context.WithCancel(ctx)
+	s := &subscription{b: b, lifetime: lifetime, end: cancel, name: name, def: def, durable: token(durable), durableIdentity: identity(durable, token(durable)), conc: conc, h: h}
 	if err := s.attach(); err != nil {
+		cancel()
 		return nil, err
 	}
 	return s, nil
@@ -367,6 +373,10 @@ func (c *orderedConsumer) dispatch(m *nats.Msg, b *Backend) {
 }
 
 type subscription struct {
+	end             context.CancelFunc
+	lifetime        context.Context
+	ctx             context.Context    // guarded by deliveryMu
+	cancel          context.CancelFunc // guarded by deliveryMu
 	b               *Backend
 	name            string
 	def             queue.QueueDef
@@ -386,7 +396,13 @@ func (s *subscription) attach() error {
 	// keeps the durable alive when any one subscriber pauses or closes.
 	s.b.mu.Lock()
 	defer s.b.mu.Unlock()
-	if s.closed || s.sub != nil {
+	if s.closed || s.b.closed {
+		return errors.New("natsjs: subscription closed")
+	}
+	if err := s.lifetime.Err(); err != nil {
+		return err
+	}
+	if s.sub != nil {
 		return nil
 	}
 	var ordered *orderedConsumer
@@ -398,6 +414,7 @@ func (s *subscription) attach() error {
 				}
 				s.sub, s.ordered = other.sub, other.ordered
 				s.b.deliveryMu.Lock()
+				s.ctx, s.cancel = context.WithCancel(s.lifetime)
 				s.ordered.members = append(s.ordered.members, s)
 				s.b.deliveryMu.Unlock()
 				s.b.subs[s] = struct{}{}
@@ -456,6 +473,9 @@ func (s *subscription) attach() error {
 		_ = sub.Unsubscribe()
 		return err
 	}
+	s.b.deliveryMu.Lock()
+	s.ctx, s.cancel = context.WithCancel(s.lifetime)
+	s.b.deliveryMu.Unlock()
 	s.sub, s.ordered = sub, ordered
 	s.b.subs[s] = struct{}{}
 	bound = true
@@ -486,6 +506,10 @@ func (s *subscription) waitPushBound(want bool) error {
 // dispatch runs on the NATS callback goroutine with deliveryMu held. It enqueues
 // keyed handlers in delivery order; MaxAckPending bounds server-side concurrency.
 func (s *subscription) dispatch(m *nats.Msg) {
+	ctx := s.ctx
+	if ctx == nil || ctx.Err() != nil {
+		return
+	}
 	d := &delivery{s: s, m: m, msg: fromHeader(m.Header, m.Data)}
 	if md, err := m.Metadata(); err == nil {
 		d.attempt = int(md.NumDelivered)
@@ -493,10 +517,24 @@ func (s *subscription) dispatch(m *nats.Msg) {
 			s.b.redeliv[s.name]++
 		}
 	}
-	run := func() { s.h(context.Background(), d) }
+	run := func() {
+		if ctx.Err() == nil {
+			s.h(s.lifetime, d)
+			return
+		}
+		// A paused subscription can no longer run a queued delivery. Let the
+		// broker offer it again. On shutdown, leave it pending for recovery.
+		if s.lifetime.Err() == nil {
+			_ = m.Nak()
+		}
+	}
 	key := laneKey{s.name, s.durable, d.msg.Key}
 	if s.def.Ordering != queue.OrderingPerKey || key.key == "" {
-		go run()
+		s.b.handlers.Add(1)
+		go func() {
+			defer s.b.handlers.Done()
+			run()
+		}()
 		return
 	}
 	lane, busy := s.b.lanes[key]
@@ -506,7 +544,9 @@ func (s *subscription) dispatch(m *nats.Msg) {
 	}
 	lane = &keyLane{}
 	s.b.lanes[key] = lane
+	s.b.handlers.Add(1)
 	go func() {
+		defer s.b.handlers.Done()
 		run()
 		for {
 			s.b.deliveryMu.Lock()
@@ -526,6 +566,7 @@ func (s *subscription) dispatch(m *nats.Msg) {
 
 // stop is called with the backend lock held when shutting down or deleting a queue.
 func (s *subscription) stop() {
+	s.end()
 	s.closed = true
 	if sub := s.release(); sub != nil {
 		_ = sub.Unsubscribe() // durable consumer is kept on the server
@@ -563,9 +604,13 @@ func (s *subscription) detach() error {
 func (s *subscription) release() *nats.Subscription {
 	sub, ordered := s.sub, s.ordered
 	s.sub, s.ordered = nil, nil
+	s.b.deliveryMu.Lock()
+	defer s.b.deliveryMu.Unlock()
+	if s.cancel != nil {
+		s.cancel()
+		s.ctx, s.cancel = nil, nil
+	}
 	if ordered != nil {
-		s.b.deliveryMu.Lock()
-		defer s.b.deliveryMu.Unlock()
 		ordered.members = slices.DeleteFunc(ordered.members, func(other *subscription) bool { return other == s })
 		if len(ordered.members) > 0 {
 			return nil
@@ -581,6 +626,7 @@ func (s *subscription) Resume() error { return s.attach() }
 func (s *subscription) Close() error {
 	s.b.mu.Lock()
 	defer s.b.mu.Unlock()
+	s.end()
 	err := s.detach()
 	s.closed = true
 	delete(s.b.subs, s)
@@ -724,17 +770,40 @@ func (b *Backend) ReplayDeadLetter(ctx context.Context, name, id string) error {
 	return b.js.DeleteMsg(dlqStream(name), seq)
 }
 
-// Close stops subscriptions, the connection and the embedded server.
+// Close stops delivery and allows up to ten seconds for handlers to exit.
 func (b *Backend) Close() error {
-	b.mu.Lock()
-	for s := range b.subs {
-		s.stop()
-	}
-	b.subs = map[*subscription]struct{}{}
-	b.mu.Unlock()
-	b.nc.Close()
-	b.srv.Shutdown()
-	b.srv.WaitForShutdown()
-	b.cleanup()
-	return nil
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return b.CloseContext(ctx)
+}
+
+// CloseContext cancels delivery, waits for handlers until ctx expires, then
+// closes the broker. Handlers must observe cancellation to finish on time.
+func (b *Backend) CloseContext(ctx context.Context) error {
+	b.closeOnce.Do(func() {
+		b.mu.Lock()
+		b.closed = true
+		for s := range b.subs {
+			s.stop()
+		}
+		b.subs = nil
+		b.mu.Unlock()
+
+		done := make(chan struct{})
+		go func() {
+			b.handlers.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-ctx.Done():
+			b.closeErr = ctx.Err()
+		}
+
+		b.nc.Close()
+		b.srv.Shutdown()
+		b.srv.WaitForShutdown()
+		b.cleanup()
+	})
+	return b.closeErr
 }

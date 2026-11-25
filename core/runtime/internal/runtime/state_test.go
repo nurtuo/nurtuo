@@ -277,11 +277,11 @@ func TestQueueMessagesSurviveRuntimeRestart(t *testing.T) {
 
 	// Seed a queued message with no active listener, then reopen the same state directory.
 	func() {
-		qb, closeQ, err := openPersistentQueues(cfg.StateDir)
+		qb, err := openPersistentQueues(cfg.StateDir)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer closeQ()
+		defer qb.Close()
 		if err := qb.Ensure(ctx, queue.QueueDef{Name: queueName}); err != nil {
 			t.Fatal(err)
 		}

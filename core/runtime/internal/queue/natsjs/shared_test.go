@@ -152,6 +152,7 @@ func TestPerKeyOrderingAcrossSharedListeners(t *testing.T) {
 		t.Fatal(err)
 	}
 	publish("same-key", "a")
+	publish("queued-for-paused", "a")
 	publish("other-key", "b")
 	expect := func(want string) result {
 		t.Helper()
@@ -186,6 +187,9 @@ func TestPerKeyOrderingAcrossSharedListeners(t *testing.T) {
 	}
 	if r := expect("same-key"); r.listener != 2 {
 		t.Fatalf("same-key delivery ran on listener %d, want 2", r.listener)
+	}
+	if r := expect("queued-for-paused"); r.listener != 2 {
+		t.Fatalf("queued delivery ran on listener %d, want 2", r.listener)
 	}
 }
 

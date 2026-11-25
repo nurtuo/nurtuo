@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/nurtuo/nurtuo/core/runtime/internal/queue"
 	"github.com/nurtuo/nurtuo/core/runtime/internal/queue/natsjs"
 	"github.com/nurtuo/nurtuo/core/runtime/internal/supervisor"
 )
@@ -47,13 +46,13 @@ func lockStateDir(stateDir string) (func(), error) {
 }
 
 // openPersistentQueues opens the embedded JetStream backend with its data under
-// <stateDir>/jetstream. The returned close function stops the backend.
-func openPersistentQueues(stateDir string) (queue.QueueBackend, func(), error) {
+// <stateDir>/jetstream.
+func openPersistentQueues(stateDir string) (*natsjs.Backend, error) {
 	qb, err := natsjs.New(natsjs.Options{StoreDir: filepath.Join(stateDir, "jetstream")})
 	if err != nil {
-		return nil, nil, fmt.Errorf("state_dir %s: open queue backend: %w", stateDir, err)
+		return nil, fmt.Errorf("state_dir %s: open queue backend: %w", stateDir, err)
 	}
-	return qb, func() { _ = qb.Close() }, nil
+	return qb, nil
 }
 
 // newSupervisor returns a supervisor whose applied revision is persisted in <stateDir>/revision

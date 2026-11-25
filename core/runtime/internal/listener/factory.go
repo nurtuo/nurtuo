@@ -173,7 +173,11 @@ func (s *QueueSource) Consume(ctx context.Context, deliver func(ctx context.Cont
 		if m.Key != "" {
 			props["queue.key"] = m.Key
 		}
-		if err := deliver(hctx, docs.NewSet(docs.New(id, props, payload))); err != nil {
+		err = deliver(hctx, docs.NewSet(docs.New(id, props, payload)))
+		if hctx.Err() != nil {
+			return
+		}
+		if err != nil {
 			_ = d.Nak(hctx, 0)
 			return
 		}
