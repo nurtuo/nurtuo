@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Spec: `nurtuo flow run` (run a canvas-exported flow locally against connection files)
 
-Status: in-progress. Date: 2026-11-23.
+Status: approved. Date: 2026-11-23.
 
 Extends: [connector-sftp](implemented/2026-11-21-connector-sftp.md),
 [engine-interpreter](implemented/2026-11-21-engine-interpreter.md),
