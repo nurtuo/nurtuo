@@ -11,7 +11,10 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
+	"path"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -117,8 +120,83 @@ func settings(t *testing.T, addr, fp, pw string) *connectorv1.ConnectionConfig {
 	return &connectorv1.ConnectionConfig{Settings: s}
 }
 
+// largeSink is the state of the discardLarge fixture: it counts the bytes written to each
+// discarded file and the size of each one that was renamed into place.
+type largeSink struct {
+	mu      sync.Mutex
+	written map[string]int64 // discarded file path -> bytes written
+	renamed map[string]int64 // rename target -> bytes the (discarded) source held
+}
+
+func (l *largeSink) add(p string, n int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.written[p] += int64(n)
+}
+
+// move accepts a rename only if its source was created through the sink, so a connector that
+// renames a file it never wrote cannot pass.
+func (l *largeSink) move(from, to string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	n, ok := l.written[from]
+	if !ok {
+		return os.ErrNotExist
+	}
+	delete(l.written, from)
+	l.renamed[to] = n
+	return nil
+}
+
+// discardLarge makes the in-memory SFTP server drop everything written to files whose name
+// contains "large.bin" (and accept their rename), so that the contract suite's large-payload
+// subtest measures the connector's heap and not the fixture's storage, which lives in the same
+// process. The returned sink records how many bytes went through, so the test can require that
+// the whole payload arrived.
+func discardLarge(sink *largeSink) func(pkgsftp.Handlers) pkgsftp.Handlers {
+	return func(h pkgsftp.Handlers) pkgsftp.Handlers {
+		large := func(p string) bool { return strings.Contains(path.Base(p), "large.bin") }
+		return pkgsftp.Handlers{
+			FileGet:  h.FileGet,
+			FileList: h.FileList,
+			FilePut: putFunc(func(r *pkgsftp.Request) (io.WriterAt, error) {
+				if large(r.Filepath) {
+					sink.add(r.Filepath, 0) // register the file even if it stays empty
+					return discardAt{sink, r.Filepath}, nil
+				}
+				return h.FilePut.Filewrite(r)
+			}),
+			FileCmd: cmdFunc(func(r *pkgsftp.Request) error {
+				if r.Method == "Rename" && large(r.Target) {
+					return sink.move(r.Filepath, r.Target)
+				}
+				return h.FileCmd.Filecmd(r)
+			}),
+		}
+	}
+}
+
+type putFunc func(*pkgsftp.Request) (io.WriterAt, error)
+
+func (f putFunc) Filewrite(r *pkgsftp.Request) (io.WriterAt, error) { return f(r) }
+
+type cmdFunc func(*pkgsftp.Request) error
+
+func (f cmdFunc) Filecmd(r *pkgsftp.Request) error { return f(r) }
+
+type discardAt struct {
+	sink *largeSink
+	path string
+}
+
+func (d discardAt) WriteAt(p []byte, _ int64) (int, error) {
+	d.sink.add(d.path, len(p))
+	return len(p), nil
+}
+
 func TestContract(t *testing.T) {
-	addr, fp := startServer(t)
+	sink := &largeSink{written: map[string]int64{}, renamed: map[string]int64{}}
+	addr, fp, _ := startServerH(t, discardLarge(sink))
 	conn := settings(t, addr, fp, testPassword)
 	op := func(o connectorv1.OperationType, custom string) *connectorv1.ExecuteStart {
 		return &connectorv1.ExecuteStart{OperationType: o, CustomType: custom}
@@ -129,6 +207,12 @@ func TestContract(t *testing.T) {
 		New:        func(testing.TB) connector.Connector { return sftp.New() },
 		Connection: conn,
 		Secrets:    []string{testPassword},
+		// The upload is streamed to the remote file chunk by chunk; the suite checks that the heap
+		// stays bounded while a payload larger than the 4 MiB gRPC message size goes through.
+		LargePayload: &contracttest.LargePayloadCase{
+			Start:      op(connectorv1.OperationType_OPERATION_TYPE_CREATE, ""),
+			Properties: map[string]string{"path": "/in/large.bin"},
+		},
 		Execute: []contracttest.ExecuteCase{
 			{
 				Name:  "put",
@@ -169,6 +253,16 @@ func TestContract(t *testing.T) {
 			},
 		},
 	})
+	// The payload must have gone through the connector whole: the renamed file holds exactly
+	// the bytes the suite sent, and nothing is left behind under a temporary name.
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if got := sink.renamed["/in/large.bin"]; got != contracttest.DefaultLargePayloadSize {
+		t.Errorf("/in/large.bin received %d bytes, want %d", got, contracttest.DefaultLargePayloadSize)
+	}
+	if len(sink.written) != 0 {
+		t.Errorf("temporary files were not renamed into place: %v", sink.written)
+	}
 }
 
 // run executes one batch directly (in-process stream) and returns results and outputs.

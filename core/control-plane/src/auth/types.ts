@@ -8,6 +8,8 @@ export interface User {
   status: "active" | "disabled";
   failedLogins: number; lockedUntil: string | null; createdAt: string;
 }
+/** Syntactic email check shared by AuthService.validateEmail and the instance-admin config parser. */
+export const isEmailSyntax = (e: string): boolean => e.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
 export type PublicUser = Pick<User, "id" | "email" | "displayName" | "status" | "createdAt">;
 export const publicUser = (u: User): PublicUser => ({ id: u.id, email: u.email, displayName: u.displayName, status: u.status, createdAt: u.createdAt });
 
