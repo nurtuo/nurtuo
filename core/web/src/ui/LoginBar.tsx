@@ -26,9 +26,11 @@ export function LoginBar({ session, workspaceId, onWorkspace, online, restoring,
   if (session) {
     return (
       <span className="loginbar">
-        <select aria-label="Workspace" value={workspaceId ?? ""} onChange={(e) => onWorkspace(e.target.value)}>
-          {session.workspaces.map((w) => <option key={w.id} value={w.id}>{w.name} ({w.role})</option>)}
-        </select>
+        {session.workspaces.length === 0 ? <span>No workspaces available</span> : (
+          <select aria-label="Workspace" value={workspaceId ?? ""} onChange={(e) => onWorkspace(e.target.value)}>
+            {session.workspaces.map((w) => <option key={w.id} value={w.id}>{w.name} ({w.role})</option>)}
+          </select>
+        )}
         <span title={session.email}>{session.email}</span>
         <button disabled={loggingOut} onClick={async () => {
           setErr(null);
