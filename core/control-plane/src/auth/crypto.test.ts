@@ -81,12 +81,17 @@ test("permissions: matrix invariants", () => {
   assert.equal(canGrant(permissionsOf("runtime"), "viewer"), false);
 });
 
-test("migration 0103 seed matches permissions.ts (no drift)", () => {
-  const sql = readFileSync(fileURLToPath(new URL("../../migrations/0103_auth_seed_roles.sql", import.meta.url)), "utf8");
+test("migrations 0103 + 0104 seed matches permissions.ts (no drift)", () => {
+  const mig = (f: string) => readFileSync(fileURLToPath(new URL(`../../migrations/${f}`, import.meta.url)), "utf8");
+  const sql = mig("0103_auth_seed_roles.sql") + mig("0104_auth_seed_connection_permissions.sql");
   const pairs = [...sql.matchAll(/\('([a-z]+)', '([a-z_]+:[a-z_]+)'\)/g)].map((m) => `${m[1]}=${m[2]}`).sort();
   const want = ROLES.flatMap((r) => ROLE_PERMISSIONS[r].map((p) => `${r}=${p}`)).sort();
   assert.deepEqual(pairs, want);
-  for (const r of ROLES) assert.ok(sql.includes(`('${r}', true, '${ROLE_DESCRIPTIONS[r].replace(/'/g, "''")}')`));
-  const permIds = [...sql.matchAll(/\('([a-z]+:[a-z_]+)', '[a-z]+', '[a-z_]+'\)/g)].map((m) => m[1]!).sort();
+  // 0103 inserts the roles; 0104 may update a description, so the last statement per role wins.
+  for (const r of ROLES) {
+    const d = ROLE_DESCRIPTIONS[r].replace(/'/g, "''");
+    assert.ok(sql.includes(`('${r}', true, '${d}')`) || sql.includes(`description = '${d}' WHERE name = '${r}'`), r);
+  }
+  const permIds = [...sql.matchAll(/\('([a-z_]+:[a-z_]+)', '[a-z_]+', '[a-z_]+'\)/g)].map((m) => m[1]!).sort();
   assert.deepEqual(permIds, [...ALL_PERMISSIONS].sort());
 });
