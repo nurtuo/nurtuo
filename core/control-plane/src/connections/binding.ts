@@ -20,7 +20,7 @@ export function checkSecretPlacement(connector: string, settings: Record<string,
   for (const [key, value] of Object.entries(settings)) {
     if (typeof value === "string" && value.startsWith("secret://") && allowSlots && fields.includes(key)) continue;
     if (JSON.stringify(value)?.includes("secret://") || (fields.includes(key) && !allowSlots)) {
-      throw new ApiError(400, "secret_ref_not_allowed", "credential references are assigned by the server");
+      throw new ApiError(400, "secret_ref_not_allowed", `credential references in ${JSON.stringify(key)} are assigned by the server`);
     }
   }
 }
