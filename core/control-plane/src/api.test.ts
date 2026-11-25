@@ -192,6 +192,40 @@ async function listen(server: Server) {
   return `http://127.0.0.1:${address.port}`;
 }
 
+test("HTTP skips dispatch when the client disconnects mid-body", { timeout: 5000 }, async (t) => {
+  const dispatched: string[] = [];
+  const server = createHttpServer(new MemoryRepository(), { auth: {
+    async handle(req) {
+      dispatched.push(req.path);
+      return { status: 200, body: { ok: true } };
+    },
+  } });
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const base = await listen(server);
+  let receive!: () => void;
+  let close!: () => void;
+  const received = new Promise<void>((resolve) => { receive = resolve; });
+  const closed = new Promise<void>((resolve) => { close = resolve; });
+  server.once("request", (req) => {
+    req.once("data", receive);
+    req.once("close", close);
+  });
+  const client = request(base + "/partial", {
+    method: "POST",
+    headers: { "content-type": "application/json", "content-length": "10" },
+  });
+  client.on("error", () => {});
+  client.write("{");
+  await received;
+  client.destroy();
+  await closed;
+
+  const next = await fetch(base + "/complete");
+  assert.equal(next.status, 200);
+  assert.deepEqual(await next.json(), { ok: true });
+  assert.deepEqual(dispatched, ["/complete"]);
+});
+
 test("HTTP without auth returns 404 for workspace ID paths", async (t) => {
   const server = createHttpServer(new MemoryRepository(), { auth: "disabled" });
   t.after(() => server.close());
