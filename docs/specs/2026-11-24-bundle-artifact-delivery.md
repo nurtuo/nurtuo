@@ -184,7 +184,8 @@ Three phases (D13), each shippable on its own. Component names exist today unles
    `name` = `c.name` when it matches `nameRe`, else `c.id`; `createdAt` = `r.createdAt` truncated
    to seconds, RFC 3339 UTC; one component `{kind: c.kind, id: c.id, revision: r.number,
    document: canonical bundle JSON of r.content}`. Sort object keys by UTF-8 bytes and
-   use Go JSON string escaping, including U+2028, U+2029 and HTML-sensitive characters. Replace
+   use Go bundle JSON string escaping (escape U+2028 and U+2029, leave HTML-sensitive
+   characters literal). Replace
    lone surrogates with U+FFFD and reject keys that collide after replacement. Emit the shortest
    ECMAScript spelling of each stored finite number and preserve that literal in the bundle.
    The input is the stored JSON value. Request number spellings and duplicate keys were consumed by
@@ -219,7 +220,7 @@ Three phases (D13), each shippable on its own. Component names exist today unles
      concurrent packing and streaming. Under cache churn, test that an authorized miss packs
      one revision and that an unknown or foreign request packs zero.
    - A matching deployment whose revision cannot be packed returns `FAILED_PRECONDITION` with the
-     pack error. A digest that matches an externally supplied revision digest returns `NOT_FOUND`
+     pack error. A digest that matches a non-packing revision digest returns `NOT_FOUND`
      "artifact is not stored by the control plane; place it in bundle_dir".
    - Stream the archive in chunks of at most 1 MiB (`data`), well under gRPC's 4 MiB default
      message limit. Stop on client cancel.
@@ -458,8 +459,9 @@ accepts. Without a key, behaviour is byte-for-byte unchanged.
    `core/deploy/bundle/golden_test.go` (Go). Require a second shared golden with non-ASCII keys
    (including a supplementary-plane key), U+2028 and number-heavy content. Go `Verify` must
    accept both archives. No key material is committed.
-3. `Gateway`: `signingKey` option, artifact cache, `desiredStateMessage` digest switch,
-   `fetchArtifact` handler. Verified by new cases in `gateway.test.ts`.
+3. `Gateway`: add the signing key option and artifact cache in the packer PR. Enable the
+   `desiredStateMessage` digest switch in the delivery PR alongside `fetchArtifact`. Cover
+   matching-generation reconnect and cache churn in `gateway.test.ts`.
 4. `main.ts`: `NURTUO_BUNDLE_SIGNING_KEY_FILE`. Verified by a `main`-level test or a small
    exported `loadSigningKey(path)` unit test (invalid file → error that names the variable and
    contains no key bytes).
