@@ -27,8 +27,8 @@ async function runWorld() {
   const w = setup({ testRun: { bin: FAKE_NURTUO, lookup: async () => ["8.8.8.8"], spoolPollMs: 20 } });
   const { ws } = await w.owner("o@x.io", "ws-a");
   const o = await w.login("o@x.io");
-  await w.call("PUT", `/v1/workspaces/${ws.id}/connections/c1`, { cookie: o.cookie, csrf: o.csrf, body: sftpConn() });
-  const run = (body: unknown) => w.call("POST", `/v1/workspaces/${ws.id}/test-runs`, { cookie: o.cookie, csrf: o.csrf, body });
+  assert.equal((await w.call("PUT", `/v1/workspaces/${ws.id}/connections/c1`, { cookie: o.cookie, csrf: o.csrf, ip: "127.0.0.1", body: sftpConn() })).status, 201);
+  const run = (body: unknown) => w.call("POST", `/v1/workspaces/${ws.id}/test-runs`, { cookie: o.cookie, csrf: o.csrf, ip: "127.0.0.1", body });
   return { ...w, ws, o, run };
 }
 
@@ -36,8 +36,8 @@ test("host resolving to a private address is refused before spawn; the allow swi
   const w = setup({ testRun: { bin: FAKE_NURTUO, lookup: async () => ["10.0.0.9"] } });
   const { ws } = await w.owner("o@x.io", "ws-a");
   const o = await w.login("o@x.io");
-  const auth = { cookie: o.cookie, csrf: o.csrf };
-  await w.call("PUT", `/v1/workspaces/${ws.id}/connections/c1`, { ...auth, body: sftpConn() });
+  const auth = { cookie: o.cookie, csrf: o.csrf, ip: "127.0.0.1" };
+  assert.equal((await w.call("PUT", `/v1/workspaces/${ws.id}/connections/c1`, { ...auth, body: sftpConn() })).status, 201);
   const pidfile = join(mkdtempSync(join(tmpdir(), "pid-")), "pid");
   const r = await w.call("POST", `/v1/workspaces/${ws.id}/test-runs`, { ...auth, body: { flow: flowOf(), input: { properties: { pidfile } } } });
   assert.equal(r.status, 400); assert.equal(j(r).error.code, "host_not_allowed");

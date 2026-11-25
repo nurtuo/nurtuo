@@ -617,7 +617,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description EXPERIMENTAL. Fetches the SSH host key negotiated by SFTP without authentication or persistence. */
+        /**
+         * @description EXPERIMENTAL. Fetches the negotiated SSH host key without authenticating to the SFTP server
+         *     or persisting the result. Requires a user session with the workspace `connection:write`
+         *     permission. Cookie sessions must send `X-Nurtuo-Csrf`.
+         */
         post: operations["scanConnectionHostKey"];
         delete?: never;
         options?: never;

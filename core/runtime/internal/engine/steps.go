@@ -118,6 +118,10 @@ func ConnectorRunnerFor(conns ConnectorLookup) StepRunner {
 		start.OperationType, start.CustomType = operationType(cfg.Operation)
 
 		stream := &memStream{ctx: ctx}
+		if sc.maxConnectorOutputBytes > 0 {
+			stream.bounded = &boundedOutputs{remaining: sc.maxConnectorOutputBytes, spool: sc.Spool, docs: make(map[string]*outDoc)}
+			defer stream.bounded.close()
+		}
 		stream.reqs = append(stream.reqs, &connectorv1.ExecuteRequest{Msg: &connectorv1.ExecuteRequest_Start{Start: start}})
 		// Documents are matched to results by id, so an id may be sent only once per batch: later
 		// occurrences are failed instead of sharing the first one's result.
@@ -142,6 +146,14 @@ func ConnectorRunnerFor(conns ConnectorLookup) StepRunner {
 		stream.reqs = append(stream.reqs, &connectorv1.ExecuteRequest{Msg: &connectorv1.ExecuteRequest_End{End: &connectorv1.ExecuteEnd{}}})
 
 		execErr := safeExecute(entry.Connector, stream)
+		if b := stream.bounded; b != nil {
+			switch {
+			case errors.Is(b.err, ErrReturnLimit) || sc.Spool.DiskBudgetExceeded():
+				return in, ErrReturnLimit
+			case b.err != nil:
+				execErr = b.err
+			}
+		}
 		if execErr == nil {
 			execErr = ctx.Err()
 		}
@@ -151,7 +163,12 @@ func ConnectorRunnerFor(conns ConnectorLookup) StepRunner {
 				results[res.GetDocumentId()] = append(results[res.GetDocumentId()], res)
 			}
 		}
-		outputs := collectOutputs(stream.resps)
+		var outputs map[string]*outDoc
+		if stream.bounded != nil {
+			outputs = stream.bounded.docs
+		} else {
+			outputs = collectOutputs(stream.resps)
+		}
 		// An output id may be claimed by exactly one result entry.
 		outRefs := map[string]int{}
 		for id := range sentIDs {
@@ -228,7 +245,7 @@ func ConnectorRunnerFor(conns ConnectorLookup) StepRunner {
 					if ferr != nil {
 						break
 					}
-					p, err := sc.Spool.FromBytes(o.data.Bytes())
+					p, err := o.takePayload(sc.Spool)
 					if err != nil {
 						ferr, fcode = err, "payload"
 						break
@@ -321,8 +338,10 @@ func appendChunks(s *memStream, d *docs.Document) error {
 }
 
 type outDoc struct {
-	props map[string]string
-	data  bytes.Buffer
+	props   map[string]string
+	data    bytes.Buffer
+	payload *docs.Payload
+	pending *outputPipe
 }
 
 func collectOutputs(resps []*connectorv1.ExecuteResponse) map[string]*outDoc {
@@ -349,10 +368,11 @@ func collectOutputs(resps []*connectorv1.ExecuteResponse) map[string]*outDoc {
 // are collected.
 type memStream struct {
 	grpc.ServerStream
-	ctx   context.Context
-	reqs  []*connectorv1.ExecuteRequest
-	i     int
-	resps []*connectorv1.ExecuteResponse
+	ctx     context.Context
+	reqs    []*connectorv1.ExecuteRequest
+	i       int
+	resps   []*connectorv1.ExecuteResponse
+	bounded *boundedOutputs
 }
 
 func (s *memStream) Context() context.Context { return s.ctx }
@@ -367,6 +387,14 @@ func (s *memStream) Recv() (*connectorv1.ExecuteRequest, error) {
 }
 
 func (s *memStream) Send(r *connectorv1.ExecuteResponse) error {
+	if b := s.bounded; b != nil {
+		if b.err != nil {
+			return b.err
+		}
+		if ch := r.GetOutput(); ch != nil {
+			return b.send(ch)
+		}
+	}
 	s.resps = append(s.resps, r)
 	return nil
 }

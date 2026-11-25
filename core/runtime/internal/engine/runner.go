@@ -17,12 +17,13 @@ var ErrNoRunner = errors.New("engine: no runner registered for step kind")
 
 // StepContext is what a StepRunner sees for one step execution.
 type StepContext struct {
-	Flow    *flow.Flow
-	Step    flow.Step
-	Config  any // decoded config (flow.MessageConfig, flow.ConnectorConfig, ...)
-	Process *Process
-	Eval    Evaluator
-	Spool   *docs.Spool
+	Flow                    *flow.Flow
+	Step                    flow.Step
+	Config                  any // decoded config (flow.MessageConfig, flow.ConnectorConfig, ...)
+	Process                 *Process
+	Eval                    Evaluator
+	Spool                   *docs.Spool
+	maxConnectorOutputBytes int64
 }
 
 // StepRunner executes a single-output ("default" port) step over a whole document set. It returns
