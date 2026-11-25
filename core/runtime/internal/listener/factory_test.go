@@ -154,12 +154,36 @@ func TestPersistentQueueListenerPausePreservesDelivery(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("resume did not deliver the queued message")
 	}
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		st, err = b.Stats(ctx, queueName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.Depth == 0 {
+			break
+		}
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			t.Fatal("resumed delivery was not acknowledged")
+		}
+	}
+	select {
+	case <-time.After(6 * ackWait):
+	case <-ctx.Done():
+		t.Fatal("timed out waiting past the ACK retry window")
+	}
 	st, err = b.Stats(ctx, queueName)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Redeliveries != 0 || st.DeadLetterDepth != 0 {
-		t.Fatalf("resumed queue stats = %+v, want no redeliveries or dead letters", st)
+	if st.Depth != 0 || st.Redeliveries != 0 || st.DeadLetterDepth != 0 {
+		t.Fatalf("resumed queue stats = %+v, want no pending deliveries, redeliveries, or dead letters", st)
+	}
+	if got := l.Status().Received; got != 1 {
+		t.Fatalf("received %d deliveries, want one", got)
 	}
 }
 
