@@ -18,7 +18,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"time"
 
 	"github.com/nurtuo/nurtuo/core/deploy/bundle"
@@ -63,6 +62,9 @@ func (b localBootstrapper) Bootstrap(dirs DataDirs) (*Credentials, error) {
 	// Every bootstrap file is written and read below a verified private directory, so new files
 	// inherit its private DACL on Windows.
 	if _, err := secrets.EnsurePrivateDir(s); err != nil {
+		return nil, err
+	}
+	if err := checkStandaloneSecretsDir(s); err != nil {
 		return nil, err
 	}
 	c := &Credentials{
@@ -206,8 +208,8 @@ func readBundlePublicKey(path string) (string, error) {
 	if !info.Mode().IsRegular() {
 		return "", fmt.Errorf("%s: bundle signing key must be a regular file", path)
 	}
-	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
-		return "", fmt.Errorf("%s: bundle signing key must have mode 0600", path)
+	if err := checkSigningKeyPermissions(path, info); err != nil {
+		return "", err
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
