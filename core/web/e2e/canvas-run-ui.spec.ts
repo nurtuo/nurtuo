@@ -284,7 +284,7 @@ test("editing HTTP authentication clears stale credentials and clears the token 
   await login(page);
   await page.getByRole("button", { name: "Connections" }).click();
   const d = page.getByRole("dialog", { name: "Connections" });
-  await d.locator('[data-connection="web"]').click();
+  await d.locator('[data-connection="web"] code').click();
   await expect(d.getByLabel("baseUrl")).toHaveValue("https://example.com");
   await expect(d.getByLabel("username")).toHaveValue("demo");
   await expect(d.getByLabel("password")).toHaveValue("");
@@ -312,7 +312,7 @@ test("editing PostgreSQL prefills settings and explicitly removes the stored pas
   await login(page);
   await page.getByRole("button", { name: "Connections" }).click();
   const d = page.getByRole("dialog", { name: "Connections" });
-  await d.locator('[data-connection="db"]').click();
+  await d.locator('[data-connection="db"] code').click();
   await expect(d.getByLabel("host", { exact: true })).toHaveValue(settings.host);
   await expect(d.getByLabel("port", { exact: true })).toHaveValue("5433");
   await expect(d.getByLabel("database")).toHaveValue(settings.database);
