@@ -170,19 +170,21 @@ The control plane child gets `DATABASE_URL` (the embedded Postgres, user `nurtuo
 `nurtuo`, `sslmode=disable`, on a free loopback port), `PORT`, the mTLS runtime gateway
 (`GATEWAY_CERT`, `GATEWAY_KEY`, `GATEWAY_CA` from `secrets/`, `GATEWAY_PORT` from `--gateway-addr`)
 and authentication (`NURTUO_AUTH_SECRET` and a bootstrap owner `admin@nurtuo.local`, both derived
-from `secrets/admin-token`). It is restarted with exponential
+from `secrets/admin-token`). It reads the bundle signing key from the path in
+`NURTUO_BUNDLE_SIGNING_KEY_FILE`. It is restarted with exponential
 backoff (500 ms up to 30 s); the supervisor gives up after 10 consecutive restarts that each
 ran less than 30 s, and standalone then exits with an error. Standalone waits up to 60 s for the
 control plane to answer `GET /`.
 
-Limitation (#58, phase 2 tracked in #64): standalone has no bundle source yet (`bundle_dir` is not
-set), so the runtime connects but cannot run deployments. They are reported as `error` with
-"no bundle_dir configured" and appear as `failed` in the control plane, never `running`. Running
-flows in standalone still needs the standalone bundle directory and signing-key setup.
+Standalone signs revisions whose digest is derived by the control plane. The runtime trusts
+the install's Ed25519 public key and fetches and verifies signed bundles over the outbound
+mTLS gateway. Deployments populate `<data-dir>/bundles` automatically, including when a CI
+job starts with an empty data directory. Revisions submitted with an explicit digest still
+require the matching signed archive in the cache.
 
-The control plane serves the runtime gateway (mTLS, TLS 1.3, runtime identity taken from the client
-certificate) on `--gateway-addr`. Nothing was run end to end against a real embedded PostgreSQL; the
-pieces are covered by unit and cross-language interop tests.
+On the first start after upgrading, standalone creates the bundle cache and the signing key.
+The control plane resends desired state when the runtime reconnects, allowing deployments that
+previously failed with “no bundle_dir configured” to run. The upgrade needs no data migration.
 
 Default data directory (`NURTUO_DATA_DIR` overrides everything):
 
@@ -200,25 +202,32 @@ Default data directory (`NURTUO_DATA_DIR` overrides everything):
   postgres/runtime/    extracted PostgreSQL binaries
   postgres/cache/      downloaded binary cache
   logs/control-plane.log   control plane output (also echoed to stderr)
+  bundles/             verified signed archives, mode 0700 (Windows: private DACL)
   secrets/             mode 0700 (Windows: private DACL, see below)
     ca.pem             local CA (ECDSA P-256, valid 10 years)
     server.pem, server.key   control plane server certificate (2 years)
     client.pem, client.key   runtime client certificate (2 years, key mode 0600)
+    bundle-signing.key   install-local Ed25519 seed reused across restarts (mode 0600)
     db-password        random database password (mode 0600)
     admin-token        random admin token (mode 0600): control plane auth secret and password of admin@nurtuo.local
 ```
 
-On Windows, `secrets\` and everything in it get a protected DACL for the running account,
+On Windows, `secrets\`, `bundles\` and their contents get private DACLs for the running account,
 `SYSTEM` and `BUILTIN\Administrators` only (other local users cannot read it or create files in
 it). Each `nurtuo standalone` start verifies it and tightens a too-open DACL, printing
 `standalone: tightened permissions on <path>` to stderr; an install made before this change is
-repaired this way on its first start. If an object in `secrets\` is owned by another account, the
+repaired this way on its first start. If an object in either directory is owned by another account, the
 start is refused (exit 1) with the path and the owner SID: check the contents, then remove it or
 take ownership. If the material may have been read by other local users before the upgrade, rotate
 the connection secrets, the admin token and the database password. Details and the rules for
 operator-chosen `dir` / `encrypted-file` paths (checked, never changed, with `icacls` fix guidance):
 [security.md](security.md#windows-private-secrets-directory). The rest of the data root keeps the
 inherited ACL (issue [#78](https://github.com/nurtuo/nurtuo/issues/78)).
+
+Bootstrap reuses the signing key on each start. Keep it in the standalone backup alongside
+the other secrets. If bootstrap reports a corrupt key, restore it from backup. Removing it
+creates a new key on the next start and changes the archive digests produced by the control
+plane. Standalone has no automatic signing key rotation.
 
 Bootstrap is idempotent: existing secrets are reused. Certificates are issued for `localhost`,
 `127.0.0.1` and `::1`. There is no automatic renewal: when the 2-year leaf certificates expire,

@@ -3,8 +3,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -36,15 +38,9 @@ func repoRoot() string {
 // TestStandaloneE2EHandshakeAndDeploy runs the standalone stack as `nurtuo standalone` wires it
 // (real bootstrapper, the real control plane main.js as a supervised node child with auth and
 // the mTLS gateway, runtime registration, runtime.Run with the standalone client certificate),
-// deploys a flow over the authenticated REST API and waits for the runtime to report it failed
-// ("no bundle_dir configured") through the gateway session. It then restarts the stack on the same data directory and deploys
-// again. Embedded PostgreSQL is replaced by the control plane's in-memory repository, or by an
-// external server when NURTUO_TEST_POSTGRES_URL is set (the test seeds a fixed admin token so
-// reruns against the same database can log in).
-//
-// runRealRuntime sets no BundleDir until FetchArtifact lands (#64), so the placeholder deployer
-// refuses the deployment; the test proves session acceptance, desired-state delivery and honest
-// status reporting, not that the flow's engine starts.
+// deploys through the authenticated REST API with an empty cache, then restarts the
+// stack and confirms it runs from the same verified archive. The control plane uses
+// its in-memory repository unless NURTUO_TEST_POSTGRES_URL points to an external server.
 func TestStandaloneE2EHandshakeAndDeploy(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: skipped with -short")
@@ -70,12 +66,58 @@ func TestStandaloneE2EHandshakeAndDeploy(t *testing.T) {
 		}
 	}
 
-	for run := 1; run <= 2; run++ {
-		t.Run(fmt.Sprintf("start%d", run), func(t *testing.T) { standaloneE2ERun(t, node, entry, dirs, dsn) })
+	var componentID, digest string
+	t.Run("fetch", func(t *testing.T) {
+		componentID = standaloneE2ERun(t, node, entry, dirs, dsn, "", "")
+	})
+	if t.Failed() {
+		return
+	}
+	archives, err := filepath.Glob(filepath.Join(dirs.Bundles, "*.bundle"))
+	if err != nil || len(archives) != 1 {
+		t.Fatalf("want one fetched bundle, got %d (glob error %v)", len(archives), err)
+	}
+	archive := archives[0]
+	data, err := os.ReadFile(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest = fmt.Sprintf("sha256:%x", sha256.Sum256(data))
+	if filepath.Base(archive) != strings.TrimPrefix(digest, "sha256:")+".bundle" {
+		t.Fatal("cached bundle filename does not match its archive digest")
+	}
+	// Mark the file so the restart distinguishes a cache hit from a fresh download.
+	marker := time.Unix(1_700_000_000, 0)
+	if err := os.Chtimes(archive, marker, marker); err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(dirs.Secrets, "bundle-signing.key")
+	before, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Run("cache hit after restart", func(t *testing.T) {
+		standaloneE2ERun(t, node, entry, dirs, dsn, componentID, digest)
+	})
+	after, err := os.ReadFile(keyPath)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatal("signing key changed on restart")
+	}
+	info, err := os.Stat(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.ModTime().Equal(marker) {
+		t.Fatal("restart replaced the cached archive")
+	}
+	archives, err = filepath.Glob(filepath.Join(dirs.Bundles, "*.bundle"))
+	if err != nil || len(archives) != 1 {
+		t.Fatalf("want the original cached bundle after restart, got %d (glob error %v)", len(archives), err)
 	}
 }
 
-func standaloneE2ERun(t *testing.T, node, entry string, dirs DataDirs, dsn string) {
+func standaloneE2ERun(t *testing.T, node, entry string, dirs DataDirs, dsn, compID, digest string) string {
+	t.Helper()
 	restPort, err := freePort()
 	if err != nil {
 		t.Fatal(err)
@@ -163,11 +205,25 @@ func standaloneE2ERun(t *testing.T, node, entry string, dirs DataDirs, dsn strin
 		_ = json.Unmarshal([]byte(raw), &m)
 		return m
 	}
-	sfx := make([]byte, 4)
-	_, _ = rand.Read(sfx)
-	comp := call(http.MethodPost, "v1/components", map[string]any{"name": "e2e-" + hex.EncodeToString(sfx), "kind": "flow"}, http.StatusCreated)
-	compID := comp["id"].(string)
-	call(http.MethodPost, "v1/components/"+compID+"/revisions", map[string]any{"content": map[string]any{"name": "e2e", "steps": []any{}}}, http.StatusCreated)
+	// The in-memory repository starts empty each time. On restart point the new
+	// revision at the first run's digest, which can only be served by the local cache.
+	// With Postgres, redeploy the original revision and let the server derive its digest.
+	if compID == "" || dsn == "" {
+		sfx := make([]byte, 4)
+		_, _ = rand.Read(sfx)
+		comp := call(http.MethodPost, "v1/components", map[string]any{"name": "e2e-" + hex.EncodeToString(sfx), "kind": "flow"}, http.StatusCreated)
+		compID = comp["id"].(string)
+		revision := map[string]any{"content": json.RawMessage(`{
+			"schema":"nurtuo.flow/v1","id":"standalone-e2e","name":"Standalone E2E","revision":1,
+			"steps":[{"id":"start","kind":"start","config":{"type":"manual"}},
+			         {"id":"return","kind":"returnDocuments","config":{}}],
+			"edges":{"start:default":"return"}
+		}`)}
+		if digest != "" {
+			revision["digest"] = digest
+		}
+		call(http.MethodPost, "v1/components/"+compID+"/revisions", revision, http.StatusCreated)
+	}
 	dep := call(http.MethodPost, "v1/deployments", map[string]any{"componentId": compID, "revision": 1, "runtimeId": standaloneRuntimeID}, http.StatusAccepted)
 	depID := dep["deployment"].(map[string]any)["id"].(string)
 
@@ -180,11 +236,8 @@ func standaloneE2ERun(t *testing.T, node, entry string, dirs DataDirs, dsn strin
 			break
 		}
 	}
-	if status != "failed" {
-		t.Fatalf("deployment status %q, want failed (no bundle_dir; never running) (gateway handshake or desired-state delivery failed)\nlog:\n%s", status, log)
-	}
-	if !strings.Contains(message, "bundle_dir") {
-		t.Fatalf("deployment message %q, want it to name bundle_dir\nlog:\n%s", message, log)
+	if status != "running" {
+		t.Fatalf("deployment status %q, want running (message %q)\nlog:\n%s", status, message, log)
 	}
 	if strings.Contains(log.String(), "does not match certificate identity") {
 		t.Fatalf("gateway refused the runtime identity\nlog:\n%s", log)
@@ -195,4 +248,5 @@ func standaloneE2ERun(t *testing.T, node, entry string, dirs DataDirs, dsn strin
 	}
 	_, _, _ = apiCall(ctx, hc, http.MethodPost, base+"v1/auth/logout", jwt, nil)
 	stop()
+	return compID
 }

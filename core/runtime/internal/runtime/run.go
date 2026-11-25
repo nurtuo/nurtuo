@@ -166,9 +166,6 @@ var errNoBundleDir = errors.New("no bundle_dir configured: the runtime cannot ru
 
 // unconfiguredDeployer is the placeholder used when no bundle_dir is set. It refuses every
 // deployment, so the supervisor reports "error" and never "running" for something nothing started.
-//
-// TODO(#64): phase 2 of docs/specs/2026-11-23-runtime-bundle-dir.md: FetchArtifact plus a
-// standalone BundleDir and local signing key replace this placeholder for `nurtuo standalone`.
 type unconfiguredDeployer struct{}
 
 func newUnconfiguredDeployer() *unconfiguredDeployer { return &unconfiguredDeployer{} }

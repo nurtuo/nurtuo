@@ -20,6 +20,7 @@ type DataDirs struct {
 	PGCache  string // downloaded binary cache
 	Logs     string
 	Secrets  string // CA, certs, tokens (0700 / private DACL on Windows)
+	Bundles  string // verified bundle cache (0700 / private DACL on Windows)
 }
 
 // DefaultDataRoot returns the per-OS default data directory. env supplies lookups
@@ -61,26 +62,44 @@ func NewDataDirs(root string) DataDirs {
 		PGCache:  filepath.Join(root, "postgres", "cache"),
 		Logs:     filepath.Join(root, "logs"),
 		Secrets:  filepath.Join(root, "secrets"),
+		Bundles:  filepath.Join(root, "bundles"),
 	}
 }
 
-// Ensure creates all directories; Secrets is private (see EnsureReport).
+// Ensure creates all directories, including the private secrets and bundles directories.
 func (d DataDirs) Ensure() error {
 	_, err := d.EnsureReport()
 	return err
 }
 
-// EnsureReport creates all directories and makes Secrets private: 0700 on Unix; on Windows a
-// protected DACL for this account, SYSTEM and Administrators, repairing an existing too-open
-// secrets tree and failing closed on a foreign owner (secrets.EnsurePrivateDir). It returns the
-// paths whose permissions were tightened (always none on Unix).
+// EnsureReport creates the layout and reports paths whose Windows DACLs were tightened.
+// The bundle cache is also tightened to 0700 on Unix.
 func (d DataDirs) EnsureReport() ([]string, error) {
 	for _, p := range []string{d.Postgres, d.PGRun, d.PGCache, d.Logs} {
 		if err := os.MkdirAll(p, 0o755); err != nil {
 			return nil, err
 		}
 	}
-	return secrets.EnsurePrivateDir(d.Secrets)
+	repairedSecrets, err := secrets.EnsurePrivateDir(d.Secrets)
+	if err != nil {
+		return repairedSecrets, err
+	}
+	repairedBundles, err := secrets.EnsurePrivateDir(d.Bundles)
+	if err == nil && runtime.GOOS != "windows" {
+		err = tightenBundleDir(d.Bundles)
+	}
+	return append(repairedSecrets, repairedBundles...), err
+}
+
+func tightenBundleDir(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s: bundle cache must be a directory", path)
+	}
+	return os.Chmod(path, 0o700)
 }
 
 // ensureDataDirs runs EnsureReport and prints every path whose permissions were tightened.
