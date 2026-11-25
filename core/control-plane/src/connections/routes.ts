@@ -10,7 +10,7 @@ import { validHostKey } from "./host-key.js";
 import { validatePrivateKey } from "./private-key.js";
 import type { ConnectionRepository, Connection } from "./repository.js";
 import { MAX_SECRET_BYTES, type SecretStore } from "./secrets.js";
-import { secretFields, secretRefs, validateConnection, validateConnectionId } from "./validate.js";
+import { credentialSlots, WORKSPACE_CONNECTORS, secretFields, secretRefs, validateConnection, validateConnectionId } from "./validate.js";
 
 export interface ConnectionDeps {
   connections: ConnectionRepository;
@@ -103,7 +103,7 @@ export function connectionEndpoints(d: ConnectionDeps): Record<string, Endpoint>
       const b = obj(c.req.body);
       const input = obj(b.settings);
       const connector = b.connector;
-      if (connector !== "sftp") throw new ApiError(400, "not_allowed_in_test_run", "only SFTP connections are supported");
+      if (typeof connector !== "string" || !(WORKSPACE_CONNECTORS as readonly string[]).includes(connector)) throw new ApiError(400, "not_allowed_in_test_run", "choose SFTP, HTTP or PostgreSQL");
       const credentials = b.credentials === undefined ? {} : obj(b.credentials);
       const fields = secretFields(connector);
       checkSecretPlacement(connector, input, false);
@@ -117,7 +117,13 @@ export function connectionEndpoints(d: ConnectionDeps): Record<string, Endpoint>
         await reconcile(ws, id);
         if (!(await c.service.repo.getWorkspace(ws))) throw notFound();
         const before = await d.connections.get(ws, id);
+        if (before && before.connector !== connector) throw new ApiError(409, "connection_type_conflict", "create a new connection to change the connector");
         const settings = { ...before?.settings, ...input };
+        if (connector === "http") {
+          const auth = input.auth === undefined ? {} : obj(input.auth);
+          settings.auth = { ...credentialSlots(connector, before?.settings ?? {}), ...auth };
+        }
+        const slots = credentialSlots(connector, settings);
         const incarnation = before?.incarnation ?? randomUUID();
         const generation = randomUUID();
         const created = new Map<string, string>();
@@ -129,17 +135,19 @@ export function connectionEndpoints(d: ConnectionDeps): Record<string, Endpoint>
           const value = credentials[field];
           if (typeof value === "string") {
             const name = `credential-${randomUUID()}`;
-            settings[field] = `secret://${name}`;
+            slots[field] = `secret://${name}`;
             created.set(name, value);
-          } else delete settings[field];
+          } else delete slots[field];
         }
-        applyTrust(settings, input);
-        if (input.hostKeyPolicy === "fingerprint") delete settings.knownHosts;
-        if ((!settings.password && !settings.privateKey) || (settings.passphrase && !settings.privateKey)) {
-          throw new ApiError(400, "invalid_credential_set", "enter a password or private key; a passphrase requires a private key");
+        if (connector === "sftp") {
+          applyTrust(settings, input);
+          if (input.hostKeyPolicy === "fingerprint") delete settings.knownHosts;
+          if ((!settings.password && !settings.privateKey) || (settings.passphrase && !settings.privateKey)) {
+            throw new ApiError(400, "invalid_credential_set", "enter a password or private key; a passphrase requires a private key");
+          }
         }
         const write = { id, connector, settings: validateConnection(connector, settings), incarnation, generation };
-        if (write.settings.hostKeyPolicy !== "fingerprint") throw new ApiError(400, "host_key_policy_not_supported", "enter a host key fingerprint");
+        if (connector === "sftp" && write.settings.hostKeyPolicy !== "fingerprint") throw new ApiError(400, "host_key_policy_not_supported", "enter a host key fingerprint");
         const refs = secretRefs(connector, write.settings);
         const values = new Map<string, string>();
         for (const { field, name } of refs) {

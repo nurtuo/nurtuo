@@ -590,7 +590,7 @@ export interface paths {
         /** @description EXPERIMENTAL. A connection of another workspace answers 404, like a missing one. */
         get: operations["getConnection"];
         /**
-         * @description EXPERIMENTAL. Creates (201) or updates (200) an SFTP connection. Omitted settings are preserved.
+         * @description EXPERIMENTAL. Creates (201) or updates (200) an SFTP, HTTP or PostgreSQL connection. Omitted settings are preserved.
          *     Credentials are write-only. An omitted field keeps its current version, a nonempty string sets a new
          *     version, and null removes it. Changes to destination, trust or authentication fields require re-entry
          *     of every retained credential (409 credential_rebind_required). Credential changes require a browser
@@ -2115,12 +2115,14 @@ export interface operations {
                 "application/json": {
                     /** @example sftp */
                     connector: string;
-                    /** @description Nonsecret settings, including a pinned fingerprint or a pasted known_hosts entry. */
+                    /** @description Nonsecret connector settings. HTTP auth settings are nested under auth. SFTP requires a fingerprint or a pasted known_hosts entry. */
                     settings: Record<string, never>;
                     credentials?: {
                         password?: string | null;
                         privateKey?: string | null;
                         passphrase?: string | null;
+                        token?: string | null;
+                        apiKeyValue?: string | null;
                     };
                 };
             };
