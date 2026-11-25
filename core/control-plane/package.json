@@ -13,7 +13,7 @@
     "openapi.yaml"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/copy-schemas.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "echo 'lint: TODO (eslint)'",
     "test": "node --test \"dist/**/*.test.js\""

@@ -51,6 +51,11 @@ migrations `0103_auth_seed_roles.sql` and `0104_auth_seed_connection_permissions
 On upgrade, migration `0104_auth_seed_connection_permissions.sql` grants the new permissions to
 existing workspaces. Existing editors gain `connection:write` and `secret:write` on deployment.
 
+Saving an SFTP private key requires the control plane to run the `nurtuo` binary for key validation.
+`nurtuo standalone` sets `NURTUO_FLOW_RUN_BIN` automatically. For a separately started control
+plane, set it to the binary's absolute path or put `nurtuo` on the control plane's `PATH`.
+If the validator cannot start, the save returns HTTP 503.
+
 Canvas Run permissions (experimental): `connection:read` is held by owner, admin, editor, viewer and
 deployer; `connection:write`, `connection:delete`, `secret:write`, `secret:delete` and
 `test_run:execute` by owner, admin and editor; `runtime` holds none of them. Secret values have no read

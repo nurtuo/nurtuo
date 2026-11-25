@@ -245,6 +245,51 @@ paths:
         - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
         - { name: cursor, in: query, schema: { type: string } }
       responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/AuditPage" } } } }, "400": { $ref: "#/components/responses/Error" }, "404": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+  /v1/workspaces/{ws}/connections:
+    parameters: [ { $ref: "#/components/parameters/Ws" } ]
+    get:
+      operationId: listConnections
+      description: |
+        EXPERIMENTAL (canvas Run). Workspace connections. Secret fields are shown only as `secret://<name>`;
+        `secrets` reports whether each referenced secret is `set` or `missing`.
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/ConnectionList" } } } }, "404": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+  /v1/workspaces/{ws}/connections/{id}:
+    parameters: [ { $ref: "#/components/parameters/Ws" }, { $ref: "#/components/parameters/Id" } ]
+    get:
+      operationId: getConnection
+      description: EXPERIMENTAL. A connection of another workspace answers 404, like a missing one.
+      responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Connection" } } } }, "404": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
+    put:
+      operationId: putConnection
+      description: |
+        EXPERIMENTAL. Creates (201) or updates (200) an SFTP connection. Omitted settings are preserved.
+        Credentials are write-only. An omitted field keeps its current version, a nonempty string sets a new
+        version, and null removes it. Changes to destination, trust or authentication fields require re-entry
+        of every retained credential (409 credential_rebind_required). Credential changes require a browser
+        session, CSRF, the applicable secret permission and trusted HTTPS or loopback.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [connector, settings]
+              properties:
+                connector: { type: string, example: sftp }
+                settings: { type: object, description: "Nonsecret settings, including a pinned fingerprint or a pasted known_hosts entry." }
+                credentials:
+                  type: object
+                  writeOnly: true
+                  additionalProperties: false
+                  properties:
+                    password: { type: string, nullable: true, writeOnly: true }
+                    privateKey: { type: string, nullable: true, writeOnly: true }
+                    passphrase: { type: string, nullable: true, writeOnly: true }
+      responses: { "200": { description: Updated, content: { application/json: { schema: { $ref: "#/components/schemas/Connection" } } } }, "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/Connection" } } } }, "400": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" }, "413": { $ref: "#/components/responses/PayloadTooLarge" }, "404": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" }, "503": { $ref: "#/components/responses/Error" } }
+    delete:
+      operationId: deleteConnection
+      description: EXPERIMENTAL.
+      responses: { "204": { description: Deleted }, "404": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
 components:
   securitySchemes:
     bearerAuth: { type: http, scheme: bearer, description: "API token (nrt_...) or session JWT" }
@@ -263,6 +308,9 @@ components:
     NotImplemented:
       description: Planned feature, not implemented yet
       content: { application/json: { schema: { $ref: "#/components/schemas/ErrorBody" } } }
+    PayloadTooLarge:
+      description: Request exceeds the operation body limit (`payload_too_large`)
+      content: { application/json: { schema: { $ref: "#/components/schemas/ErrorBody" } } }
     Error:
       description: Error
       content: { application/json: { schema: { type: object, properties: { error: { type: object, properties: { code: { type: string }, message: { type: string } } } } } } }
@@ -274,6 +322,8 @@ components:
     TokenCreated: { type: object, properties: { id: { type: string }, name: { type: string }, prefix: { type: string }, scopes: { type: array, items: { type: string } }, expiresAt: { type: string, format: date-time }, token: { type: string, description: Shown once } } }
     AuditEntry: { type: object, properties: { id: { type: string }, seq: { type: integer }, ts: { type: string, format: date-time }, workspaceId: { type: string, nullable: true }, actorType: { type: string, enum: [user, token, anonymous] }, actorId: { type: string, nullable: true }, action: { type: string }, resource: { type: string }, resourceId: { type: string, nullable: true }, beforeHash: { type: string, nullable: true }, afterHash: { type: string, nullable: true }, ip: { type: string, nullable: true }, requestId: { type: string }, status: { type: integer }, metadata: { type: object } } }
     AuditPage: { type: object, properties: { items: { type: array, items: { $ref: "#/components/schemas/AuditEntry" } }, nextCursor: { type: string, nullable: true } } }
+    Connection: { type: object, properties: { id: { type: string }, connector: { type: string }, settings: { type: object, description: "Secret fields hold secret:// references only" }, secrets: { type: object, additionalProperties: { type: string, enum: [set, missing] } }, updatedAt: { type: string, format: date-time } } }
+    ConnectionList: { type: object, properties: { items: { type: array, items: { $ref: "#/components/schemas/Connection" } } } }
     ComponentKind: { type: string, enum: [flow, map, connector, script] }
     DeploymentStatus: { type: string, enum: [pending, running, failed, stopped] }
     ComponentCreate:

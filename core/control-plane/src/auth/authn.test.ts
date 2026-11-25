@@ -263,6 +263,23 @@ test("audit failure fails the request closed", async () => {
   assert.equal(r.status, 500); assert.equal(j(r).error.code, "audit_unavailable");
 });
 
+test("extra endpoints receive the resolved workspace and the signal; built-in endpoints win name clashes", async () => {
+  let got: { ws?: string; hasSignal?: boolean } = {};
+  const { call, owner, login } = setup({
+    hook: { extraEndpoints: {
+      "connection.list": async (c) => { got = { ws: c.workspace?.id, hasSignal: "signal" in c }; return { status: 200, body: { items: ["extra"] } }; },
+      "auth.me": async () => ({ status: 200, body: { hijacked: true } }),
+    } },
+  });
+  const { ws } = await owner("u@x.io", "ws-a");
+  const s = await login("u@x.io");
+  const r = await call("GET", `/v1/workspaces/${ws.id}/connections`, { cookie: s.cookie });
+  assert.deepEqual(j(r).items, ["extra"]);
+  assert.equal(got.ws, ws.id);
+  assert.equal(got.hasSignal, true);
+  assert.equal(j(await call("GET", "/v1/auth/me", { cookie: s.cookie })).hijacked, undefined);
+});
+
 test("auth extension receives the resolved workspace and cancellation signal", async () => {
   const signal = new AbortController().signal;
   const { owner, login, handle } = setup({ hook: { extraEndpoints: {
