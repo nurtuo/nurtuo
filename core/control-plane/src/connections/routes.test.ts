@@ -67,6 +67,23 @@ test("client references, insecure trust and invalid credential combinations are 
   assert.equal(j(combination).error.code, "credential_rebind_required");
 });
 
+test("connection save returns 503 when the private key validator cannot start", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "sftp-key-validator-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const previous = process.env.NURTUO_FLOW_RUN_BIN;
+  process.env.NURTUO_FLOW_RUN_BIN = join(dir, "missing");
+  t.after(() => {
+    if (previous === undefined) delete process.env.NURTUO_FLOW_RUN_BIN;
+    else process.env.NURTUO_FLOW_RUN_BIN = previous;
+  });
+
+  const { put, get } = await world();
+  const result = await put({ ...sftpConn(), credentials: { privateKey: "unused" } });
+  assert.equal(result.status, 503);
+  assert.equal(j(result).error.code, "private_key_validation_unavailable");
+  assert.equal((await get()).status, 404);
+});
+
 test("connection save validates OpenSSH keys and passphrases using the runtime", { skip: !process.env.NURTUO_FLOW_RUN_BIN }, async (t) => {
   const { put, get } = await world();
   const dir = mkdtempSync(join(tmpdir(), "sftp-key-test-"));
