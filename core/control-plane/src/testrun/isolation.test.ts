@@ -8,9 +8,9 @@ test("a run in workspace A never uses B's connections or secrets (fake binary re
   const { ws: a } = await w.owner("a@x.io", "ws-a");
   const { ws: b } = await w.owner("b@x.io", "ws-b");
   const A = await w.login("a@x.io"), B = await w.login("b@x.io");
-  const as = (s: typeof A) => ({ cookie: s.cookie, csrf: s.csrf });
-  await w.call("PUT", `/v1/workspaces/${b.id}/connections/only-b`, { ...as(B), body: { ...sftpConn(), credentials: { password: "B-SECRET-VALUE" } } });
-  await w.call("PUT", `/v1/workspaces/${a.id}/connections/c1`, { ...as(A), body: { ...sftpConn(), credentials: { password: "A-SECRET-VALUE" } } });
+  const as = (s: typeof A) => ({ cookie: s.cookie, csrf: s.csrf, ip: "127.0.0.1" });
+  assert.equal((await w.call("PUT", `/v1/workspaces/${b.id}/connections/only-b`, { ...as(B), body: { ...sftpConn(), credentials: { password: "B-SECRET-VALUE" } } })).status, 201);
+  assert.equal((await w.call("PUT", `/v1/workspaces/${a.id}/connections/c1`, { ...as(A), body: { ...sftpConn(), credentials: { password: "A-SECRET-VALUE" } } })).status, 201);
 
   // A names a connection that exists only in B: the same 404 as for a missing id
   const foreign = await w.call("POST", `/v1/workspaces/${a.id}/test-runs`, { ...as(A), body: { flow: flowOf("only-b") } });

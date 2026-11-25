@@ -32,6 +32,9 @@ export function App() {
 
   const cp = useMemo(() => new ControlPlane(), []);
   const [online, setOnline] = useState(true);
+  const [restoring, setRestoring] = useState(() => Boolean(localStorage.getItem(SESSION_HINT)));
+  const signingIn = useRef(false);
+  const restore = useRef<ReturnType<ControlPlane["me"]> | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const [connections, setConnections] = useState<ConnectionItem[] | null>(null);
@@ -60,7 +63,14 @@ export function App() {
   // Restore the session (and the CSRF token) after a reload.
   useEffect(() => {
     if (!localStorage.getItem(SESSION_HINT)) return;
-    cp.me().then((me) => (me ? enter(me) : leave()), (e) => { if (e instanceof OfflineError) setOnline(false); });
+    let active = true;
+    restore.current ??= cp.me();
+    restore.current.then((me) => {
+      if (active) me ? enter(me) : leave();
+    }, (error) => {
+      if (active && error instanceof OfflineError) setOnline(false);
+    }).finally(() => { if (active) setRestoring(false); });
+    return () => { active = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cp]);
 
@@ -83,6 +93,8 @@ export function App() {
   }, [workspaceId]);
 
   const onLogin = async (email: string, password: string): Promise<string | null> => {
+    if (restoring || signingIn.current) return null;
+    signingIn.current = true;
     try {
       const me = await cp.login(email, password);
       if (!me) return "Sign-in failed";
@@ -92,6 +104,8 @@ export function App() {
     } catch (e) {
       if (e instanceof OfflineError) setOnline(false);
       return e instanceof ApiError ? e.message : describeApiError(e);
+    } finally {
+      signingIn.current = false;
     }
   };
   const onLogout = async () => {
@@ -194,7 +208,7 @@ export function App() {
         <button disabled={!online || !session || !workspace} title={session ? "" : "Sign in to manage connections"} onClick={() => setShowConnections(true)}>Connections</button>
         <button disabled={runDisabledReason !== null} title={runDisabledReason ?? "Run this flow against your workspace connections"} onClick={() => setShowRun(true)}>Run</button>
         <span className="sep" />
-        <LoginBar session={session} workspaceId={workspaceId} online={online} onLogin={onLogin} onLogout={onLogout}
+        <LoginBar session={session} workspaceId={workspaceId} online={online} restoring={restoring} onLogin={onLogin} onLogout={onLogout}
           onWorkspace={changeWorkspace} />
         <input ref={fileRef} type="file" accept="application/json,.json" hidden
           onChange={(e) => { const f = e.target.files?.[0]; if (f) void onLoad(f); e.target.value = ""; }} />

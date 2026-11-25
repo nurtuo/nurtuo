@@ -1,23 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { PgAuthRepository } from "../auth/pg-repository.js";
-import { migrate, type Db } from "../pg-repository.js";
+import { migrate } from "../pg-repository.js";
 import { PgConnectionRepository } from "./pg-repository.js";
+import { openTestSchema } from "../pg-test-schema.js";
 
 const url = process.env.DATABASE_URL;
 test("postgres connection repository: migration 0300, workspace-keyed queries, cascade", { skip: !url && "DATABASE_URL not set" }, async () => {
-  const mod = "pg";
-  const pg = (await import(mod)) as { default: { Pool: new (o: { connectionString: string }) => Db & { end(): Promise<void> } } };
-  const schema = `test_connections_${randomBytes(8).toString("hex")}`;
-  const admin = new pg.default.Pool({ connectionString: url! });
-  const isolated = new URL(url!);
-  isolated.searchParams.set("options", `-c search_path=${schema}`);
-  const pool = new pg.default.Pool({ connectionString: isolated.toString() });
+  const { pool, close } = await openTestSchema(url!);
   try {
-    await admin.query(`CREATE SCHEMA ${schema}`);
     await migrate(pool, fileURLToPath(new URL("../../migrations", import.meta.url)));
     const auth = new PgAuthRepository(pool);
     const suffix = Math.random().toString(36).slice(2, 8);
@@ -30,12 +23,23 @@ test("postgres connection repository: migration 0300, workspace-keyed queries, c
     assert.equal(await repo.get(wb.id, "c"), undefined);
     assert.equal((await repo.get(wa.id, "c"))?.settings.host, "h2");
     assert.equal((await repo.list(wa.id)).length, 1);
+    await assert.rejects(repo.put(wa.id, { id: "c", connector: "sftp", settings: { host: "rolled-back" } }, async () => {
+      throw new Error("audit unavailable");
+    }), /audit unavailable/);
+    assert.equal((await repo.get(wa.id, "c"))?.settings.host, "h2");
+    await repo.put(wa.id, { id: "c", connector: "sftp", settings: { host: "audited" } }, async (created, append) => {
+      assert.equal(created, false);
+      assert.ok(append);
+      await append({
+        workspaceId: wa.id, actorType: "user", actorId: u.id, action: "connection.put",
+        resource: "connection", resourceId: "c", beforeHash: null, afterHash: null,
+        ip: null, requestId: "pg-connection-test", status: 200, metadata: {},
+      });
+    });
+    assert.equal((await repo.get(wa.id, "c"))?.settings.host, "audited");
+    assert.equal((await pool.query("SELECT status FROM audit_log WHERE request_id=$1", ["pg-connection-test"])).rows[0]?.status, 200);
     await auth.deleteWorkspace(wa.id);
     assert.equal((await pool.query("SELECT count(*)::int AS n FROM connections WHERE workspace_id=$1", [wa.id])).rows[0].n, 0);
     await auth.deleteWorkspace(wb.id);
-  } finally {
-    await pool.end();
-    try { await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`); }
-    finally { await admin.end(); }
-  }
+  } finally { await close(); }
 });

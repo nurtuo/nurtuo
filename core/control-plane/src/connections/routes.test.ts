@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash, generateKeyPairSync } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { j, setup, sftpConn } from "../auth/test-util.js";
 
@@ -8,7 +12,7 @@ async function world() {
   const w = setup();
   const { ws } = await w.owner("o@x.io", "ws-a");
   const owner = await w.login("o@x.io");
-  const auth = { cookie: owner.cookie, csrf: owner.csrf };
+  const auth = { cookie: owner.cookie, csrf: owner.csrf, ip: "127.0.0.1" };
   const base = `/v1/workspaces/${ws.id}`;
   const put = (body: unknown) => w.call("PUT", `${base}/connections/c1`, { ...auth, body });
   const get = () => w.call("GET", `${base}/connections/c1`, auth);
@@ -41,7 +45,6 @@ test("settings edits keep the exact credential version and untouched settings", 
 
 test("client references, insecure trust and invalid credential combinations are refused", async () => {
   const { put, get } = await world();
-  const { privateKey } = generateKeyPairSync("ed25519", { privateKeyEncoding: { format: "pem", type: "pkcs8" }, publicKeyEncoding: { format: "pem", type: "spki" } });
   for (const [body, code] of [
     [sftpConn({ password: "secret://another" }), "secret_ref_not_allowed"],
     [sftpConn({ user: "secret://another" }), "secret_ref_not_allowed"],
@@ -52,7 +55,6 @@ test("client references, insecure trust and invalid credential combinations are 
     [{ ...sftpConn(), credentials: {} }, "invalid_credential_set"],
     [{ ...sftpConn(), credentials: { password: "" } }, "invalid_credential"],
     [{ ...sftpConn(), credentials: { password: "value", passphrase: "value" } }, "invalid_credential_set"],
-    [{ ...sftpConn(), credentials: { privateKey: "invalid" } }, "invalid_credential_set"],
   ] as const) {
     const r = await put(body);
     assert.equal(r.status, 400);
@@ -61,8 +63,38 @@ test("client references, insecure trust and invalid credential combinations are 
   }
 
   assert.equal((await put(sftpConn())).status, 201);
-  const combination = await put({ connector: "sftp", settings: {}, credentials: { privateKey } });
+  const combination = await put({ connector: "sftp", settings: {}, credentials: { privateKey: "unused" } });
   assert.equal(j(combination).error.code, "credential_rebind_required");
+});
+
+test("connection save validates OpenSSH keys and passphrases using the runtime", { skip: !process.env.NURTUO_FLOW_RUN_BIN }, async (t) => {
+  const { put, get } = await world();
+  const dir = mkdtempSync(join(tmpdir(), "sftp-key-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const generateKey = (name: string, passphrase: string) => {
+    const path = join(dir, name);
+    execFileSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", passphrase, "-f", path]);
+    return readFileSync(path, "utf8");
+  };
+  const passphrase = "test passphrase";
+  const plain = generateKey("plain", "");
+  const encrypted = generateKey("encrypted", passphrase);
+  for (const credentials of [{ privateKey: "invalid" }, { privateKey: encrypted }, { privateKey: encrypted, passphrase: "incorrect" }, { privateKey: plain, passphrase }]) {
+    const result = await put({ ...sftpConn(), credentials });
+    assert.equal(result.status, 400);
+    assert.equal(j(result).error.code, "invalid_credential_set");
+    assert.equal((await get()).status, 404);
+  }
+  const saved = await put({ ...sftpConn(), credentials: { privateKey: encrypted, passphrase } });
+  assert.equal(saved.status, 201);
+  assert.deepEqual(j(saved).secrets, { privateKey: "set", passphrase: "set" });
+  const plainSave = await put({ ...sftpConn(), credentials: { privateKey: plain, passphrase: null } });
+  assert.equal(plainSave.status, 200);
+  assert.deepEqual(j(plainSave).secrets, { privateKey: "set" });
+
+  // Legacy PEM that the SFTP connector already supports remains usable.
+  assert.equal((await put({ ...sftpConn(), credentials: { password: "test password", privateKey: null } })).status, 200);
+  const { privateKey } = generateKeyPairSync("ed25519", { privateKeyEncoding: { format: "pem", type: "pkcs8" }, publicKeyEncoding: { format: "pem", type: "spki" } });
   const switched = await put({ connector: "sftp", settings: {}, credentials: { privateKey, password: null } });
   assert.equal(switched.status, 200);
   assert.deepEqual(j(switched).secrets, { privateKey: "set" });
@@ -75,6 +107,11 @@ test("a single matching known_hosts key is converted to a fingerprint", async ()
   const line = `sftp.example.com ssh-ed25519 ${publicKey.toString("base64")}`;
   const ambiguous = await put(sftpConn({ knownHosts: `${line}\n${line}` }));
   assert.equal(j(ambiguous).error.code, "known_hosts_ambiguous");
+  for (const [algorithm, blob] of [["ssh-ed25519", publicKey.subarray(0, -1)], ["ssh-rsa", publicKey]] as const) {
+    const invalid = await put(sftpConn({ knownHosts: `sftp.example.com ${algorithm} ${blob.toString("base64")}` }));
+    assert.equal(invalid.status, 400);
+    assert.equal(j(invalid).error.code, "known_hosts_ambiguous");
+  }
   const result = await put(sftpConn({ knownHosts: line }));
   assert.equal(result.status, 201);
   assert.equal(j(result).settings.knownHosts, undefined);
@@ -121,5 +158,20 @@ test("ambiguous write outcomes preserve the prior or committed credential genera
   const resolved = await get();
   assert.equal(resolved.status, 200);
   assert.equal(j(resolved).secrets.password, "set");
+  assert.equal((await secrets.list(ws.id)).length, 1);
+});
+
+test("an audit failure preserves the prior connection and credential", async (t) => {
+  const { authRepo, put, connections, secrets, ws } = await world();
+  assert.equal((await put(sftpConn())).status, 201);
+  const before = (await connections.get(ws.id, "c1"))!;
+  const prior = String(before.settings.password).slice(9);
+  const audit = t.mock.method(authRepo, "appendAudit", async () => { throw new Error("audit unavailable"); });
+  const response = await put({ connector: "sftp", settings: { port: 2222 }, credentials: { password: "replacement" } });
+  assert.equal(response.status, 500);
+  assert.equal(j(response).error.code, "audit_unavailable");
+  assert.equal(audit.mock.callCount(), 1);
+  assert.deepEqual(await connections.get(ws.id, "c1"), before);
+  assert.equal(await secrets.has(ws.id, prior), true);
   assert.equal((await secrets.list(ws.id)).length, 1);
 });
