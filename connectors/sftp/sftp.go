@@ -78,9 +78,10 @@ func (*Connector) Browse(context.Context, *connectorv1.BrowseRequest) (*connecto
 }
 
 type session struct {
-	cfg *config
-	ssh *ssh.Client
-	fs  *pkgsftp.Client
+	cfg       *config
+	ssh       *ssh.Client
+	fs        *pkgsftp.Client
+	directory *directoryReader
 	// stop disarms the ctx-cancellation watcher that closes the connection; it stays armed
 	// for the whole session so a stalled transfer is interrupted by cancellation.
 	stop func() bool
@@ -90,13 +91,15 @@ func (s *session) Close() {
 	if s.stop != nil {
 		s.stop()
 	}
-	_ = s.fs.Close()
+	// Close the socket before joining the SFTP receiver. A peer may ignore
+	// the channel close or stop sending data after a local budget rejection.
 	_ = s.ssh.Close()
+	_ = s.fs.Close()
 }
 
 // dial connects and handshakes, honouring ctx cancellation and cfg.Timeout for the whole
 // connect + SSH handshake.
-func dial(ctx context.Context, cfg *config) (*session, error) {
+func dial(ctx context.Context, cfg *config, boundedDirectory bool) (*session, error) {
 	sc, err := cfg.sshConfig()
 	if err != nil {
 		return nil, err
@@ -125,7 +128,13 @@ func dial(ctx context.Context, cfg *config) (*session, error) {
 	// The AfterFunc stays armed (until session.Close): cancelling ctx closes the connection,
 	// which unblocks any read or write in flight.
 	c := ssh.NewClient(sshConn, chans, reqs)
-	fs, err := pkgsftp.NewClient(c)
+	var fs *pkgsftp.Client
+	var directory *directoryReader
+	if boundedDirectory {
+		fs, directory, err = newDirectoryClient(c)
+	} else {
+		fs, err = pkgsftp.NewClient(c)
+	}
 	if err != nil {
 		stop()
 		_ = c.Close()
@@ -134,7 +143,7 @@ func dial(ctx context.Context, cfg *config) (*session, error) {
 		}
 		return nil, fmt.Errorf("sftp subsystem: %w", err)
 	}
-	return &session{cfg: cfg, ssh: c, fs: fs, stop: stop}, nil
+	return &session{cfg: cfg, ssh: c, fs: fs, directory: directory, stop: stop}, nil
 }
 
 func redact(msg string, secrets []string) string {
@@ -152,7 +161,7 @@ func (*Connector) Test(ctx context.Context, req *connectorv1.TestRequest) (*conn
 	if err != nil {
 		return &connectorv1.TestResponse{Diagnostic: redact(err.Error(), nil)}, nil
 	}
-	s, err := dial(ctx, cfg)
+	s, err := dial(ctx, cfg, false)
 	if err != nil {
 		return &connectorv1.TestResponse{Diagnostic: redact(err.Error(), cfg.secrets())}, nil
 	}
@@ -210,7 +219,11 @@ func (*Connector) Execute(stream connectorv1.ConnectorService_ExecuteServer) err
 	if err != nil {
 		return err
 	}
-	s, err := dial(stream.Context(), cfg)
+	var boundedDirectory bool
+	if budget, ok := stream.(outputBudget); ok && op == opList {
+		_, boundedDirectory = budget.OutputBytesRemaining()
+	}
+	s, err := dial(stream.Context(), cfg, boundedDirectory)
 	if err != nil {
 		return redactErr(err, cfg)
 	}
@@ -552,29 +565,52 @@ func (s *session) list(stream connectorv1.ConnectorService_ExecuteServer, d *doc
 	if err != nil {
 		return err
 	}
-	infos, err := s.fs.ReadDir(rp)
+	budget, bounded := stream.(outputBudget)
+	remaining := int64(0)
+	if bounded {
+		remaining, bounded = budget.OutputBytesRemaining()
+	}
+	var infos []os.FileInfo
+	if bounded {
+		infos, err = s.readBoundedDir(stream.Context(), rp, remaining)
+		if errors.Is(err, errDirectoryBudget) {
+			return budget.RejectOutputLimit()
+		}
+	} else {
+		infos, err = s.fs.ReadDir(rp)
+	}
 	if err != nil {
 		return err
 	}
-	out := make([]entry, 0, len(infos))
+	var output bytes.Buffer
+	output.WriteByte('[')
+	count := 0
 	for _, fi := range infos {
 		if isTempName(fi.Name()) {
 			continue // in-flight upload
 		}
-		if len(out) >= s.cfg.MaxListEntries {
+		if count >= s.cfg.MaxListEntries {
 			res.Tracked["truncated"] = "true"
 			break
 		}
-		out = append(out, entry{Name: fi.Name(), Path: path.Join("/", p, fi.Name()), Size: fi.Size(), IsDir: fi.IsDir(), ModTime: fi.ModTime().UTC(), Mode: fi.Mode().String()})
+		data, err := json.Marshal(entry{Name: fi.Name(), Path: path.Join("/", p, fi.Name()), Size: fi.Size(), IsDir: fi.IsDir(), ModTime: fi.ModTime().UTC(), Mode: fi.Mode().String()})
+		if err != nil {
+			return err
+		}
+		if count > 0 {
+			output.WriteByte(',')
+		}
+		if bounded && int64(output.Len()+len(data)+1) > remaining {
+			return budget.RejectOutputLimit()
+		}
+		output.Write(data)
+		count++
 	}
-	b, err := json.Marshal(out)
-	if err != nil {
-		return err
-	}
+	output.WriteByte(']')
 	outID := d.id + ".out"
 	res.OutputDocumentIds = []string{outID}
 	res.Tracked["path"] = p
-	return sendOutput(stream, outID, map[string]string{"contentType": "application/json"}, bytes.NewReader(b))
+	return sendOutput(stream, outID, map[string]string{"contentType": "application/json"}, &output)
 }
 
 func (s *session) get(stream connectorv1.ConnectorService_ExecuteServer, d *docState, dir string, res *connectorv1.DocumentResult) error {
@@ -635,7 +671,13 @@ func sendOutput(stream connectorv1.ConnectorService_ExecuteServer, id string, pr
 	buf := make([]byte, ChunkSize)
 	first := true
 	for {
-		n, err := io.ReadFull(r, buf)
+		chunk := buf
+		if budget, ok := stream.(outputBudget); ok {
+			if remaining, bounded := budget.OutputBytesRemaining(); bounded && remaining < int64(len(buf)) {
+				chunk = buf[:remaining+1]
+			}
+		}
+		n, err := io.ReadFull(r, chunk)
 		last := errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
 		if err != nil && !last {
 			return err

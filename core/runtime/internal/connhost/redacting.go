@@ -49,3 +49,20 @@ func (s *redactStream) Send(m *connectorv1.ExecuteResponse) error {
 	}
 	return s.ConnectorService_ExecuteServer.Send(m)
 }
+
+type outputBudget interface {
+	OutputBytesRemaining() (int64, bool)
+	RejectOutputLimit() error
+}
+
+// Preserve the in-process output budget when wrapping an Execute stream.
+func (s *redactStream) OutputBytesRemaining() (int64, bool) {
+	if bounded, ok := s.ConnectorService_ExecuteServer.(outputBudget); ok {
+		return bounded.OutputBytesRemaining()
+	}
+	return 0, false
+}
+
+func (s *redactStream) RejectOutputLimit() error {
+	return s.ConnectorService_ExecuteServer.(outputBudget).RejectOutputLimit()
+}
