@@ -162,3 +162,83 @@ func TestPersistentQueueListenerPausePreservesDelivery(t *testing.T) {
 		t.Fatalf("resumed queue stats = %+v, want no redeliveries or dead letters", st)
 	}
 }
+
+type pauseConfirmationBackend struct {
+	queue.QueueBackend
+	err error
+}
+
+func (b pauseConfirmationBackend) Subscribe(ctx context.Context, name string, opts queue.SubOpts, h queue.Handler) (queue.Subscription, error) {
+	sub, err := b.QueueBackend.Subscribe(ctx, name, opts, h)
+	if err != nil {
+		return nil, err
+	}
+	return pauseConfirmationSubscription{sub, b.err}, nil
+}
+
+type pauseConfirmationSubscription struct {
+	queue.Subscription
+	err error
+}
+
+func (s pauseConfirmationSubscription) Pause() error {
+	if err := s.Subscription.Pause(); err != nil {
+		return err
+	}
+	// Simulate a broker confirmation error after the local detach.
+	return s.err
+}
+
+func TestPersistentQueueListenerResumeAfterFailedPause(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	b, err := natsjs.New(natsjs.Options{StoreDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = b.Close() }()
+
+	const queueName = "orders"
+	if err := b.Ensure(ctx, queue.QueueDef{Name: queueName}); err != nil {
+		t.Fatal(err)
+	}
+	confirmationErr := errors.New("pause confirmation failed")
+	backend := pauseConfirmationBackend{QueueBackend: b, err: confirmationErr}
+	l, err := FromStart(ctx, flow.StartConfig{Type: "queue", Queue: queueName}, FactoryDeps{Queues: backend})
+	if err != nil {
+		t.Fatal(err)
+	}
+	delivered := make(chan string, 1)
+	if err := l.Start(ctx, func(_ context.Context, in *docs.Set) (*engine.Result, error) {
+		defer func() { _ = in.Close() }()
+		delivered <- in.Docs()[0].ID
+		return nil, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Stop(ctx) }()
+
+	if err := l.Pause(); !errors.Is(err, confirmationErr) {
+		t.Fatalf("Pause() = %v, want %v", err, confirmationErr)
+	}
+	if state := l.Status().State; state != StatePaused {
+		t.Fatalf("state after failed pause = %s, want paused", state)
+	}
+	if err := b.Publish(ctx, queueName, queue.Message{ID: "held", Data: []byte("x")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	if state := l.Status().State; state != StateRunning {
+		t.Fatalf("state after resume = %s, want running", state)
+	}
+	select {
+	case id := <-delivered:
+		if id != "held" {
+			t.Fatalf("delivered %q, want held", id)
+		}
+	case <-ctx.Done():
+		t.Fatal("resume did not reattach the subscription")
+	}
+}

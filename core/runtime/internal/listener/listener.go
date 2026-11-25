@@ -169,14 +169,12 @@ func (l *sourceListener) Pause() error {
 	case StatePaused:
 		return nil
 	case StateRunning:
-		if l.sub != nil {
-			if err := l.sub.Pause(); err != nil {
-				return err
-			}
-		} else {
-			l.gate = make(chan struct{})
-		}
 		l.state = StatePaused
+		if l.sub != nil {
+			// Pause detaches local delivery even if broker confirmation fails.
+			return l.sub.Pause()
+		}
+		l.gate = make(chan struct{})
 		return nil
 	}
 	return ErrState
