@@ -90,8 +90,10 @@ func (s *session) Close() {
 	if s.stop != nil {
 		s.stop()
 	}
-	_ = s.fs.Close()
+	// Close the socket before joining the SFTP receiver. A peer may ignore
+	// the channel close or stop sending data after a local budget rejection.
 	_ = s.ssh.Close()
+	_ = s.fs.Close()
 }
 
 // dial connects and handshakes, honouring ctx cancellation and cfg.Timeout for the whole
@@ -552,29 +554,69 @@ func (s *session) list(stream connectorv1.ConnectorService_ExecuteServer, d *doc
 	if err != nil {
 		return err
 	}
-	infos, err := s.fs.ReadDir(rp)
-	if err != nil {
-		return err
+	budget, bounded := stream.(outputBudget)
+	remaining := int64(0)
+	if bounded {
+		remaining, bounded = budget.OutputBytesRemaining()
 	}
-	out := make([]entry, 0, len(infos))
-	for _, fi := range infos {
-		if isTempName(fi.Name()) {
-			continue // in-flight upload
+	var output bytes.Buffer
+	output.WriteByte('[')
+	count := 0
+	appendEntry := func(name string, size int64, modified time.Time, mode os.FileMode) (bool, error) {
+		if isTempName(name) {
+			return true, nil // in-flight upload
 		}
-		if len(out) >= s.cfg.MaxListEntries {
+		if count >= s.cfg.MaxListEntries {
 			res.Tracked["truncated"] = "true"
-			break
+			return false, nil
 		}
-		out = append(out, entry{Name: fi.Name(), Path: path.Join("/", p, fi.Name()), Size: fi.Size(), IsDir: fi.IsDir(), ModTime: fi.ModTime().UTC(), Mode: fi.Mode().String()})
+		data, err := json.Marshal(entry{Name: name, Path: path.Join("/", p, name), Size: size, IsDir: mode.IsDir(), ModTime: modified.UTC(), Mode: mode.String()})
+		if err != nil {
+			return false, err
+		}
+		if count > 0 {
+			output.WriteByte(',')
+		}
+		if bounded && int64(output.Len()+len(data)+1) > remaining {
+			return false, budget.RejectOutputLimit()
+		}
+		output.Write(data)
+		count++
+		return true, nil
 	}
-	b, err := json.Marshal(out)
-	if err != nil {
-		return err
+	if bounded {
+		err := s.readBoundedDir(rp, remaining, func(name string, stat *pkgsftp.FileStat) (bool, error) {
+			return appendEntry(name, int64(stat.Size), stat.ModTime(), stat.FileMode())
+		})
+		if errors.Is(err, errDirectoryBudget) {
+			return budget.RejectOutputLimit()
+		}
+		if err != nil {
+			return err
+		}
+	} else {
+		infos, err := s.fs.ReadDir(rp)
+		if err != nil {
+			return err
+		}
+		for _, fi := range infos {
+			more, err := appendEntry(fi.Name(), fi.Size(), fi.ModTime(), fi.Mode())
+			if err != nil {
+				return err
+			}
+			if !more {
+				break
+			}
+		}
 	}
+	if bounded && int64(output.Len()+1) > remaining {
+		return budget.RejectOutputLimit()
+	}
+	output.WriteByte(']')
 	outID := d.id + ".out"
 	res.OutputDocumentIds = []string{outID}
 	res.Tracked["path"] = p
-	return sendOutput(stream, outID, map[string]string{"contentType": "application/json"}, bytes.NewReader(b))
+	return sendOutput(stream, outID, map[string]string{"contentType": "application/json"}, &output)
 }
 
 func (s *session) get(stream connectorv1.ConnectorService_ExecuteServer, d *docState, dir string, res *connectorv1.DocumentResult) error {
@@ -635,7 +677,13 @@ func sendOutput(stream connectorv1.ConnectorService_ExecuteServer, id string, pr
 	buf := make([]byte, ChunkSize)
 	first := true
 	for {
-		n, err := io.ReadFull(r, buf)
+		chunk := buf
+		if budget, ok := stream.(outputBudget); ok {
+			if remaining, bounded := budget.OutputBytesRemaining(); bounded && remaining < int64(len(buf)) {
+				chunk = buf[:remaining+1]
+			}
+		}
+		n, err := io.ReadFull(r, chunk)
 		last := errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
 		if err != nil && !last {
 			return err

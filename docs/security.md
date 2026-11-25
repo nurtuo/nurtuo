@@ -154,7 +154,7 @@ explicit ACLs ([spec](specs/implemented/2026-11-24-windows-secrets-dacl.md), iss
   the connection incarnation, logical destination, user, credential fields and pinned fingerprint.
   Rebinding requires fresh credential entry. A stored `known_hosts` connection is refused before
   dialing. Canvas Run requires a POSIX control-plane host. See
-  [the credential binding spec](specs/2026-11-24-operation-limits-and-credential-binding.md).
+  [the Canvas Run security spec](specs/2026-11-23-canvas-run.md#security).
 
 ## Connector security notes
 

@@ -15,6 +15,14 @@ const tok = (r: any): ApiTokenRecord => ({ id: r.id, workspaceId: r.workspace_id
 const ses = (r: any): Session => ({ id: r.id, userId: r.user_id, createdAt: iso(r.created_at), expiresAt: iso(r.expires_at), revokedAt: isoN(r.revoked_at), ip: r.ip, userAgent: r.user_agent });
 const aud = (r: any): AuditEntry => ({ id: r.id, seq: Number(r.seq), ts: iso(r.ts), workspaceId: r.workspace_id, actorType: r.actor_type, actorId: r.actor_id, action: r.action, resource: r.resource, resourceId: r.resource_id, beforeHash: r.before_hash, afterHash: r.after_hash, ip: r.ip, requestId: r.request_id, status: r.status, metadata: r.metadata });
 
+export async function appendPgAudit(db: Queryable, e: NewAuditEntry) {
+  const r = await db.query(
+    `INSERT INTO audit_log(id,ts,workspace_id,actor_type,actor_id,action,resource,resource_id,before_hash,after_hash,ip,request_id,status,metadata)
+     VALUES ($1,COALESCE($2::timestamptz, now()),$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
+    [randomUUID(), e.ts ?? null, e.workspaceId, e.actorType, e.actorId, e.action, e.resource, e.resourceId, e.beforeHash, e.afterHash, e.ip, e.requestId, e.status, JSON.stringify(e.metadata)]);
+  return aud(r.rows[0]);
+}
+
 export class PgAuthRepository implements AuthRepository {
   constructor(private db: Db) {}
 
@@ -121,13 +129,7 @@ export class PgAuthRepository implements AuthRepository {
   async revokeSession(id: string, now: Date) { await this.db.query("UPDATE sessions SET revoked_at=$2 WHERE id=$1 AND revoked_at IS NULL", [id, now.toISOString()]); }
   async revokeSessionsForUser(userId: string, now: Date) { await this.db.query("UPDATE sessions SET revoked_at=$2 WHERE user_id=$1 AND revoked_at IS NULL", [userId, now.toISOString()]); }
 
-  async appendAudit(e: NewAuditEntry) {
-    const r = await this.db.query(
-      `INSERT INTO audit_log(id,ts,workspace_id,actor_type,actor_id,action,resource,resource_id,before_hash,after_hash,ip,request_id,status,metadata)
-       VALUES ($1,COALESCE($2::timestamptz, now()),$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
-      [randomUUID(), e.ts ?? null, e.workspaceId, e.actorType, e.actorId, e.action, e.resource, e.resourceId, e.beforeHash, e.afterHash, e.ip, e.requestId, e.status, JSON.stringify(e.metadata)]);
-    return aud(r.rows[0]);
-  }
+  appendAudit(e: NewAuditEntry) { return appendPgAudit(this.db, e); }
   async queryAudit(f: AuditFilter): Promise<AuditPage> {
     const r = await this.db.query(
       `SELECT * FROM audit_log WHERE workspace_id=$1
