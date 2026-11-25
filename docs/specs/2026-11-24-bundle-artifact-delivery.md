@@ -165,7 +165,7 @@ Three phases (D13), each shippable on its own. Component names exist today unles
 #### A. Control plane: pack, sign, serve (TypeScript, `core/control-plane/src/`)
 
 1. ***New* `bundle.ts`** (AGPL-3.0-only, SPDX header). `packBundle(input, privateKey): Buffer`
-   implements `nurtuo.bundle/v1` exactly as `core/deploy/bundle` writes it (D7, decided):
+   implements `nurtuo.bundle/v1` with the USTAR layout and signature rules of `core/deploy/bundle` (D7, decided):
    - Entries in order: `manifest.json`, `config.json` (`{}`), `components/<kind>/<id>/<revision>.json`.
      Then `manifest.sig` with `{"alg":"ed25519","keyId":<first 16 hex of sha256(pub)>,"sig":<base64>}`.
      The signature is `crypto.sign(null, "nurtuo-bundle-v1\n" + manifestBytes, key)`.
@@ -175,20 +175,29 @@ Three phases (D13), each shippable on its own. Component names exist today unles
    - USTAR headers: mode `0644`, mtime 0, no owner names, typeflag `0`, `ustar\0` + `00`. The
      archive ends with exactly two 512-byte zero blocks and no record padding. `Verify` rejects
      trailing bytes, so GNU-style 10 KiB padding would fail.
-   - A size check against 256 MiB (mirrors `MaxBundleSize`). Names must match
+   - Check the 64 MiB per-entry and 256 MiB archive limits before archive allocation, signing,
+     or digest publication. Test an entry at the limit and one byte above it. Names must match
      `^[a-z0-9][a-z0-9._-]{0,127}$` (Go `nameRe`).
    - Key loading: the file holds the hex Ed25519 seed (`bundle.EncodePrivateKey` format). It is
      wrapped as PKCS#8 DER and loaded with `crypto.createPrivateKey`. No new dependency.
 2. **Input mapping** (D16). For a desired-state item (component `c`, revision `r`):
    `name` = `c.name` when it matches `nameRe`, else `c.id`; `createdAt` = `r.createdAt` truncated
    to seconds, RFC 3339 UTC; one component `{kind: c.kind, id: c.id, revision: r.number,
-   document: canonicalJson(r.content)}`. All inputs are immutable, so the same revision and key
+   document: canonical bundle JSON of r.content}`. Sort object keys by UTF-8 bytes and
+   use Go JSON string escaping, including U+2028, U+2029 and HTML-sensitive characters. Replace
+   lone surrogates with U+FFFD and reject keys that collide after replacement. Emit the shortest
+   ECMAScript spelling of each stored finite number and preserve that literal in the bundle.
+   The input is the stored JSON value. Request number spellings and duplicate keys were consumed by
+   the API parser. ADR 0006's rules for raw input to Go Pack still apply. All inputs are immutable, so the same revision and key
    always give the same bytes and the same digest. This holds across control-plane restarts.
 3. **Which digest goes into `DesiredState`** (D5, decided).
-   `desiredStateMessage` keeps today's behaviour unless a signing key is configured. With a key,
-   for each revision whose `digest === digestOf(content)` (control-plane derived), it sends
-   `sha256:<hex of the packed archive>`. Revisions with a caller-supplied digest (externally
-   packaged artifacts, `TestSignedBundleArtifactPath`) pass through unchanged and are never packed.
+   The packer-only PR advertises stored revision digests regardless of signing configuration.
+   Once the delivery handler is available, signing lets desired state advertise the archive digest
+   for revisions whose stored digest equals `digestOf(content)`. The equality is a content test.
+   The repository stores no digest provenance for new or legacy rows, so an explicitly supplied
+   matching digest is also eligible. Non-matching digests pass through unchanged.
+   Replay current desired state at reconnect even when the generation matches, so a signing key
+   change, enablement or disablement takes effect for existing runtimes.
    If packing fails (for example the content is not a JSON object, or it is too large), it sends
    the revision digest. `FetchArtifact` then reports the pack error (below), so the deployment
    fails with a readable message instead of disappearing.
@@ -203,10 +212,12 @@ Three phases (D13), each shippable on its own. Component names exist today unles
    - No signing key configured: `FAILED_PRECONDITION` "control plane has no bundle signing key
      configured (NURTUO_BUNDLE_SIGNING_KEY_FILE)". Under D9 (decided), unsigned content is
      not served.
-   - Authorisation: compute `desiredStateMessage(certId)`. The digest must be the `bundleDigest`
-     of one of its deployments, else `NOT_FOUND` "artifact not found for this runtime". The text
-     is the same for unknown digests and for digests that belong to another runtime, so there is
-     no existence oracle.
+   - Authorisation: maintain a per-runtime digest-to-revision view from current desired state,
+     independent of archive eviction. Check that the indexed deployment is still current before
+     serving. Unknown and foreign digests get identical `NOT_FOUND` responses without packing.
+     A cache miss repacks only the matching revision. Coalesce duplicate repacks and bound
+     concurrent packing and streaming. Under cache churn, test that an authorized miss packs
+     one revision and that an unknown or foreign request packs zero.
    - A matching deployment whose revision cannot be packed returns `FAILED_PRECONDITION` with the
      pack error. A digest that matches an externally supplied revision digest returns `NOT_FOUND`
      "artifact is not stored by the control plane; place it in bundle_dir".
@@ -236,13 +247,10 @@ Three phases (D13), each shippable on its own. Component names exist today unles
    2. If `<dir>/<hex>.bundle` exists, call `inner`. On success, return.
    3. Otherwise (missing, or `inner` failed on the existing file), fetch into
       `os.CreateTemp(dir, ".fetch-*")` (mode `0600`) while hashing, with
-      `limit = bundle.MaxBundleSize`. Then compare SHA-256 with the digest, `fsync`, close and
-      `os.Rename` to `<hex>.bundle`. On any failure the temp file is removed and nothing is
-      cached. An existing file is replaced only by fetched bytes that match the digest, so an
-      operator-placed file is never deleted without a verified replacement.
-   4. Call `inner` (`SignedBundleSource`) on the result. It checks the digest and signature again
-      and extracts `flow` and `connection` components. If it rejects the fetched file, the file is
-      removed so a later retry fetches again.
+      `limit = bundle.MaxBundleSize`. Check SHA-256, verify the signature and decode the
+      components using the same verification path as `SignedBundleSource` on the staged file.
+   4. After verification, fsync, close and rename to `<hex>.bundle`. On failure remove the
+      temp file and preserve any prior file. Test rejected and verified replacements.
    - At `RunWith` start, leftover `.fetch-*` files in `bundle_dir` are removed (crash debris).
 3. **`RunWith` wiring.** Only when `BundleDir != ""` **and** `TrustedKeys` is non-empty (signed
    mode): `src = FetchingBundleSource(cfg.BundleDir, fetch, SignedBundleSource(cfg.BundleDir, keys))`.
@@ -400,15 +408,15 @@ and `service install` will default to `trusted_keys`. #61 does not change `Signe
   today.
 - **New runtime against an old control plane:** `UNIMPLEMENTED` → `failed` with a pointer to
   `bundle_dir`. Same state as today.
-- **Externally packaged artifacts** (revision `digest` supplied via REST): unchanged. They are
+- **Externally packaged artifacts** (stored digest differs from `digestOf(content)`): unchanged. They are
   never packed, and the archive must still be placed in `bundle_dir` (`TestSignedBundleArtifactPath`
   keeps passing; only the failed-case message text changes).
 
 ## Security
 
 - **Integrity.** Every fetched byte is bounded (`MaxBundleSize`), streamed to a `0600` temp file,
-  checked against the digest before rename, then signature-verified by `bundle.Verify` before any
-  JSON is parsed. A bundle that fails is not cached. The digest in `DesiredState` arrives over the
+  checked against the digest and signature-verified by `bundle.Verify` before JSON parsing or
+  publication. A bundle that fails is not cached. The digest in `DesiredState` arrives over the
   same mTLS session.
 - **Authorisation.** `FetchArtifact` uses the mTLS identity (`peerKey`, as `connect` does) and
   serves only digests in that runtime's current desired state. Unknown and foreign digests get
@@ -447,7 +455,9 @@ accepts. Without a key, behaviour is byte-for-byte unchanged.
 2. Cross-language golden. A fixed seed (derived in-test, for example
    `sha256("nurtuo-golden-bundle-key")`) and a fixed ASCII flow input give the same archive
    SHA-256 in `bundle.test.ts` (TS) and in `TestPackGoldenMatchesControlPlane` in
-   `core/deploy/bundle/golden_test.go` (Go). Verified by both suites; no key material is committed.
+   `core/deploy/bundle/golden_test.go` (Go). Require a second shared golden with non-ASCII keys
+   (including a supplementary-plane key), U+2028 and number-heavy content. Go `Verify` must
+   accept both archives. No key material is committed.
 3. `Gateway`: `signingKey` option, artifact cache, `desiredStateMessage` digest switch,
    `fetchArtifact` handler. Verified by new cases in `gateway.test.ts`.
 4. `main.ts`: `NURTUO_BUNDLE_SIGNING_KEY_FILE`. Verified by a `main`-level test or a small
@@ -527,7 +537,7 @@ Exit: `nurtuo standalone` deploys reach `running` with no manual step; key and d
   `failed` "no bundle_dir configured", never `running`.
 - WHEN a runtime has `bundle_dir` but no `trusted_keys` THEN it never calls `FetchArtifact`
   (unsigned path unchanged; #61 owns its verification).
-- WHEN a revision was created with a caller-supplied `digest` THEN the control plane sends that
+- WHEN a stored revision digest differs from `digestOf(content)` THEN the control plane sends that
   digest unchanged and `TestSignedBundleArtifactPath` (manual archive in `bundle_dir`) still
   reaches `running`.
 
@@ -540,10 +550,10 @@ No key material is committed or printed.
 | Test | What it covers | How to run | Notes |
 |---|---|---|---|
 | `core/control-plane/src/bundle.test.ts` | `packBundle`: same input → identical bytes; entry order; USTAR header fields (mode 0644, mtime 0, magic); archive ends with exactly 1024 zero bytes; manifest field order; `keyId` = first 16 hex of sha256(pub); size cap and `nameRe` rejection; golden SHA-256 equals the Go constant; key loading rejects bad hex or wrong length without echoing the value | `pnpm --filter @nurtuo/control-plane run test` | pure, no network |
-| `TestPackGoldenMatchesControlPlane` in `core/deploy/bundle/golden_test.go` | Go `Pack` with the same seed and input produces the golden SHA-256; `Verify` accepts it | `cd core/deploy/bundle && GOWORK=off go test ./...` | same constant as the TS test; a TS-produced archive fixture is optional (no keys in it) |
+| `TestPackGoldenMatchesControlPlane` in `core/deploy/bundle/golden_test.go` | Go `Pack` with the same seed and input matches both TS golden SHA-256 values using equivalent number spellings; `Verify` accepts both | `cd core/deploy/bundle && GOWORK=off go test ./...` | same constant as the TS test; a TS-produced archive fixture is optional (no keys in it) |
 | `gateway.test.ts` (new cases) | with `signingKey`: `desiredStateMessage` sends the archive digest; `fetchArtifact` over real mTLS (`Rt` helper) streams chunks ≤ 1 MiB whose concatenation hashes to that digest and verifies (signature checked with `node:crypto`); `rt-2` asking for `rt-1`'s digest and an unknown digest get `NOT_FOUND` with identical text; malformed digest → `INVALID_ARGUMENT`; externally supplied revision digest is passed through and fetch → `NOT_FOUND`; restart (new `Gateway`, same key) → same digest; without key: digests unchanged and fetch → `FAILED_PRECONDITION` | same | existing test certs in `testdata/certs` |
 | `client_test.go` (new cases) | `Client.FetchArtifact` against the bufconn `fakeServer` with `FetchArtifact`: multi-chunk copy; `limit` exceeded aborts; server error status propagated; call before `Run` → "not connected"; runs while `Connect` is active | `cd core/runtime && go test -race ./internal/gateway/...` | drain the stream while the server sends (lesson [ci-label-gates-and-duplex-grpc-tests](../lessons/ci-label-gates-and-duplex-grpc-tests.md)) |
-| `core/runtime/internal/runtime/fetch_test.go` | `FetchingBundleSource` with a fake `FetchFunc` and a real `bundle.Pack` archive (key from `bundle.GenerateKey` in-test): cache hit makes no fetch; miss → fetch, rename, `<hex>.bundle` mode `0600`; digest mismatch → error, no file, no temp left; bad signature → error, file removed; existing file with bad signature replaced only by a verified fetch; oversize → error; invalid digest rejected before any fetch; `.fetch-*` leftovers cleaned | `cd core/runtime && go test -race ./internal/runtime -run Fetch` | self-contained |
+| `core/runtime/internal/runtime/fetch_test.go` | `FetchingBundleSource` with a fake `FetchFunc` and a real `bundle.Pack` archive (key from `bundle.GenerateKey` in-test): cache hit makes no fetch; miss → fetch, rename, `<hex>.bundle` mode `0600`; digest mismatch → error, no file, no temp left; bad staged signature → error, prior file retained; verified fetch replaces an invalid existing file; oversize → error; invalid digest rejected before any fetch; `.fetch-*` leftovers cleaned | `cd core/runtime && go test -race ./internal/runtime -run Fetch` | self-contained |
 | `TestSignedSourceMissingFileError` → `TestRunWithFetchesSignedBundle` in `internal/runtime/fetch_test.go` | characterization (step 5), then `RunWith` with `BundleDir` + `TrustedKeys` and an `Options.Gateway` bufconn fake that serves the archive: status `applying` → `running`; without `TrustedKeys` the fake's `FetchArtifact` is never called | same package | ctx cancel for cleanup |
 | existing `TestNoBundleDirNeverRunning`, `TestRunWithoutBundleDirReportsError` (`placeholder_test.go`) | #71 unchanged | `go test -race ./internal/runtime/...` | regression |
 | `TestFetchArtifactSignedByControlPlane` in `internal/interop/interop_test.go` | real TS gateway (`startControlPlane` with `extraEnv` `NURTUO_BUNDLE_SIGNING_KEY_FILE=<tempdir file>`), runtime trusting the matching public key, empty `bundle_dir`: deployment `running`, flow serving, archive cached; second deployment of a new revision fetched too | `cd core/runtime && go test -race ./internal/interop/...` | verify locally with Node 20+ and a built control plane. May skip in the current `go` job until [#89](https://github.com/nurtuo/nurtuo/issues/89) |
@@ -564,13 +574,13 @@ approval.
 | D1 | Shape of `FetchArtifact` on gateway v1 | (a) existing server-streaming RPC as declared, no proto change; (b) add fields (size, offset, key id) | **(a)**: digest `sha256:<64 hex>` (bare hex accepted); chunks ≤ 1 MiB; client-side cap `bundle.MaxBundleSize`; mTLS identity; serve only digests in the caller's current desired state; `UNAUTHENTICATED` / `INVALID_ARGUMENT` / `NOT_FOUND` (unknown and foreign alike) / `FAILED_PRECONDITION` (no key, pack error) | existing contract is sufficient; no `buf breaking` impact; optional fields can be added later | implementer-default |
 | D2 | Send/set standalone `BundleDir` / signing key before `FetchArtifact` exists? | — | **No.** Phase 1 of #58 is the honest placeholder only, no contract change; implemented by #71. Here: Phase 3 starts only after Phases 1–2 are on `main` | Łukasz, 2026-11-24 ([runtime-bundle-dir](2026-11-23-runtime-bundle-dir.md), #64 comment) | decided |
 | D3 | Standalone bundle dir and key | — | **Yes:** `BundleDir` = `<data-dir>/bundles` mode `0700`; key at `secrets/bundle-signing.key` mode `0600`; reused after restart; no rotation | Łukasz, 2026-11-24 (same sources) | decided |
-| D4 | Where and how the control plane serves artifacts | (a) pack on demand, deterministic, bounded in-memory cache; (b) pack at deploy and store in a new `artifacts` table; (c) build per request, no cache | **(a)**, same code for standalone and distributed; only derived-digest revisions are packed; externally supplied digests pass through | no migration, no REST change, restart-stable digests; (b) stays a follow-up if packing cost shows | implementer-default |
+| D4 | Where and how the control plane serves artifacts | (a) pack on demand, deterministic, bounded in-memory cache; (b) pack at deploy and store in a new `artifacts` table; (c) build per request, no cache | **(a)**, same code for standalone and distributed; only revisions matching `digestOf(content)` are packed; other digests pass through | no migration, no REST change, restart-stable digests; (b) stays a follow-up if packing cost shows | implementer-default |
 | D5 | How the control plane gets the signing key, and what `bundle_digest` means then | (a) new optional env `NURTUO_BUNDLE_SIGNING_KEY_FILE` (path to hex seed); with it, `DesiredState` carries the archive digest; without, unchanged; (b) key in DB / REST upload; (c) env with the key value | **(a)** | additive and opt-in; matches the proto comment "sha256 of the signed bundle"; path not value keeps the key out of process env listings; a new STABLE control-plane env key and a value change for opted-in installs, accepted by the owner | decided (Łukasz, 2026-11-24, 12:29 Europe/Warsaw, accepted recommendation) |
 | D6 | Standalone deploys show `failed` until this lands | — | **Yes, accepted**; this issue is prioritised | Łukasz, 2026-11-24 | decided |
 | D7 | Who signs, with what, where the packer lives | (a) control plane signs, TS port of `nurtuo.bundle/v1` writer in `core/control-plane/src/bundle.ts`, `node:crypto` Ed25519, cross-language golden + interop tests; (b) Go packer called by the control plane (sidecar/CLI); (c) runtime signs | **(a)**; key generated by the standalone bootstrapper (Go, `bundle.GenerateKey`, hex seed) and wired into `Config.TrustedKeys` by `runRealRuntime`; no rotation (D3) | ADR 0006 / bundle README say the control plane packs and signs; no new dependency or CLI; (b) adds a CLI surface and a Go binary to the control-plane image; (c) proves nothing. A second implementation of a FROZEN format is an architecture choice | decided (Łukasz, 2026-11-24, 12:29 Europe/Warsaw, accepted recommendation) |
 | D8 | Composition with #61 | (a) signed-mode fetch only; unsigned path untouched; one shared digest-check helper reused by whichever lands second; (b) this spec also adds unsigned digest checks | **(a)** | keeps #61's files and scope intact; digest-then-signature order is the same in both paths; assumption about #61 stated in Design | implementer-default |
 | D9 | Serve unsigned content over `FetchArtifact` to runtimes without `trusted_keys`? | (a) no, signed only in this issue (`FAILED_PRECONDITION` without key; unsigned runtimes do not fetch); (b) yes, serve `canonicalJson(content)` for derived digests, runtime verifies SHA-256 | **(a)** | lowest blast radius; nudges towards `trusted_keys` (#61 direction); (b) is a later additive change through the same seam | decided (Łukasz, 2026-11-24, 12:29 Europe/Warsaw, accepted recommendation) |
-| D10 | Runtime fetch/cache behaviour | — | fetch in `Apply` when `<hex>.bundle` is missing or fails verification; temp file `.fetch-*` (`0600`) in `bundle_dir`, digest check, fsync, rename; replace an existing file only with a verified fetch; delete rejected fetched files; no eviction; `Remove` keeps the file; 5 min per-fetch deadline; no new config key | reuses `SignedBundleSource` and the existing file layout; no data loss; reversible | implementer-default |
+| D10 | Runtime fetch/cache behaviour | — | fetch in `Apply` when `<hex>.bundle` is missing or fails verification; temp file `.fetch-*` (`0600`) in `bundle_dir`, digest and signature checks, component decoding, fsync, rename; preserve the prior file on failure; no eviction; `Remove` keeps the file; 5 min per-fetch deadline; no new config key | reuses `SignedBundleSource` and the existing file layout; no data loss; reversible | implementer-default |
 | D11 | Sequencing against #57 on Windows | (a) ship now: Unix `0700`/`0600` here; call `secrets.EnsurePrivateDir(<data-dir>\bundles)` once #57 lands (whichever lands second wires it); document the interim gap; (b) block #64 on Windows until #57 | **(a)** | does not hold M1 on the #57 implementation; same exposure class #57 already documents; the call site is one line | decided (Łukasz, 2026-11-24, 12:29 Europe/Warsaw, accepted recommendation) |
 | D12 | Existing standalone installs after upgrade | — | automatic: `Ensure` creates `bundles/`, bootstrap generates the key on first start, desired state is resent on Hello, `failed` → `running`; release note; no migration | no operator action; nothing persisted to convert | implementer-default |
 | D13 | Split into more than one spec? | (a) one spec, three shippable phases (control plane, runtime, standalone); (b) separate specs per side | **(a)** | one capability (artifact delivery) end to end; phases ship independently; script modules split out (Non-goals) | implementer-default |
@@ -582,7 +592,7 @@ approval.
 
 | # | Scenario (concrete) | Severity | Area | Mitigation / follow-up |
 |---|---|---|---|---|
-| 1 | TS writer differs from Go `Pack` in an edge case (non-ASCII key order: JS sorts UTF-16 units, Go sorts bytes; number literals normalised by `JSON.parse`; U+2028 escaping) → bytes differ from Go, though `Verify` still accepts because it checks hashes, not canonical form | medium | control plane / format | golden test on ASCII input; verify compatibility with the interop test locally until [#89](https://github.com/nurtuo/nurtuo/issues/89) adds CI coverage; document that TS output is self-deterministic, not byte-equal to Go for every input |
+| 1 | TS writer diverges from Go canonical JSON for stored values | medium | control plane / format | ASCII and Unicode/number-heavy shared golden digests and Go verification |
 | 2 | (D11, accepted) On Windows before #57, another local user reads `secrets\bundle-signing.key` and forges bundles | high (multi-user Windows only) | security | D11; #57; documented warning |
 | 3 | A 200 MiB bundle downloads inside `Apply`. With #75 (merged) this no longer runs on the receive goroutine; a long download only delays that deployment's apply | low | runtime | Phase 2 is built on #75; chunked stream keeps memory flat; check apply behaviour while a fetch is running |
 | 4 | Transient fetch failure while connected leaves the deployment `failed` until the next desired state or reconnect (no retry timer) | medium | runtime / supervisor | existing supervisor behaviour; out of scope; candidate follow-up |
