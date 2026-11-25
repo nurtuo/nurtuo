@@ -281,11 +281,12 @@ stated physical bound**, reserved before allocation:
   present it is an upper bound for that budget. `W`, `E_parent`, the headroom and the pool sizes
   are startup-validated (D4).
 - **Parent budget.** Requests below the in-memory threshold are charged to the small-request pool
-  inside `H_parent` and `E_parent`. `MemoryRepository` retained history (bytes of retained
-  revisions, tracked at creation) is charged to `H_parent` continuously, because it is resident for
+  inside `H_parent` and `E_parent`. `MemoryRepository` retained history (the projected `rowBytes`
+  of retained revisions, tracked at creation) is charged to `H_parent` continuously, because it is resident for
   the life of the process.
 - **Estimate.** A worker reservation is `k × wireBytes` for a body (decoded string, tree, canonical
-  string, repository copy) and `k × storedBytes` for a response. `k` is the measured expansion
+  string, repository copy) and `k × storedBytes` for a response, where `storedBytes` is the
+  projected size of the rows served (see "Projected row size"). `k` is the measured expansion
   factor per class (placeholder, benchmark-gated with high-expansion JSON: deep nesting, many tiny
   objects, long escaped strings). A large operation also holds one parent transfer window (below).
 - **Where the bytes of a large operation live.** Above the in-memory threshold the parent never
@@ -322,8 +323,8 @@ stated physical bound**, reserved before allocation:
     worker knows the canonical byte length before the `INSERT`; the gate charges
     `k_ext × length` against `x` and, if it does not fit, fails the request with 500
     `resource_exhausted` **before the query is issued**.
-  - *PostgreSQL read.* The driver buffers one whole `DataRow` message. The stored size is read
-    first (see "Single row" and "Revision list"); the gate charges `k_ext × largest row` plus one
+  - *PostgreSQL read.* The driver buffers one whole `DataRow` message. The projected size is read
+    first (see "Projected row size", "Single row" and "Revision list"); the gate charges `k_ext × largest` plus one
     socket read chunk against `x` before the `SELECT`, and fails the request the same way.
   - The worker entry module may import only the modules listed in its allowlist (repository
     client, `pg`, `crypto`, the canonical JSON module); a test fails when the list grows, so a new
@@ -361,15 +362,33 @@ stated physical bound**, reserved before allocation:
   budget (placeholder 4 GiB, benchmark-gated) is a D4 dimension outside groups (a)-(c), so
   operators may only tighten it; startup validates it against the free space of the temp
   directory, and the load-test gate requires it to fit `S_main`.
+- **Projected row size (readback sizing).** Every readback is sized by the **full projected row**,
+  not by content alone. The repositories return whole revision rows (`SELECT *`: `id`,
+  `component_id`, `number`, `digest`, `content`, `created_at`), and the response serializes all of
+  them. So many tiny revisions whose content alone fits under the threshold can still exceed the
+  parent pool through IDs, digests, timestamps and per-row objects. The projected size of one row is
+  `rowBytes = octet_length(content::text) + 6 × (octet_length(id) + octet_length(component_id) + octet_length(digest)) + c_row`:
+  - the factor 6 is the `escapedMax` worst case for the short text columns;
+  - `c_row` is a code value measured in L1a like `k`. It covers the JSON keys and punctuation, the
+    number, the formatted timestamp, and the per-row overhead of driver row objects and the mapped
+    `Revision` object.
+  A list is sized as `total = envelope + Σ rowBytes`, together with `largest = max rowBytes`,
+  `count` and `max(number)`, all **in one query in the sizing snapshot**. `MemoryRepository`
+  computes the same `rowBytes` at creation from the stored row and keeps it with the revision.
+  The threshold decision (parent pool or worker), the reservation `k × total`, and the read gate's
+  `k_ext × largest` use these projected sizes. A size column added by migration may replace the
+  `octet_length(content::text)` term if L1a measures that it is cheaper. It stores the same value.
 - **Single row.** `GET …/revisions/{n}` and every internal read of one revision (deploy, digest
-  checks) first read the stored size (PostgreSQL: `octet_length(content::text)` or a size column added
-  by migration, measured in L1a; memory: size kept at creation), reserve, then load the row.
+  checks) first read the projected size of that row, reserve, then load the row. Revisions are
+  immutable and never deleted (migration `0001`), so the size read and the row read need no shared
+  snapshot.
 - **Revision list (one snapshot).** Before L1b, the size and the rows come from **one consistent
   read**, so an append between the two reads cannot exceed the reservation. Sizing is owned by the
   parent, because the reservation decides the worker's limits; loading is owned by whoever serves
   the response (the parent below the threshold, the worker above it). PostgreSQL:
   - The parent opens a read-only `REPEATABLE READ` transaction on one connection of its own pool
-    and runs the size query (`sum` of stored sizes and `max(number)` for the component).
+    and runs the size query: `total`, `largest`, `count` and `max(number)` of the projected row
+    sizes for the component (see "Projected row size").
   - Below the threshold the parent loads, in the same transaction, only rows with
     `number <= ` that maximum, ordered by `number`, then commits.
   - Above the threshold the worker uses its own connection, and a second transaction on another
@@ -851,6 +870,10 @@ per-row reservation, backpressure, abort on mid-stream failure.
   stays within its reservation and contains exactly the snapshot's revisions, also when the list
   is above the isolation threshold and the rows are read by the worker on its own connection
   (exported and imported snapshot).
+- WHEN a list or row is read back THEN it is sized by the full projected rows (all returned
+  columns and per-row overhead, total and largest row from one snapshot) before the parent pool or
+  a worker is chosen; a list of many minimal revisions whose content alone fits under the
+  threshold but whose full response exceeds it is served by a worker.
 - WHEN an upload or a readback needs more than `W` THEN only that request fails (500
   `resource_exhausted`), RSS stays within `M_proc` and the gateway keeps answering.
 - WHEN a large operation's driver or encoding buffers would exceed its external share `x` THEN the
@@ -942,7 +965,7 @@ messages; a file check alone does not satisfy these tests.
 | T21 | invalid D4 overrides (unknown key, bad unit, negative, zero-as-unlimited, raise of a safety ceiling or of a tighten-only dimension, isolation threshold above the coded maximum, budget sum above `heap_size_limit` minus headroom) fail startup with a clear error; valid finite raises of each group (a) Run, (b) threshold up to the coded maximum, (c) every D7 setting including the failed-authentication bucket are accepted | `limits.test.ts` | L1a |
 | T22 | rebinding: DNS answer changes between preflight and dial; connector retry; A+AAAA with IPv4 and IPv6 listeners; one disallowed answer -> no connection; host-key mismatch -> 0 auth; stored `known_hosts` -> 409, 0 connections; pasted `known_hosts`: one unmarked key -> fingerprint; several keys -> 400; **only `@revoked` entry -> 400, no pin saved**; unmarked key also listed `@revoked` -> 400; **only `@cert-authority` entry -> 400, no pin saved**; `@cert-authority` plus an unmarked key -> 400; unknown marker, unparsable line -> 400; hashed `\|1\|` and `[host]:port` entries match; negated pattern excludes | `runner.test.ts`, `egress.test.ts`, `flowrun_sftp_test.go` | socket level, Run and scan |
 | T23 | large SFTP download and metadata-heavy listing above D2 limits: child RSS and temp-dir high-water bounded, `output_too_large`, no documents, temp dir removed, child reaped | `flowrun_sftp_test.go`, `runner.test.ts` | SFTP |
-| T24 | D14 load tests: `S_main` regression, high-expansion JSON, concurrent large and small reads and writes, slow readers, disconnects, uploads above `S_main`; oversized upload and oversized readback (single row and list) above `W` fail alone with 500 `resource_exhausted`; **external-buffer exhaustion in both directions**: an upload whose PostgreSQL parameter (`k_ext × canonical length`) exceeds `x` and a readback whose largest row exceeds `x` while the heap share still fits, each failing with 500 before the query is issued (statement log shows no `INSERT`/`SELECT` of content), with every reservation in use so the 500 comes from `R_fail`; worker `arrayBuffers` and `external` high-water ≤ `x` for every passing large operation; peak process RSS ≤ `M_proc`; parent holds at most one transfer window per large operation; gateway heartbeat answered; reservations return to zero; many peers, rapid scans, stalled uploads, repeated timeouts and disconnects with capacity recovery | `bench/` (new, `make bench`-style job) | L1a release gate |
+| T24 | D14 load tests: `S_main` regression, high-expansion JSON, concurrent large and small reads and writes, slow readers, disconnects, uploads above `S_main`; oversized upload and oversized readback (single row and list) above `W` fail alone with 500 `resource_exhausted`; **external-buffer exhaustion in both directions**: an upload whose PostgreSQL parameter (`k_ext × canonical length`) exceeds `x` and a readback whose largest row exceeds `x` while the heap share still fits, each failing with 500 before the query is issued (statement log shows no `INSERT`/`SELECT` of content), with every reservation in use so the 500 comes from `R_fail`; worker `arrayBuffers` and `external` high-water ≤ `x` for every passing large operation; **many minimal revisions** (for example 200,000 revisions with content `{}`) whose summed `content::text` is far below the threshold but whose full list response exceeds it: in both repositories the projected `total` exceeds the threshold, the list is served by a worker and not from the parent pool, the parent's heap and external high-water stay within the small-request pool, and the measured response size never exceeds `total`; peak process RSS ≤ `M_proc`; parent holds at most one transfer window per large operation; gateway heartbeat answered; reservations return to zero; many peers, rapid scans, stalled uploads, repeated timeouts and disconnects with capacity recovery | `bench/` (new, `make bench`-style job) | L1a release gate |
 | T25 | D7 429 on STABLE routes: per-peer in-flight limit exceeded -> 429 `rate_limited` with `Retry-After` and `Connection: close`, body not read, before 401; empty failed-authentication bucket -> 429 before credential verification on a protected route and on login; login throttle/lockout codes unchanged; precedence against unmatched routes (401 or 403 `no_policy`, or 404/405 with auth disabled), 401, 413, 503 and 400; every affected OpenAPI operation declares 429 | `api.test.ts`, `limits.test.ts` | L1a |
 | T26 | pre-body authorization reuses the `main` decision: owner without `instance:workspace_create` -> `POST /v1/workspaces` with a large body gets audited 403 `forbidden` with 0 body bytes read; bearer token -> 403 `forbidden` (`userOnly`), 0 bytes; cookie session without CSRF -> 403 `csrf`, 0 bytes; granted session with CSRF -> 201; workspace and permission denials keep their audit records | `api.test.ts`, `auth/instance.test.ts` | L1a |
 | T27 | unmatched method/path, auth enabled: anonymous -> 401 `unauthenticated` with `WWW-Authenticate`, invalid credentials -> 401, valid principal -> 403 `no_policy`; auth disabled: 404 / 405; each with an empty body and with a malformed JSON body (no 400), 0 body bytes read | `api.test.ts` | L1a, both auth modes |
@@ -1243,7 +1266,7 @@ it is decided and the phase exit it blocks. A phase cannot exit while its questi
 | # | Question | Owner | Decided at | Blocks exit of |
 |---|---|---|---|---|
 | 1 | Final D3 value for login after checking field sizes, encodings and existing clients | L1a implementer, proposes; Łukasz approves in the L1a PR | L1a PR review, from the field/encoding/client evidence attached to it | L1a |
-| 2 | Benchmarks for the D14 threshold, `k`, `W`, `E_parent`, budgets, ingress and rate placeholders, on both repositories. No production size distribution, PostgreSQL boundary measurement or load-test result has been supplied to the council (Astra R3) | L1a implementer; values recorded in the changelog | T24 run on the reference configuration, before the L1a release | L1a release (T24 gate) |
+| 2 | Benchmarks for the D14 threshold, `k`, `k_ext`, `c_row`, `W`, `E_parent`, budgets, ingress and rate placeholders, on both repositories. No production size distribution, PostgreSQL boundary measurement or load-test result has been supplied to the council (Astra R3) | L1a implementer; values recorded in the changelog | T24 run on the reference configuration, before the L1a release | L1a release (T24 gate) |
 | 3 | Does any instance hold trial data in the #90 connection/secret tables that must be migrated, or is re-entry acceptable (assumed acceptable; absent or unbound volatile credentials are treated as `missing`)? | Łukasz | before #100 merges | #100 |
 | 4 | Name of the D4 configuration surface (reserved for Łukasz by D4) | **Łukasz** | before the L1a PR that adds the surface is opened; the implementer does not choose it | L1a |
 | 5 | Is c-ares DNS (no `/etc/hosts`, different search resolution) acceptable for Run, or is a bounded threadpool resolver required? | #101 implementer proposes with the T9 result; Łukasz approves if the threadpool option is chosen (it changes Gaps #9) | #101 PR review | #101 |
