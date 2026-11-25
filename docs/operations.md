@@ -152,7 +152,9 @@ The control plane child gets `DATABASE_URL` (the embedded Postgres, user `nurtuo
 `nurtuo`, `sslmode=disable`, on a free loopback port), `PORT`, the mTLS runtime gateway
 (`GATEWAY_CERT`, `GATEWAY_KEY`, `GATEWAY_CA` from `secrets/`, `GATEWAY_PORT` from `--gateway-addr`)
 and authentication (`NURTUO_AUTH_SECRET` and a bootstrap owner `admin@nurtuo.local`, both derived
-from `secrets/admin-token`). It is restarted with exponential
+from `secrets/admin-token`). Because it is passed as `NURTUO_BOOTSTRAP_EMAIL`, `admin@nurtuo.local` is
+also the instance admin: the only account that can create workspaces (`POST /v1/workspaces`, see
+[auth.md](auth.md#instance-admins)). It is restarted with exponential
 backoff (500 ms up to 30 s); the supervisor gives up after 10 consecutive restarts that each
 ran less than 30 s, and standalone then exits with an error. Standalone waits up to 60 s for the
 control plane to answer `GET /`.
