@@ -8,6 +8,7 @@ import { connectionEndpoints } from "../connections/routes.js";
 import { MemorySecretStore } from "../connections/secrets.js";
 import { MemoryRepository } from "../memory-repository.js";
 import { generateApiToken } from "./crypto.js";
+import type { InstanceConfig } from "./instance.js";
 import { createAuthHook, type AuthHookOptions } from "./middleware.js";
 import { MemoryAuthRepository } from "./memory-repository.js";
 import { ROLE_PERMISSIONS, type Permission, type Role } from "./permissions.js";
@@ -16,6 +17,8 @@ import { AuthService, SESSION_COOKIE, type AuthServiceOptions } from "./service.
 export const PASSWORD = "correct horse battery staple";
 export interface CallOpts { body?: unknown; headers?: Record<string, string>; query?: Record<string, string>; token?: string; cookie?: string; csrf?: string; ws?: string; ip?: string }
 export const j = (r: ApiResponse) => r.body as any;
+/** Instance config with these emails as instance admins (mode "admins"); pass to setup({ service: { instance } }). */
+export const adminsConfig = (...emails: string[]): InstanceConfig => ({ admins: new Set(emails.map((e) => e.trim().toLowerCase())), workspaceCreate: "admins" });
 
 /** An SFTP connection body that passes validation. */
 export const sftpConn = (over: Record<string, unknown> = {}) => ({

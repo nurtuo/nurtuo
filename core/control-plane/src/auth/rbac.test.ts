@@ -2,9 +2,11 @@
 // Role x route matrix, privilege escalation, cross-workspace isolation.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { parseInstanceConfig } from "./instance.js";
 import { ROLES, ROLE_PERMISSIONS, type Role } from "./permissions.js";
 import { POLICIES } from "./policy.js";
-import { PASSWORD, j, setup } from "./test-util.js";
+import { PASSWORD, adminsConfig, j, setup } from "./test-util.js";
+import type { NewAuditEntry } from "./types.js";
 
 const EDIT: Role[] = ["owner", "admin", "editor"];
 const ALL: Role[] = ["owner", "admin", "editor", "viewer", "deployer", "runtime"];
@@ -190,8 +192,138 @@ test("token powers track the creator's current membership (demotion shrinks, rem
   assert.equal((await call("GET", "/v1/components", { token: ed.token.raw })).status, 401);
 });
 
+// ---- workspace create gate (instance:workspace_create, issue #54) ---------------------------------
+const MISSING_WC = { error: { code: "forbidden", message: "missing permission instance:workspace_create" } };
+
+/** Records every audit append (including rows with workspace_id null, which queryAudit cannot return). */
+function auditSpy(authRepo: ReturnType<typeof setup>["authRepo"]) {
+  const rows: NewAuditEntry[] = [];
+  const orig = authRepo.appendAudit.bind(authRepo);
+  authRepo.appendAudit = async (e) => { rows.push(e); return orig(e); };
+  return rows;
+}
+
+test("workspace create gate: a viewer of default cannot create a workspace (403) and gains no owner role", async () => {
+  const { call, owner, member, login, authRepo } = setup({ service: { instance: adminsConfig("o@x.io") } });
+  const { ws } = await owner("o@x.io", "default");
+  await member(ws.id, "viewer@x.io", "viewer");
+  const s = await login("viewer@x.io");
+  const r = await call("POST", "/v1/workspaces", { cookie: s.cookie, csrf: s.csrf, body: { slug: "mine", name: "m" } });
+  assert.equal(r.status, 403);
+  assert.deepEqual(r.body, MISSING_WC);
+  assert.equal(await authRepo.getWorkspace("mine"), undefined);
+  const mine = j(await call("GET", "/v1/workspaces", { cookie: s.cookie })).items;
+  assert.deepEqual(mine.map((w: any) => [w.slug, w.role]), [["default", "viewer"]]);
+});
+
+test("workspace create gate: closes auth-rbac-audit gap 1 (viewer cannot delete a component through a self-created workspace)", async () => {
+  const { call, owner, member, login } = setup({ service: { instance: adminsConfig("o@x.io") } });
+  const { ws } = await owner("o@x.io", "default");
+  const o = await member(ws.id, "o@x.io", "owner");
+  const comp = j(await call("POST", "/v1/components", { token: o.token.raw, body: { name: "c1" } }));
+  await member(ws.id, "viewer@x.io", "viewer");
+  const s = await login("viewer@x.io");
+  assert.equal((await call("POST", "/v1/workspaces", { cookie: s.cookie, csrf: s.csrf, body: { slug: "mine", name: "m" } })).status, 403);
+  const del = await call("DELETE", `/v1/components/${comp.id}`, { cookie: s.cookie, csrf: s.csrf, ws: "mine" });
+  assert.equal(del.status, 403);
+  assert.equal((await call("GET", `/v1/components/${comp.id}`, { token: o.token.raw })).status, 200, "component still exists");
+});
+
+test("workspace create gate: every workspace role without instance admin is denied", async () => {
+  const { call, owner, member, login, authRepo } = setup({ service: { instance: adminsConfig("o@x.io") } });
+  const { ws } = await owner("o@x.io", "default");
+  for (const role of ROLES) {
+    const email = `${role}@x.io`;
+    await member(ws.id, email, role);
+    const s = await login(email);
+    const r = await call("POST", "/v1/workspaces", { cookie: s.cookie, csrf: s.csrf, body: { slug: `mine-${role}`, name: "m" } });
+    assert.equal(r.status, 403, role);
+    assert.deepEqual(r.body, MISSING_WC, role);
+    assert.equal(await authRepo.getWorkspace(`mine-${role}`), undefined, role);
+  }
+});
+
+test("workspace create gate: an instance admin (listed, any case) can create and owns the workspace", async () => {
+  const instance = parseInstanceConfig({ NURTUO_INSTANCE_ADMINS: " viewer@x.io , Ops@X.io " });
+  const { call, owner, member, login } = setup({ service: { instance } });
+  const { ws } = await owner("o@x.io", "default");
+  await member(ws.id, "ops@x.io", "viewer");
+  const s = await login("ops@x.io");
+  const r = await call("POST", "/v1/workspaces", { cookie: s.cookie, csrf: s.csrf, body: { slug: "team-b", name: "Team B" } });
+  assert.equal(r.status, 201);
+  const mine = j(await call("GET", "/v1/workspaces", { cookie: s.cookie })).items;
+  assert.deepEqual(mine.map((w: any) => [w.slug, w.role]).sort(), [["default", "viewer"], ["team-b", "owner"]]);
+});
+
+test("workspace create gate: the bootstrap email can create without NURTUO_INSTANCE_ADMINS", async () => {
+  const instance = parseInstanceConfig({ NURTUO_BOOTSTRAP_EMAIL: "admin@nurtuo.local" });
+  const { call, service, login } = setup({ service: { instance } });
+  await service.bootstrap("admin@nurtuo.local", PASSWORD);
+  const s = await login("admin@nurtuo.local");
+  assert.equal((await call("POST", "/v1/workspaces", { cookie: s.cookie, csrf: s.csrf, body: { slug: "ws-new", name: "n" } })).status, 201);
+});
+
+test("workspace create gate: mode any restores today's behaviour", async () => {
+  const instance = parseInstanceConfig({ NURTUO_ALLOW_WORKSPACE_CREATE: "any" });
+  const { call, owner, member, login } = setup({ service: { instance } });
+  const { ws } = await owner("o@x.io", "default");
+  await member(ws.id, "viewer@x.io", "viewer");
+  const s = await login("viewer@x.io");
+  assert.equal((await call("POST", "/v1/workspaces", { cookie: s.cookie, csrf: s.csrf, body: { slug: "mine", name: "m" } })).status, 201);
+  const mine = j(await call("GET", "/v1/workspaces", { cookie: s.cookie })).items;
+  assert.deepEqual(mine.map((w: any) => [w.slug, w.role]).sort(), [["default", "viewer"], ["mine", "owner"]]);
+});
+
+test("workspace create gate: tokens are refused in both modes", async () => {
+  for (const mode of ["admins", "any"]) {
+    const instance = parseInstanceConfig({ NURTUO_INSTANCE_ADMINS: "o@x.io", NURTUO_ALLOW_WORKSPACE_CREATE: mode });
+    const { call, owner, member } = setup({ service: { instance } });
+    const { ws } = await owner("o@x.io", "default");
+    for (const t of [await member(ws.id, "o@x.io", "owner"), await member(ws.id, "v@x.io", "viewer")]) {
+      const r = await call("POST", "/v1/workspaces", { token: t.token.raw, body: { slug: "ws-new", name: "n" } });
+      assert.equal(r.status, 403, mode);
+      assert.equal(j(r).error.message, "this endpoint requires a user session", mode);
+    }
+  }
+});
+
+test("workspace create gate: denial precedes body validation (bad or taken slug is 403 for non-admins)", async () => {
+  const { call, owner, member, login } = setup({ service: { instance: adminsConfig("o@x.io") } });
+  const { ws } = await owner("o@x.io", "default");
+  await member(ws.id, "viewer@x.io", "viewer");
+  const s = await login("viewer@x.io");
+  for (const body of [{ slug: "default", name: "taken" }, { slug: "Bad Slug", name: "n" }, { slug: "ok-slug" }, "not-an-object"]) {
+    const r = await call("POST", "/v1/workspaces", { cookie: s.cookie, csrf: s.csrf, body });
+    assert.equal(r.status, 403, JSON.stringify(body));
+    assert.deepEqual(r.body, MISSING_WC);
+  }
+  // anonymous and missing CSRF are still refused first
+  assert.equal((await call("POST", "/v1/workspaces", { body: { slug: "x1", name: "n" } })).status, 401);
+  assert.equal(j(await call("POST", "/v1/workspaces", { cookie: s.cookie, body: { slug: "x1", name: "n" } })).error.code, "csrf");
+});
+
+test("workspace create gate: denial is audited with permission metadata and null workspace", async () => {
+  const { call, owner, member, login, authRepo } = setup({ service: { instance: adminsConfig("o@x.io") } });
+  const rows = auditSpy(authRepo);
+  const { ws } = await owner("o@x.io", "default");
+  const v = await member(ws.id, "viewer@x.io", "viewer");
+  const s = await login("viewer@x.io");
+  const before = rows.length;
+  assert.equal((await call("POST", "/v1/workspaces", { cookie: s.cookie, csrf: s.csrf, body: { slug: "mine", name: "m" } })).status, 403);
+  const added = rows.slice(before);
+  assert.equal(added.length, 1);
+  const row = added[0]!;
+  assert.equal(row.action, "workspace.create");
+  assert.equal(row.status, 403);
+  assert.equal(row.workspaceId, null);
+  assert.equal(row.actorType, "user");
+  assert.equal(row.actorId, v.user.id);
+  assert.equal(row.metadata.permission, "instance:workspace_create");
+  assert.equal(row.metadata.denied, "forbidden");
+});
+
 test("workspace creation is for session users only; creator owns it", async () => {
-  const { call, owner, member, login } = setup();
+  const { call, owner, member, login } = setup({ service: { instance: adminsConfig("ad@x.io") } });
   const { ws } = await owner("o@x.io", "ws-a");
   const t = await member(ws.id, "ad@x.io", "admin");
   assert.equal((await call("POST", "/v1/workspaces", { token: t.token.raw, body: { slug: "ws-new", name: "n" } })).status, 403);
@@ -203,6 +335,37 @@ test("workspace creation is for session users only; creator owns it", async () =
   assert.equal((await call("POST", "/v1/workspaces", { cookie: s.cookie, csrf: s.csrf, body: { slug: "Bad Slug", name: "n" } })).status, 400);
   const mine = j(await call("GET", "/v1/workspaces", { cookie: s.cookie })).items;
   assert.deepEqual(mine.map((w: any) => [w.slug, w.role]).sort(), [["ws-a", "admin"], ["ws-new", "owner"]]);
+});
+
+test("member add: a non-instance-admin cannot pre-register an instance-admin email; an instance admin can; adding an existing account is unchanged", async () => {
+  const instance = parseInstanceConfig({ NURTUO_INSTANCE_ADMINS: "boss@x.io,alice@corp.example,carol@corp.example" });
+  const { call, owner, member, login, authRepo } = setup({ service: { instance } });
+  const { ws } = await owner("boss@x.io", "default");
+  const wsOwner = await member(ws.id, "wsowner@x.io", "owner");
+  const wsAdmin = await member(ws.id, "wsadmin@x.io", "admin");
+  const add = (o: Parameters<typeof call>[2], email: string) => call("POST", `/v1/workspaces/${ws.id}/members`, { ...o, body: { email, role: "viewer", password: PASSWORD } });
+
+  // workspace owner/admin (token or session) who is not an instance admin: refused, no account created
+  for (const caller of [{ token: wsOwner.token.raw }, { token: wsAdmin.token.raw }, await login("wsowner@x.io").then((s) => ({ cookie: s.cookie, csrf: s.csrf }))]) {
+    const r = await add(caller, "Alice@Corp.Example");
+    assert.equal(r.status, 403);
+    assert.equal(j(r).error.code, "role_escalation");
+    assert.equal(await authRepo.getUserByEmail("alice@corp.example"), undefined);
+  }
+  // ordinary new emails are unaffected
+  assert.equal((await add({ token: wsAdmin.token.raw }, "new@x.io")).status, 201);
+
+  // an instance admin (session) can create the account
+  const bs = await login("boss@x.io");
+  const ok = await add({ cookie: bs.cookie, csrf: bs.csrf }, "alice@corp.example");
+  assert.equal(ok.status, 201);
+  assert.ok(await authRepo.getUserByEmail("alice@corp.example"));
+
+  // adding an existing account with an instance-admin email is unchanged for non-instance-admins
+  const other = await owner("carol@corp.example", "ws-c");
+  const r = await add({ token: wsAdmin.token.raw }, "carol@corp.example");
+  assert.equal(r.status, 201);
+  assert.equal(j(r).userId, other.user.id);
 });
 
 // ---- cross-workspace isolation ---------------------------------------------------------------------
