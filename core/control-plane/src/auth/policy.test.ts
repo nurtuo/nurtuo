@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { POLICIES, matchPolicy } from "./policy.js";
+import { INSTANCE_PERMISSIONS } from "./instance.js";
 import { isPermission } from "./permissions.js";
 import { j, setup } from "./test-util.js";
 
@@ -47,6 +48,8 @@ test("policy table is well-formed", () => {
   for (const p of POLICIES) {
     if (p.access === "permission") { assert.ok(p.permission && isPermission(p.permission), `${p.action} needs a valid permission`); assert.notEqual(p.workspace, "none", `${p.action} must be workspace scoped`); }
     else assert.equal(p.permission, undefined);
+    if (p.access === "instance") { assert.ok(p.instancePermission && (INSTANCE_PERMISSIONS as readonly string[]).includes(p.instancePermission), `${p.action} needs a valid instancePermission`); assert.equal(p.workspace, "none", `${p.action} must not be workspace scoped`); }
+    else assert.equal(p.instancePermission, undefined, `${p.action}: instancePermission only with access "instance"`);
     if (p.workspace === "path") assert.ok(p.pattern.includes(":ws"), p.pattern);
   }
   const actions = POLICIES.map((p) => p.action);

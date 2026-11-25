@@ -25,6 +25,8 @@ export type EndpointResult = ApiResponse & { audit?: AuditDetail };
 export interface EndpointCtx {
   req: ApiRequest; principal: Principal | null; params: Record<string, string>; query: Record<string, string>;
   workspace?: Workspace; ip: string | null; requestId: string; service: AuthService; oidc?: OidcSetup;
+  /** Aborted when the HTTP client disconnects before the response is sent. */
+  signal?: AbortSignal;
 }
 export type Endpoint = (c: EndpointCtx) => Promise<EndpointResult>;
 
@@ -168,6 +170,10 @@ export const endpoints: Record<string, Endpoint> = {
     const email = c.service.validateEmail(b.email);
     let user = await c.service.repo.getUserByEmail(email);
     if (!user) {
+      // An instance-admin email confers instance permissions, so only an instance admin may create that account (D9).
+      if (c.service.isInstanceAdminEmail(email) && !(await c.service.instancePermissions(p)).has("instance:workspace_create")) {
+        throw forbidden("role_escalation", "only an instance admin can create an account for an instance-admin email");
+      }
       // New local account; the password is set by the admin and never changed for an existing account here.
       user = await c.service.createPasswordUser(email, b.password as string, typeof b.displayName === "string" ? b.displayName.slice(0, 100) : "");
     }

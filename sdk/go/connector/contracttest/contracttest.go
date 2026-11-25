@@ -18,8 +18,9 @@
 // at the bridge's socket instead of providing Options.New.
 //
 // Status: skeleton. Implemented: descriptor sanity, optional golden descriptor, test-connection
-// redaction, per-document status semantics of Execute. Planned (reported as skipped): streaming
-// of large payloads, crash behaviour, Listen acks.
+// redaction, per-document status semantics of Execute, bounded-memory streaming of a large
+// payload (opt-in through Options.LargePayload). Planned (reported as skipped): crash behaviour,
+// Listen acks.
 package contracttest
 
 import (
@@ -76,6 +77,9 @@ type Options struct {
 	Secrets []string
 	// Execute cases; if empty the Execute subtests are skipped.
 	Execute []ExecuteCase
+	// LargePayload enables the ExecuteLargePayload subtest for connectors that stream a document
+	// incrementally; if nil the subtest is skipped.
+	LargePayload *LargePayloadCase
 	// Timeout per RPC; defaults to 10s.
 	Timeout time.Duration
 }
@@ -102,7 +106,7 @@ func Run(t *testing.T, o Options) {
 			t.Run(c.Name, func(t *testing.T) { execute(t, &o, c) })
 		}
 	})
-	t.Run("ExecuteLargePayload", func(t *testing.T) { t.Skip("TODO: stream a payload larger than max message size with bounded memory") })
+	t.Run("ExecuteLargePayload", func(t *testing.T) { executeLargePayload(t, &o) })
 	t.Run("CrashBehaviour", func(t *testing.T) {
 		t.Skip("TODO: connector dying mid-batch must surface as a non-OK status, never as SUCCESS")
 	})

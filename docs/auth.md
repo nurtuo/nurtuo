@@ -12,7 +12,10 @@ literal `"disabled"`. `"disabled"` exists only for tests and local development: 
 requires the option explicitly. The hook wraps the router, so `api.ts` itself contains no auth logic.
 
 `main.ts` environment: `NURTUO_AUTH_SECRET` (>= 32 bytes, required with `DATABASE_URL`),
-`NURTUO_BOOTSTRAP_EMAIL` / `NURTUO_BOOTSTRAP_PASSWORD` (creates the first owner and workspace `default`),
+`NURTUO_BOOTSTRAP_EMAIL` / `NURTUO_BOOTSTRAP_PASSWORD` (creates the first owner and workspace `default`;
+`NURTUO_BOOTSTRAP_EMAIL` alone also makes that email an instance admin),
+`NURTUO_INSTANCE_ADMINS` (comma-separated instance-admin emails), `NURTUO_ALLOW_WORKSPACE_CREATE`
+(`admins`, the default, or `any`; see [Instance admins](#instance-admins)),
 `NURTUO_TRUST_PROXY=1` (use `X-Forwarded-For` for audit/rate-limit IPs; only behind a trusted proxy).
 
 ## Request pipeline
@@ -20,6 +23,8 @@ requires the option explicitly. The hook wraps the router, so `api.ts` itself co
 1. Match the route against `policy.ts` (method + path pattern). No match: 401 if anonymous, else 403 `no_policy` (fail closed).
 2. Authenticate (public routes skip this): `Authorization: Bearer nrt_...` (API token), `Authorization: Bearer <jwt>`, or the session cookie. Presented-but-invalid credentials are 401, never "anonymous".
 3. Cookie-authenticated mutating requests must carry `X-Nurtuo-Csrf` equal to the `csrfToken` returned at login (compared in constant time).
+   Session-only routes (`POST /v1/workspaces`, `GET /v1/workspaces`) refuse API tokens with 403 before this step.
+   Instance-level routes (`access: "instance"`, today only `POST /v1/workspaces`) then check the instance permission (see [Instance admins](#instance-admins)): 403 `forbidden` "missing permission instance:workspace_create", audited, before the request body is validated.
 4. Resolve the workspace: `/v1/workspaces/{ws}/...` from the path (non-members get 404, so existence is not disclosed); other routes from `X-Nurtuo-Workspace` (id or slug), the token's own workspace, or the caller's only membership.
 5. `authorize(permission, resource)` checks the permission inside that workspace. Denials are 403.
 6. Handler runs (auth-owned routes in `endpoints.ts`, everything else falls through to `api.ts`).
@@ -32,20 +37,53 @@ route is not rejected. Adding a route to `api.ts` therefore requires an explicit
 ## Roles and permissions
 
 Permissions are `resource:action`. Built-in roles (source of truth: `permissions.ts`; mirrored in
-migration `0103_auth_seed_roles.sql`, a test fails on drift):
+migrations `0103_auth_seed_roles.sql` and `0104_auth_seed_connection_permissions.sql`, a test fails on drift):
 
 | role | intent |
 | --- | --- |
 | owner | everything, including deleting the workspace and managing owners |
 | admin | everything except `workspace:delete`; cannot grant or touch owners |
-| editor | read plus `component:write/delete`, own tokens |
-| viewer | read-only |
+| editor | read plus `component:write/delete`, own tokens, and (canvas Run, experimental) `connection:write/delete`, `secret:write/delete`, `test_run:execute` |
+| viewer | read-only (includes `connection:read`) |
 | deployer | read-only plus `deployment:create`, own tokens |
 | runtime | machine role: register runtimes, read desired state, report deployment status |
+
+On upgrade, migration `0104_auth_seed_connection_permissions.sql` grants the new permissions to
+existing workspaces. Existing editors gain `connection:write` and `secret:write` on deployment.
+
+Canvas Run permissions (experimental): `connection:read` is held by owner, admin, editor, viewer and
+deployer; `connection:write`, `connection:delete`, `secret:write`, `secret:delete` and
+`test_run:execute` by owner, admin and editor; `runtime` holds none of them. Secret values have no read
+permission at all: the API lists names only. The secret and test-run routes are for session users, API
+tokens get 403.
 
 Escalation rule: a principal may grant, change or remove a role only if it holds every permission of
 that role (`canGrant`). It is role-agnostic: admin cannot mint owners, editors cannot mint admins,
 nobody can touch a role above their own. The last owner cannot be demoted or removed (atomic in the repository).
+
+## Instance admins
+
+Creating a workspace (`POST /v1/workspaces`) needs the instance-level permission
+`instance:workspace_create`. It is not a workspace permission: no workspace role holds it, it is not an
+API-token scope and `GET /v1/roles` does not list it (code: `src/auth/instance.ts`).
+
+- Instance admins are the emails in `NURTUO_INSTANCE_ADMINS` (comma-separated; trimmed, case-insensitive)
+  plus `NURTUO_BOOTSTRAP_EMAIL` whenever it is set. The caller's email is checked on each request, so an
+  account created later with a listed email counts without a restart; removing an email (including
+  unsetting `NURTUO_BOOTSTRAP_EMAIL` without listing it) takes effect on restart.
+- `NURTUO_ALLOW_WORKSPACE_CREATE=admins` (default) allows only instance admins. `any` lets every session user
+  create a workspace (the behaviour before this gate); the control plane logs a warning on every start.
+- A malformed email or an unknown mode stops the control plane at start (exit 1). With no admins configured
+  it starts with a warning and nobody can create workspaces. Give every replica the same values.
+- API tokens can never create workspaces (session users only).
+- Only an instance admin may create a new account for an instance-admin email through
+  `POST /v1/workspaces/{ws}/members` (otherwise 403 `role_escalation`), so a workspace admin cannot
+  pre-register that email with a password of their choice. Adding an existing account is unchanged.
+- Until workspace data is partitioned (#55, see Known gaps), owning any workspace means full data access
+  over every row; make only trusted people owners of workspaces you create.
+
+The env-var list is temporary for phase 1. The target model is instance roles stored in the database and
+managed through the API, tracked in [#77](https://github.com/nurtuo/nurtuo/issues/77).
 
 ## Sessions
 

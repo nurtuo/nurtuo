@@ -225,11 +225,11 @@ flowchart LR
     VAL["flow-validate\n(Apache lib)"]
     REPO["component repo\npackaging, deploy\ndesired state"]
     GW["runtime gateway\n(Connect/gRPC)"]
+    BUNDLES["signed bundle cache\n(control-plane memory)"]
     ING["telemetry ingest"]
   end
   PG[("PostgreSQL\ncomponents, desired state,\noutbox, checkpoints")]
   CH[("ClickHouse\nreporting")]
-  S3[("S3-compatible\nbundles, artifacts")]
   REG[("connector registry\nOCI, signed")]
 
   subgraph RT["Runtime: one Go binary (AGPL)"]
@@ -250,9 +250,9 @@ flowchart LR
   MCP --> VAL
   AI --> MCP
   API --> REPO --> PG
-  REPO --> S3
   GW <-- "outbound-only\nmTLS stream" --> SUP
   REPO --> GW
+  REPO --> BUNDLES --> GW
   SUP --> ENG
   LIS --> ENG
   Q --> LIS
@@ -272,15 +272,17 @@ sequenceDiagram
   actor U as Developer or AI agent (MCP)
   participant CP as Control plane
   participant PG as Postgres
-  participant S3 as Object store / registry
+  participant S3 as Bridge registry
   participant RT as Runtime (supervisor)
   participant Q as Embedded JetStream
   U->>CP: deploy(flow@rev, env)  [MCP deploy needs human approval]
   CP->>CP: validate (flow-validate), walk dependencies
-  CP->>S3: immutable signed bundle (sha256)
+  CP->>CP: pack and sign bundle, cache in memory (sha256)
   CP->>PG: desired state rev N+1 + outbox row (same tx)
   CP-->>RT: DesiredState(rev N+1) on the open gateway stream
-  RT->>S3: FetchArtifact(bundle digest), verify signature
+  RT->>CP: FetchArtifact(bundle digest) on cache miss
+  CP-->>RT: Stream signed bundle over mTLS
+  RT->>RT: Verify SHA-256 and Ed25519, then cache locally
   RT->>RT: compile maps (JSONata/CEL), load WASM, warm connections
   RT->>Q: Ensure(queue defs)  (idempotent)
   RT->>Q: Subscribe(listener)  push consumer opened immediately
@@ -341,7 +343,8 @@ sequenceDiagram
 | Container images (optional) | ko or Docker buildx | cosign | never required for install |
 | SBOM | Syft (SPDX JSON) per artifact | attached to release | |
 
-The runtime verifies cosign signatures of bundles and bridges before use.
+The runtime verifies deployment bundles with Ed25519 using its configured trusted keys.
+Bridge release artifacts use cosign.
 
 #### Snapshot dry-run
 

@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // The single integration point with api.ts: createAuthHook(...).handle(req, next) wraps the router.
-// Order: match policy (fail closed) -> authenticate -> CSRF -> resolve workspace -> authorize ->
+// Order: match policy (fail closed) -> authenticate -> CSRF -> instance permission -> resolve workspace -> authorize ->
 // run handler -> audit (every mutating request by an authenticated caller, including denials).
 import { randomUUID } from "node:crypto";
 import { ApiError } from "../domain.js";
 import type { ApiRequest, ApiResponse } from "../api.js";
 import { sha256hex, safeEqual } from "./crypto.js";
-import { endpoints, type AuditDetail, type EndpointResult, type OidcSetup } from "./endpoints.js";
+import { endpoints, type AuditDetail, type Endpoint, type EndpointResult, type OidcSetup } from "./endpoints.js";
 import { MUTATING, authorize, matchPolicy, type RoutePolicy } from "./policy.js";
 import type { AuthService } from "./service.js";
 import type { Principal, Workspace } from "./types.js";
@@ -19,6 +19,11 @@ export interface AuthHookOptions {
   trustProxy?: boolean;
   /** Called when the audit append fails; the request then fails with 500 audit_unavailable. */
   onAuditError?: (e: unknown) => void;
+  /** Endpoints of other modules, keyed by policy action; built-in auth endpoints win on a name clash. They receive the resolved workspace. */
+  extraEndpoints?: Record<string, Endpoint>;
+  /** Called after a workspace was deleted so other modules can purge what they keyed by workspace id. */
+  serializeWorkspaceDelete?: (workspaceId: string, remove: () => Promise<EndpointResult>) => Promise<EndpointResult>;
+  onWorkspaceDeleted?: (workspaceId: string) => Promise<void>;
 }
 
 export const hashJson = (v: unknown): string | null => (v === undefined || v === null ? null : `sha256:${sha256hex(stableJson(v))}`);
@@ -32,6 +37,7 @@ const errRes = (status: number, code: string, message: string, headers?: ApiResp
 
 export function createAuthHook(o: AuthHookOptions): AuthHook {
   const { service } = o;
+  const handlers: Record<string, Endpoint> = { ...o.extraEndpoints, ...endpoints };
   if (o.oidc?.jit && (o.oidc.jit.role === "owner" || o.oidc.jit.role === "admin")) throw new Error("OIDC JIT provisioning must not grant owner or admin");
 
   function clientIp(req: ApiRequest): string | null {
@@ -114,11 +120,11 @@ export function createAuthHook(o: AuthHookOptions): AuthHook {
     const { policy, params } = hit;
     const mutating = MUTATING.has(method);
     const query = req.query ?? {};
-    const ctxBase = { req, principal, params, query, ip, requestId, service, oidc: o.oidc };
+    const ctxBase = { req, principal, params, query, ip, requestId, service, oidc: o.oidc, signal: req.signal };
     const auditBase = { requestId, ip, policy, params, principal };
 
     const run = async (ws?: Workspace): Promise<EndpointResult> => {
-      const ep = endpoints[policy.action];
+      const ep = handlers[policy.action];
       if (ep) return ep({ ...ctxBase, workspace: ws });
       // Legacy route implemented by api.ts. Capture the before-state for PATCH/PUT/DELETE.
       let before: unknown;
@@ -146,6 +152,14 @@ export function createAuthHook(o: AuthHookOptions): AuthHook {
       if (!sent || !principal.csrf || !safeEqual(sent, principal.csrf)) return errRes(403, "csrf", "missing or invalid X-Nurtuo-Csrf header");
     }
 
+    if (policy.access === "instance") {
+      // Checked before the handler, so non-holders cannot probe body validation or slug conflicts.
+      if (!(await service.instancePermissions(principal)).has(policy.instancePermission!)) {
+        if (mutating) await safeAudit(() => audit(req, { ...auditBase, status: 403, extra: { denied: "forbidden", permission: policy.instancePermission } }));
+        return errRes(403, "forbidden", `missing permission ${policy.instancePermission}`);
+      }
+    }
+
     let ws: Workspace | undefined;
     if (policy.workspace !== "none") {
       const r = await resolveWorkspace(policy, params, principal, headers);
@@ -161,11 +175,16 @@ export function createAuthHook(o: AuthHookOptions): AuthHook {
     }
 
     let res: EndpointResult;
-    try { res = await run(ws); }
+    try {
+      res = policy.action === "workspace.delete" && ws && o.serializeWorkspaceDelete
+        ? await o.serializeWorkspaceDelete(ws.id, () => run(ws))
+        : await run(ws);
+    }
     catch (e) {
       if (e instanceof ApiError && mutating) { await safeAudit(() => audit(req, { ...auditBase, ws, status: e.status, extra: { error: e.code } })); }
       throw e;
     }
+    if (policy.action === "workspace.delete" && res.status < 300 && ws) await o.onWorkspaceDeleted?.(ws.id);
     if (mutating) await safeAudit(() => audit(req, { ...auditBase, ws, status: res.status, detail: res.audit }));
     return strip(res);
   }
