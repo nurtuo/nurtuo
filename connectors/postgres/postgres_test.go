@@ -256,6 +256,32 @@ func TestLiveRoundTrip(t *testing.T) {
 	if err := p.QueryRow(ctx, "select count(*) from nurtuo_conn_test").Scan(&n); err != nil || n != 1 {
 		t.Fatalf("QUERY wrote data: n=%d err=%v", n, err)
 	}
+	// Reject transaction control in a QUERY batch even with the table owner's credentials.
+	res = run(connectorv1.OperationType_OPERATION_TYPE_QUERY, true,
+		`{"sql":"select * from nurtuo_conn_test"}`, `{"sql":"commit"}`)
+	if res["0"].Status != connectorv1.DocumentStatus_DOCUMENT_STATUS_FAILURE ||
+		len(res["0"].OutputDocumentIds) != 0 ||
+		res["1"].Status != connectorv1.DocumentStatus_DOCUMENT_STATUS_APPLICATION_ERROR ||
+		res["1"].Message != "QUERY cannot change transaction or session settings" {
+		t.Fatalf("transaction control in QUERY batch: %v", res)
+	}
+	res = run(connectorv1.OperationType_OPERATION_TYPE_QUERY, true,
+		`{"sql":"select * from nurtuo_conn_test"}`,
+		`{"sql":"insert into nurtuo_conn_test values (2, 'x')"}`)
+	if res["0"].Status != connectorv1.DocumentStatus_DOCUMENT_STATUS_FAILURE ||
+		len(res["0"].OutputDocumentIds) != 0 ||
+		res["1"].Status != connectorv1.DocumentStatus_DOCUMENT_STATUS_APPLICATION_ERROR ||
+		!strings.Contains(res["1"].Message, "25006") {
+		t.Fatalf("write in read-only QUERY batch: %v", res)
+	}
+	// An ordinary batch still returns all results after the transaction completes.
+	res = run(connectorv1.OperationType_OPERATION_TYPE_QUERY, true,
+		`{"sql":"select * from nurtuo_conn_test"}`, `{"sql":"select 2"}`)
+	for _, r := range res {
+		if r.Status != connectorv1.DocumentStatus_DOCUMENT_STATUS_SUCCESS || len(r.OutputDocumentIds) != 1 {
+			t.Fatalf("read-only QUERY batch: %v", res)
+		}
+	}
 	// the other operations keep working
 	res = run(connectorv1.OperationType_OPERATION_TYPE_UPDATE, false, `{"sql":"update nurtuo_conn_test set name='b' where id=1"}`)
 	if res["0"].Status != connectorv1.DocumentStatus_DOCUMENT_STATUS_SUCCESS {

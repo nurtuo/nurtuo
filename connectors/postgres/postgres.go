@@ -372,7 +372,7 @@ recv:
 			outcomes[i] = docOutcome{status: connectorv1.DocumentStatus_DOCUMENT_STATUS_FAILURE, message: msg}
 		}
 	}
-	t, err := pool.BeginTx(ctx, txOptions(isQuery))
+	t, err := beginStatementTx(ctx, pool, isQuery)
 	if err != nil {
 		_, msg := MapError(err, cfg.Password)
 		fail(-1, "transaction not started: "+msg)
@@ -425,10 +425,24 @@ type beginner interface {
 	BeginTx(ctx context.Context, opts pgx.TxOptions) (pgx.Tx, error)
 }
 
+// Establish a snapshot before user SQL runs. PostgreSQL then refuses to switch
+// this read-only transaction to read-write, including through configuration functions.
+func beginStatementTx(ctx context.Context, b beginner, isQuery bool) (pgx.Tx, error) {
+	t, err := b.BeginTx(ctx, txOptions(isQuery))
+	if err != nil || !isQuery {
+		return t, err
+	}
+	if _, err := t.Exec(ctx, "select 1"); err != nil {
+		_ = t.Rollback(context.WithoutCancel(ctx))
+		return nil, err
+	}
+	return t, nil
+}
+
 // runReadOnly runs one document in its own READ ONLY transaction and always rolls it back (a
 // QUERY must not change anything, so there is nothing to commit).
 func runReadOnly(ctx context.Context, b beginner, d *inDoc, maxRows, maxBytes int, secret string) docOutcome {
-	t, err := b.BeginTx(ctx, txOptions(true))
+	t, err := beginStatementTx(ctx, b, true)
 	if err != nil {
 		st, msg := MapError(err, secret)
 		return docOutcome{status: st, message: "transaction not started: " + msg}
@@ -443,11 +457,60 @@ type querier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
+// queryCommand reads the first SQL keyword, skipping PostgreSQL whitespace,
+// empty statements and comments. Block comments can nest.
+func queryCommand(sql string) string {
+	for {
+		sql = strings.TrimLeft(sql, " \t\n\r\f\v;")
+		switch {
+		case strings.HasPrefix(sql, "--"):
+			end := strings.IndexAny(sql, "\r\n")
+			if end < 0 {
+				return ""
+			}
+			sql = sql[end:]
+		case strings.HasPrefix(sql, "/*"):
+			depth := 1
+			sql = sql[2:]
+			for depth > 0 && len(sql) > 0 {
+				switch {
+				case strings.HasPrefix(sql, "/*"):
+					depth++
+					sql = sql[2:]
+				case strings.HasPrefix(sql, "*/"):
+					depth--
+					sql = sql[2:]
+				default:
+					sql = sql[1:]
+				}
+			}
+		default:
+			end := 0
+			for end < len(sql) && ((sql[end] >= 'A' && sql[end] <= 'Z') || (sql[end] >= 'a' && sql[end] <= 'z')) {
+				end++
+			}
+			return strings.ToUpper(sql[:end])
+		}
+	}
+}
+
 func runStatement(ctx context.Context, q querier, d *inDoc, isQuery bool, maxRows, maxBytes int, secret string) docOutcome {
 	sql, args, err := ParseStatement(d.data)
 	if err != nil {
 		st, msg := MapError(err, secret)
 		return docOutcome{status: st, message: msg}
+	}
+	if isQuery {
+		switch queryCommand(sql) {
+		case "ABORT", "BEGIN", "COMMIT", "DISCARD", "END", "PREPARE", "RELEASE", "RESET", "ROLLBACK", "SAVEPOINT", "SET", "START":
+			return docOutcome{status: connectorv1.DocumentStatus_DOCUMENT_STATUS_APPLICATION_ERROR,
+				message: "QUERY cannot change transaction or session settings"}
+		}
+		// Extended protocol rejects multiple SQL statements in one document.
+		if tx, ok := q.(pgx.Tx); ok && tx.Conn() != nil &&
+			tx.Conn().Config().DefaultQueryExecMode == pgx.QueryExecModeSimpleProtocol {
+			args = append([]any{pgx.QueryExecModeDescribeExec}, args...)
+		}
 	}
 	rows, err := q.Query(ctx, sql, args...)
 	if err != nil {
