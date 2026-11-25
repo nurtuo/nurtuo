@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Pre-implement: Verify the SHA-256 of unsigned bundles and warn when `trusted_keys` is empty
 
-**Readiness:** no-go
+**Readiness:** conditional
 **Spec:** docs/specs/2026-11-24-unsigned-bundle-sha256.md
 
 Date: 2026-11-24. Analysis only. The spec's product decisions were not changed. Four purely factual
@@ -14,15 +14,9 @@ corrections were applied to the spec before this report:
 
 The grounding was checked twice: by the spec author and by a separate read-only audit agent that was given only the spec path.
 
-## Blockers
+## Readiness update (2026-11-25)
 
-- **Readiness gate (Critical).** Status is `draft`, and two blocking Open Questions remain:
-  - Q1 = D2 (policy when `trusted_keys` is empty);
-  - Q2 = D3 (`service install` default).
-
-  Both are `needs-owner` security-policy and contract choices. D2 decides how Phase 1 behaves at start, so Phase 1 can start only after D2 is answered. Phase 2 also needs D3.
-
-There are no other Critical findings. The spec describes the code correctly (see "Grounding" below).
+Łukasz approved D2 and D3 at 19:09 Europe/Warsaw, clearing the owner-decision gate for both phases. The spec and index now show `approved`. Phase 2 uses the emergency security exception, includes upgrade-note wording, and treats `allow_unsigned_bundles` as experimental, matching the #64 draft in open PR #79. Readiness is conditional on incorporating the remaining implementation-plan findings below.
 
 ## Rules loaded
 
@@ -62,13 +56,10 @@ The spec's description of current behaviour is correct:
 
 ## Findings
 
-- **Critical: readiness gate.** The spec is `draft` with blocking Q1/Q2 (D2, D3). The owner decides D2 and D3 (or approves Phase 1 alone with D2 and leaves Phase 2 blocked); then set `approved`.
-- **Warning: Phase 2 changes a STABLE surface without naming the compatibility path.**
-  - Evidence: the compatibility draft classes `nurtuo` subcommands and exit codes as STABLE (line 84). Phase 2 makes `service install` exit 1 for a config it accepted before. The spec's Compatibility section does not cite the deprecation protocol or the "Emergency security exception".
-  - Fix: add one Compatibility line that picks a path. The likely choice is the security exception, with an upgrade note.
-- **Warning: the stability class of `allow_unsigned_bundles` disagrees with #64.**
-  - Evidence: this spec's Contracts table says "new, stable once released". The `bundle-artifact-delivery` draft lists it as `experimental` (line 95). The point of D3 (ii) is one shared key.
-  - Fix: agree one class in both specs when D3 is decided.
+- **Resolved: readiness gate.** D2 and D3 are approved.
+- **Resolved: Phase 2 compatibility path.** The spec names the emergency security exception for the stable install command and includes the upgrade note.
+- **Resolved: opt-out stability.** Both specs classify `allow_unsigned_bundles` as experimental. PR #79 already uses that classification.
+
 - **Warning: the Phase 2 risk to the Windows MSI is not covered.**
   - Evidence: the `release-signing-and-installers` draft (line 53) says the MSI registers the service with `nurtuo service install`. Under D3 (ii), an MSI install with an unsigned `runtime.yaml` would fail.
   - Fix: add a Gaps row, and say how the installer passes the opt-out or which config it writes first.
@@ -88,7 +79,7 @@ The spec's description of current behaviour is correct:
   - `config.go:31` (the `BundleDir` comment names only `<digest>.json`).
   - `config.go:32–34` (the `TrustedKeys` comment sits above `HTTPAddr`).
   - Fix: add them to step 5.
-- **Important: scope cohesion.** Phase 1 (verify and warn, no contract change) and Phase 2 (new key, install behaviour, Ask First) can each ship on their own. D12 keeps one spec, which is acceptable. Fix: ship Phase 2 as a separate PR with its own explicit owner approval.
+- **Important: scope cohesion.** Phase 1 (verify and warn, no contract change) and Phase 2 (new key, install behaviour, Ask First) can each ship on their own. D12 keeps one spec, which is acceptable. Fix: ship Phase 2 as a separate PR using the recorded D3 approval.
 
 ## Contract and compatibility audit
 
@@ -96,25 +87,21 @@ The spec's description of current behaviour is correct:
 |---|---|---|---|
 | `<bundle_dir>/<hex>.json` layout (experimental) | 1 | narrowed: the name must be the SHA-256 of the bytes | yes (Contracts, Compatibility, release note) |
 | `gateway.proto`, REST, CLI flags | 1, 2 | none | yes |
-| `runtime.yaml` `allow_unsigned_bundles` | 2 | new key (only under D3 (ii)) | yes, Ask First; stability class to align (Warning above) |
-| `nurtuo service install` exit behaviour (STABLE) | 2 | exit 1 for an unsigned config | named; compatibility path not chosen (Warning above) |
+| `runtime.yaml` `allow_unsigned_bundles` | 2 | new experimental key under approved D3 (ii) | yes, aligned with #64 |
+| `nurtuo service install` exit behaviour (STABLE) | 2 | exit 1 for an unsigned config | yes, emergency security exception and upgrade note |
 
 ## Risks
 
-- **High:** residual authenticity risk without `trusted_keys`. Under D2 (a), a control-plane revision writer can point a digest at a planted file. The spec documents and accepts it pending the owner; the mitigation is #64's default flip.
+- **High:** residual authenticity risk without `trusted_keys`. Under D2 (a), a control-plane revision writer can point a digest at a planted file. The spec documents and accepts it under approved D2; the mitigation is #64's default flip.
 - **Medium:** non-canonical producers break after upgrade. Mitigation: release note and the explicit-`digest` path.
 - **Low:** merge conflicts with #59 (`service.go`) and #62 (`deployer.go`). Mitigation: the new `digest.go` and separate PRs.
 
 ## During implementation
 
-Not applicable while the verdict is `no-go`. Once D2 (and D3 for Phase 2) are decided and the spec is `approved`, the Important items above would make the verdict `conditional`; they should be added to the step plan first.
-
-## Next action
-
-- The owner decides D2 and D3 (`needs-owner`). The spec author applies the Warning and Important fixes with the spec-writing skill, sets `approved`, and re-runs this check before Phase 1 code.
+Add the remaining Warning and Important findings to the relevant implementation steps. Ship Phase 2 separately under the recorded D3 approval and include the upgrade note in its release.
 
 ```
-Readiness: no-go
+Readiness: conditional
 Report: docs/specs/analysis/pre-implement-unsigned-bundle-sha256.md
 Spec: docs/specs/2026-11-24-unsigned-bundle-sha256.md
 ```

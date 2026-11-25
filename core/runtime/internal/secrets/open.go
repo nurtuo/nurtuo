@@ -33,8 +33,14 @@ func (c Config) Validate() error {
 }
 
 // Open returns the configured store. The env provider is read-only (Set/Delete fail).
+//
+// On Windows an existing dir / encrypted-file path and key_file are checked here and Open fails
+// closed, with fix guidance, when they are not private. Open never changes their ACL (D9).
 func Open(c Config) (Store, error) {
 	if err := c.Validate(); err != nil {
+		return nil, err
+	}
+	if err := checkOperatorPaths(c); err != nil {
 		return nil, err
 	}
 	switch c.Provider {

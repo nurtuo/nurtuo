@@ -1,13 +1,13 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Spec: Verify the SHA-256 of unsigned bundles and warn when `trusted_keys` is empty
 
-Status: draft. Date: 2026-11-24.
+Status: approved. Date: 2026-11-24.
 
 Extends: [runtime-supervisor-and-deployer](implemented/2026-11-21-runtime-supervisor-and-deployer.md) (gap 3). Related: [runtime bundle_dir](2026-11-23-runtime-bundle-dir.md) (approved, phase 1 on `main`), [bundle-artifact-delivery](2026-11-22-bundle-artifact-delivery.md) (draft, issue #64).
 
 ## TLDR
 
-With `bundle_dir` set and `trusted_keys` empty, `DirBundleSource` reads `<bundle_dir>/<digest>.json` and runs it without checking that the bytes hash to the digest, so anyone who can write to `bundle_dir` decides what runs. This spec makes the unsigned path **fail closed on a SHA-256 mismatch** (same check `SignedBundleSource` already does), logs a **start-up warning** when `bundle_dir` is set but `trusted_keys` is empty, and (Phase 2, pending owner decision D3) makes `service install` refuse an unsigned configuration unless the operator opts out explicitly. Phase 1 needs no contract change. Making unsigned bundles refused by default at runtime start stays with #64.
+With `bundle_dir` set and `trusted_keys` empty, `DirBundleSource` reads `<bundle_dir>/<digest>.json` and runs it without checking that the bytes hash to the digest, so anyone who can write to `bundle_dir` decides what runs. This spec makes the unsigned path **fail closed on a SHA-256 mismatch** (same check `SignedBundleSource` already does), logs a **start-up warning** when `bundle_dir` is set but `trusted_keys` is empty, and (Phase 2) makes `service install` refuse an unsigned configuration unless the operator opts out explicitly. Phase 1 needs no contract change. Making unsigned bundles refused by default at runtime start stays with #64.
 
 ## Status and links
 
@@ -21,16 +21,11 @@ With `bundle_dir` set and `trusted_keys` empty, `DirBundleSource` reads `<bundle
 
 ## Goal
 
-Operators who run a runtime with a plain `bundle_dir` (no `trusted_keys`) today get no integrity guarantee: a local user, a compromised sync job or a stray copy can replace `<digest>.json` and the runtime runs the new content under the old digest. Proposed: the runtime always checks that the bytes it runs hash to the digest the control plane sent, rejects the deployment otherwise, and tells the operator at start (and, after D3, at `service install`) that without `trusted_keys` bundle authenticity rests on the control plane alone. This is a security fix scoped to the unsigned read path and the policy around an empty `trusted_keys`.
+Operators who run a runtime with a plain `bundle_dir` (no `trusted_keys`) today get no integrity guarantee: a local user, a compromised sync job or a stray copy can replace `<digest>.json` and the runtime runs the new content under the old digest. Proposed: the runtime always checks that the bytes it runs hash to the digest the control plane sent, rejects the deployment otherwise, and tells the operator at start (and, in Phase 2, at `service install`) that without `trusted_keys` bundle authenticity rests on the control plane alone. This is a security fix scoped to the unsigned read path and the policy around an empty `trusted_keys`.
 
 ## Open Questions
 
-Blocking (owner decisions; see Decisions for options and recommendations):
-
-- **Q1 (D2):** With `bundle_dir` set and `trusted_keys` empty, should the runtime (a) warn and still run SHA-256-verified unsigned bundles, (b) warn and refuse all bundles, (c) fail start, or (d) fail closed only under `service`? Recommendation: (a) now; the refuse-by-default flip ships with #64.
-- **Q2 (D3):** What does "make `trusted_keys` the default for `service install`" mean? Recommendation: install refuses a config with `bundle_dir` set and `trusted_keys` empty unless `allow_unsigned_bundles: true` is set in `runtime.yaml` (a new key, shared with #64's draft); no key generation.
-
-Non-blocking (implementer defaults, listed so the owner can override):
+D2 and D3 are approved. The remaining implementer defaults are listed below.
 
 - **Q3 (D7):** The digest of a plain bundle covers the raw file bytes, not a re-canonicalised JSON form. Producers must write exactly the bytes they hashed (for control-plane-computed digests: `canonicalJson(content)`), or post the revision with an explicit `digest`.
 - **Q4 (D12):** One spec with two phases (Phase 1 runtime verify + warn; Phase 2 install policy), not two specs.
@@ -42,14 +37,14 @@ In scope:
 - SHA-256 verification of unsigned `<bundle_dir>/<hex>.json` bundles against the deployment's `bundle_digest`, fail closed.
 - Strict digest syntax on the unsigned path (optional `sha256:` prefix, then exactly 64 lowercase hex characters), shared with the signed path.
 - A start-up `WARN` when `bundle_dir` is set and `trusted_keys` is empty.
-- Phase 2 (after D3): the `service install` policy for an empty `trusted_keys`.
+- Phase 2: the `service install` policy for an empty `trusted_keys`.
 - Migrating the tests that today write plain bundles under names that are not their SHA-256 (`internal/e2e`, `internal/interop`).
 - Doc updates (`operations.md`, `security.md`, `interop.md`) and a release note.
 
 Non-goals:
 
 - `FetchArtifact`, a bundle cache, standalone `BundleDir`, generating, storing or rotating a signing key, delivering signed artifacts (all #64).
-- Refusing unsigned bundles by default at runtime start (the `allow_unsigned_bundles` runtime switch in the #64 draft). This spec only reserves the key name for the install check if D3 is accepted.
+- Refusing unsigned bundles by default at runtime start (the `allow_unsigned_bundles` runtime switch in the #64 draft). Phase 2 introduces the same key for the install check.
 - Exiting the OS service when start fails (#59); moving `ApplyDesiredState` off the receive loop (#60); keying flows by `<deployment>/<flow>` (#62).
 - Changing the signed path (`SignedBundleSource`, `bundle.Verify`) beyond sharing the digest helpers.
 - File permissions or ACLs on `bundle_dir` (Windows DACL work is #57 and covers the standalone secrets directory only).
@@ -110,14 +105,14 @@ What the operator sees after Phase 1:
 | `bundle_dir` unset | unchanged (#58 phase 1): `error`, `no bundle_dir configured ...` |
 | start with `bundle_dir` set and no keys | one `WARN` line naming `trusted_keys`; the runtime connects and runs verified bundles |
 
-**Phase 2: `service install` policy (blocked on D3; recommended option shown, pending owner confirmation).**
+**Phase 2: `service install` policy.**
 
 5. A pure function in `core/runtime/cmd/nurtuo/service.go`, for example `installPolicy(cfg *runtime.Config) (warning string, err error)`, called from case `"install"` after `LoadConfig` and before `svc.Install()`:
    - `bundle_dir` empty: no error (the runtime will report `error` for every deployment; #58 phase 1 already warns at start).
    - `bundle_dir` set and `trusted_keys` non-empty: no error.
    - `bundle_dir` set, `trusted_keys` empty, `allow_unsigned_bundles` not true: `refusing to install: bundle_dir is set but trusted_keys is empty; add the public key(s) that sign your bundles to trusted_keys, or set allow_unsigned_bundles: true to accept SHA-256-verified unsigned bundles`. Exit code 1 (existing path in `serviceMain`).
    - same with `allow_unsigned_bundles: true`: install proceeds and prints a warning line to stdout.
-   - Recommended D3 option needs a new `runtime.yaml` key `allow_unsigned_bundles` (bool, default false, `Config.AllowUnsignedBundles`). In Phase 2 only `service install` reads it; #64 can later make `RunWith` honour it at start, so there is one opt-out, not two. If the owner prefers no new key, the fallback is warn-only: install prints the same text as a warning and succeeds (no contract change).
+   - Phase 2 adds the optional experimental `runtime.yaml` key `allow_unsigned_bundles` (bool, default false, `Config.AllowUnsignedBundles`). Only `service install` reads it in Phase 2. #64 extends the same opt-out to runtime startup.
    - No key is generated, read beyond the public `trusted_keys` hex strings, or printed. The signing key belongs to whoever packages bundles (`core/deploy/bundle` `Sign`), not to the runtime host; standalone's install-local key is #64 (D3 of the bundle-dir spec).
    - Existing installed services are not affected: install is not re-run on upgrade and `service run` does not apply the policy.
 
@@ -125,7 +120,7 @@ What the operator sees after Phase 1:
 
 - Always: the bytes that will be parsed and run are hashed and must equal the deployment's digest (`checkSHA256`). This is already true for `SignedBundleSource`; Phase 1 makes it true for `DirBundleSource`.
 - With keys: additionally `bundle.Verify` must pass for one trusted key, and `.json` files are never read (unchanged).
-- #64's draft `GatewayBundleSource` (fetch, size cap, digest compare, then `bundle.Verify`) can call the same `digestHex`/`checkSHA256` helpers; nothing in this spec adds a second hash step or a bypass for #64 to remove. If #64 flips the default to "refuse unsigned unless `allow_unsigned_bundles`", the Phase 1 warning becomes the message logged when the opt-out is used, and the Phase 2 key (if accepted) is the same key.
+- #64's draft `GatewayBundleSource` (fetch, size cap, digest compare, then `bundle.Verify`) can call the same `digestHex`/`checkSHA256` helpers; nothing in this spec adds a second hash step or a bypass for #64 to remove. When #64 flips the default to refuse unsigned bundles, it will reuse the Phase 2 key and log the Phase 1 warning when the opt-out is used.
 
 ### Alternatives considered
 
@@ -150,7 +145,7 @@ What the operator sees after Phase 1:
 | `<bundle_dir>/<hex>.bundle`, `nurtuo.bundle/v1` | none | frozen / experimental as today |
 | `Deployment.bundle_digest` (`gateway.proto`) | none; format already `sha256:<64 hex>` from the control plane | additive-only |
 | `runtime.yaml` `bundle_dir`, `trusted_keys` | none | stable |
-| `runtime.yaml` `allow_unsigned_bundles` | Phase 2, only if D3 is accepted as recommended: new optional bool, default false | new, stable once released (Ask First) |
+| `runtime.yaml` `allow_unsigned_bundles` | Phase 2: new optional bool, default false | experimental, matching #64 |
 | `nurtuo service install` behavior and exit code | Phase 2: exit 1 for a config that was accepted before (bundle_dir set, keys empty, no opt-out) | stable (Ask First, D3) |
 | CLI flags, REST API, proto | none | |
 | Log line `trusted_keys is empty: ...` | new WARN text; not a contract | human-readable |
@@ -158,7 +153,9 @@ What the operator sees after Phase 1:
 ## Compatibility
 
 - Phase 1 changes no stable contract. It narrows an experimental file layout: plain bundles whose name is not their SHA-256 stop running. Who is affected: operators placing `<digest>.json` files whose bytes differ from what the digest was computed over (for example pretty-printed or wrapped `{"flows":[...]}` files under a control-plane-computed digest). Migration: write exactly `canonicalJson(content)` bytes, or post the revision with `digest` = `sha256:` + SHA-256 of the file and place the file under that name, or move to signed bundles with `trusted_keys`. Announce in the release note and in `operations.md`.
-- Phase 2 (recommended D3) is a behavior change of a stable command: re-running `service install` with an unchanged unsigned config fails until the operator adds keys or `allow_unsigned_bundles: true`. Running services are untouched.
+- Phase 2 uses the [compatibility contract's emergency security exception](2026-11-22-backward-compatibility-contract.md#emergency-security-exception) for the stable `nurtuo service install` behavior and exit code. The install gate addresses the high-severity bundle authenticity risk in Gaps and risks. Follow the contract's security advisory process and include the upgrade note in the same release. This spec records the exception and limits the change to installs with a bundle directory and no trusted keys.
+- **Phase 2 upgrade note for `docs/upgrade.md`.** Before running `nurtuo service install` again, operators with `bundle_dir` set and an empty `trusted_keys` must configure the public signing keys and use signed bundles, or explicitly set `allow_unsigned_bundles: true` in `runtime.yaml` to use SHA-256-verified unsigned bundles. Otherwise the command exits 1 before registering the service. Existing services can continue running through this upgrade. Issue #64 will extend the policy to runtime startup.
+- The opt-out is experimental in both specs. [PR #79](https://github.com/nurtuo/nurtuo/pull/79) is open and already classifies it as experimental. The alignment is recorded here.
 
 ## Security
 
@@ -169,14 +166,16 @@ What the operator sees after Phase 1:
 
 ## Decisions
 
-| ID | Question | Options | Recommendation | Why | Class |
+Łukasz approved D2 and D3 on 2026-11-25 at 19:09 Europe/Warsaw. The approval covers the Phase 2 install behavior and config key.
+
+| ID | Question | Options | Decision or default | Why | Class |
 |---|---|---|---|---|---|
 | D1 | Unsigned bundle whose bytes do not SHA-256 to the digest | reject (fail closed) / warn and run | **Reject; report `error`, start nothing** | Closes the reported hole; same rule as `SignedBundleSource`; the unsigned layout is `experimental`, so no stable contract breaks (release note) | implementer-default |
-| D2 | Policy when `bundle_dir` is set and `trusted_keys` is empty | (a) warn, run SHA-verified unsigned bundles; (b) warn, refuse all bundles; (c) fail start; (d) fail closed only under `service` | **(a) now**, with the D3 install gate; the refuse-by-default flip with an `allow_unsigned_bundles` opt-out ships with #64 | (a) leaves authenticity resting on the control plane (CP or revision-writer compromise can point a digest at a planted file). (b)/(c) break every current plain-bundle install and test and need an opt-out key; (c) is invisible under the OS service until #59. (d) breaks the same service installs and adds a mode switch `RunWith` does not have. (a) is the tightest option with no contract change and is strictly stronger than today | needs-owner |
-| D3 | "Make `trusted_keys` the default for `service install`" | (i) refuse unless `--allow-unsigned-bundles` flag; (ii) refuse unless `allow_unsigned_bundles: true` in `runtime.yaml`; (iii) warn only; (iv) generate a keypair; (v) refuse, no opt-out | **(ii)**; Design fallback if declined: (iii) | Install writes no config, so "default" can only mean "required unless opted out". (ii) gives one opt-out that #64 reuses at start; (i) adds a flag that becomes redundant; (iv) invents key lifecycle that belongs to #64 and the runtime is not the signer; (v) blocks legitimate dev installs. Changes stable install behavior and adds a config key | needs-owner |
+| D2 | Policy when `bundle_dir` is set and `trusted_keys` is empty | (a) warn, run SHA-verified unsigned bundles; (b) warn, refuse all bundles; (c) fail start; (d) fail closed only under `service` | **(a) now**, with the D3 install gate; the refuse-by-default flip with an `allow_unsigned_bundles` opt-out ships with #64 | (a) leaves authenticity resting on the control plane (CP or revision-writer compromise can point a digest at a planted file). (b)/(c) break every current plain-bundle install and test and need an opt-out key; (c) is invisible under the OS service until #59. (d) breaks the same service installs and adds a mode switch `RunWith` does not have. (a) is the tightest option with no contract change and is strictly stronger than today | approved by Łukasz |
+| D3 | "Make `trusted_keys` the default for `service install`" | (i) refuse unless `--allow-unsigned-bundles` flag; (ii) refuse unless `allow_unsigned_bundles: true` in `runtime.yaml`; (iii) warn only; (iv) generate a keypair; (v) refuse, no opt-out | **(ii)**. Refuse install when `bundle_dir` is set and `trusted_keys` is empty unless `allow_unsigned_bundles: true`. No key generation. | Install writes no config, so "default" can only mean "required unless opted out". (ii) gives one opt-out that #64 reuses at start; (i) adds a flag that becomes redundant; (iv) invents key lifecycle that belongs to #64 and the runtime is not the signer; (v) blocks legitimate dev installs. Changes stable install behavior and adds a config key | approved by Łukasz |
 | D4 | Signed bundles and #64 | add SHA-256 to unsigned only / reject unsigned whenever keys exist / both | **Always hash the bytes that run; with keys also require a valid signature and never read `.json`** (the code already does the keyed part; do not regress). Shared helpers in `digest.go` for #64 | One digest check per source, no bypass; #64 composes without dual checks | implementer-default |
 | D5 | `bundle_dir` unset | apply checks / no-op | **No change**: `unconfiguredDeployer` stays; only the existing `bundle_dir is not set` warning fires; no `trusted_keys` warning (`Validate` rejects keys without a dir) | Does not touch #58 phase 1 | implementer-default |
-| D6 | Config and contract surface | — | **Phase 1: none.** Field names `bundle_dir`, `trusted_keys` unchanged; file `<64 lowercase hex>.json`; optional `sha256:` prefix on `bundle_digest`; hash = SHA-256, lowercase hex. Phase 2 adds `allow_unsigned_bundles` only under D3 | Lowest blast radius | implementer-default (Phase 2 key covered by D3) |
+| D6 | Config and contract surface | — | **Phase 1: none.** Field names `bundle_dir`, `trusted_keys` unchanged; file `<64 lowercase hex>.json`; optional `sha256:` prefix on `bundle_digest`; hash = SHA-256, lowercase hex. Phase 2 adds `allow_unsigned_bundles` under D3 | Lowest blast radius | implementer-default (Phase 2 key covered by D3) |
 | D7 | What bytes the digest covers | raw file bytes / Go re-canonicalised JSON / either | **Raw file bytes** | Matches the signed path and #64; no parsing before verification; no cross-language canonicaliser. Producers write `canonicalJson(content)` or post an explicit `digest` | implementer-default |
 | D8 | Digest syntax and case | keep loose names / 64 lowercase hex, no folding | **64 lowercase hex, optional `sha256:` prefix, no case folding** | A non-hex name cannot be verified; the control plane emits lowercase; on case-insensitive file systems (Windows, macOS) an upper-case file name still opens but its content must hash to the lowercase digest, so case cannot be used to swap content | implementer-default |
 | D9 | TOCTOU and caching | hash then reopen / hash the buffer that is parsed; cache verified digests | **Hash the single `ReadFile` buffer that is returned; no cache** | No window between check and use; the supervisor applies only on change, so the hash runs once per apply | implementer-default |
@@ -195,9 +194,9 @@ What the operator sees after Phase 1:
 4. `RunWith` start-up warning plus `TestRunWarnsWhenTrustedKeysEmpty`. Verified: `cd core/runtime && go test -race ./internal/runtime -run TestRunWarns`.
 5. Docs and comments: `operations.md` (`bundle_dir`/`trusted_keys` rows, the "With `bundle_dir` set" paragraph: name = SHA-256 of the bytes, how to produce them, the warning), `security.md` (bundle trust boundary row and "What is not covered"), `interop.md` (Artifacts), the `BundleSource` doc comment in `deployer.go`; release note for the runtime binary in the PR. Verified: `node scripts/check-docs-links.mjs`; `cd core/runtime && go vet ./...`.
 
-### Phase 2: `service install` policy (starts only after D3 is decided)
+### Phase 2: `service install` policy
 
-6. Add `installPolicy` (and, under D3 (ii), `Config.AllowUnsignedBundles` with yaml/json tag `allow_unsigned_bundles`) with `TestInstallPolicy`. Verified: `cd core/runtime && go test -race ./cmd/nurtuo -run TestInstallPolicy` and `./internal/runtime -run TestLoadConfig`.
+6. Add `installPolicy` and `Config.AllowUnsignedBundles` with YAML/JSON tag `allow_unsigned_bundles` with `TestInstallPolicy`. Verified: `cd core/runtime && go test -race ./cmd/nurtuo -run TestInstallPolicy` and `./internal/runtime -run TestLoadConfig`.
 7. Call it from case `"install"` before `svc.Install()`; print the warning to stdout; docs: `operations.md` service install section and `runtime.yaml` table. Verified: `TestInstallPolicy`, `TestDispatchServiceErrors` still green; manual `nurtuo service install --config <unsigned.yaml>` on a Linux VM prints the refusal and exits 1 without registering a unit (`systemctl status nurtuo` → not found).
 
 ## Acceptance criteria
@@ -209,7 +208,7 @@ What the operator sees after Phase 1:
 - WHEN the runtime starts with `bundle_dir` set and `trusted_keys` empty THEN exactly one `WARN` line containing `trusted_keys is empty` is logged and the runtime still connects and serves verified bundles.
 - WHEN the runtime starts with `trusted_keys` set, with `bundle_dir` unset, or with an injected `Options.Deployer` THEN that warning is not logged (with `bundle_dir` unset the existing `bundle_dir is not set` warning is still logged and deployments are still `error`).
 - WHEN `trusted_keys` is set THEN behavior is unchanged: `.json` files are never read, a signed bundle is accepted only if its digest and signature verify (`TestSignedBundleSource`, `TestSignedBundleRejections` pass unmodified).
-- (Phase 2, D3 as recommended) WHEN `nurtuo service install` runs with a config where `bundle_dir` is set, `trusted_keys` is empty and `allow_unsigned_bundles` is not `true` THEN it exits 1 with a message naming `trusted_keys` and `allow_unsigned_bundles` and does not register the service.
+- (Phase 2) WHEN `nurtuo service install` runs with a config where `bundle_dir` is set, `trusted_keys` is empty and `allow_unsigned_bundles` is not `true` THEN it exits 1 with a message naming `trusted_keys` and `allow_unsigned_bundles` and does not register the service.
 - (Phase 2) WHEN the config has `trusted_keys`, or `allow_unsigned_bundles: true`, or no `bundle_dir` THEN install proceeds as today (with a warning line for `allow_unsigned_bundles: true`).
 
 ## Tests
@@ -228,7 +227,7 @@ Tests ship in the same change as the code. Unit tests use `t.TempDir()` and in-m
 | `TestPlainBundleTamperedRejected` in `internal/e2e/chain_test.go` (new) | real `RunWith` with plain `bundle_dir` (`startRuntime(t, be.URL, false)`), modelled on `TestSignedBundleRejections`: write `employeeFlow` as a plain bundle, keep its digest, overwrite the same `<hex>.json` with a different valid flow, `setDesired(1, dep("tampered", d))` → `statusFor(..., "error")` with a message containing `digest`; `setDesired(2, dep("upper", "sha256:"+64×"A"))` with a matching upper-case file present → `error`; finally `refused(e.httpAddr)` is true (no listener started) | same | self-contained, uses the fake gateway; no other deployment runs, so `refused` is meaningful |
 | `TestRuntimeAgainstTSGateway`, `TestWrongIdentityRejected`, `TestCertificateIdentities` in `internal/interop/interop_test.go` (harness change) | `putPlain` writes bytes and returns their digest; `cp.component(t, name, content, digest)` and the direct `POST /v1/components/{id}/revisions` in `TestRuntimeAgainstTSGateway` pass that `digest`; asserts unchanged | `cd core/runtime && go test ./internal/interop/...` | skipped without `node` or the control-plane `dist`; run once with them before merge |
 | `TestInstallPolicy` in `core/runtime/cmd/nurtuo/service_test.go` (Phase 2) | table on `installPolicy(&runtime.Config{...})`: no `bundle_dir` → ok; dir + keys → ok; dir, no keys → error containing `trusted_keys` and `allow_unsigned_bundles`; dir, no keys, `AllowUnsignedBundles` → ok with non-empty warning; the message never contains key material | `cd core/runtime && go test -race ./cmd/nurtuo -run TestInstallPolicy` | pure function, no OS service manager |
-| `TestLoadConfigYAMLAndJSON` (Phase 2 extension) in `internal/runtime/runtime_test.go` | `allow_unsigned_bundles: true` parses in YAML and JSON | `cd core/runtime && go test -race ./internal/runtime -run TestLoadConfig` | only under D3 (ii) |
+| `TestLoadConfigYAMLAndJSON` (Phase 2 extension) in `internal/runtime/runtime_test.go` | `allow_unsigned_bundles: true` parses in YAML and JSON | `cd core/runtime && go test -race ./internal/runtime -run TestLoadConfig` | |
 
 ## Gaps and risks
 
@@ -236,11 +235,9 @@ Tests ship in the same change as the code. Unit tests use `t.TempDir()` and in-m
 |---|---|---|---|---|
 | 1 | After Phase 1 an operator who copies pretty-printed `flow.json` files under control-plane digests sees every plain deployment `failed` with "does not match digest" | medium | compatibility | release note; `operations.md` states the exact byte rule and the explicit-`digest` path; message names the digest |
 | 2 | Without `trusted_keys`, a user with revision-create rights posts a revision with `digest` = hash of a file they planted in `bundle_dir` (or a compromised control plane does), and the runtime runs it | high | security | residual by design under D2 (a); start-up warning; D3 install gate; signed bundles; default flip in #64 |
-| 3 | Phase 2 lands but D3 is answered "warn only": new service installs keep running unsigned with only a warning | medium | security | owner decision; Phase 1 still prevents substitution |
-| 4 | #62 edits `deployer.go` (`EngineDeployer.flows`) and Phase 2 edits `service.go` while #59 changes `program`/`runService` there: merge conflicts | low | process | helpers live in a new `digest.go`; Phase 1 touches only `DirBundleSource`/`SignedBundleSource` bodies and one `RunWith` line; Phase 2 touches only the `"install"` case; rebase, do not combine PRs |
+| 4 | #62 edits `deployer.go` (`EngineDeployer.flows`) and Phase 2 edits `service.go` while #59 changes `program`/`runService` there: merge conflicts | low | process | helpers live in a new `digest.go`; Phase 1 touches only `DirBundleSource`/`SignedBundleSource` bodies and one `RunWith` line; Phase 2 touches only the `"install"` case; merge current main into each feature branch |
 | 5 | A multi-GiB file named `<hex>.json` is read fully into memory before hashing (also true for `.bundle` today) and the runtime is OOM-killed | low | runtime | out of scope; an `io.LimitReader` with `bundle.MaxBundleSize` is a follow-up (and part of #64's fetch path) |
 | 6 | Interop tests are skipped in a CI job without `node`/`dist`, so the migrated `putPlain` is not exercised and a broken control-plane digest path goes unnoticed | medium | tests | run interop locally with the control plane built before merge; e2e `TestPlainBundleTamperedRejected` covers the runtime side without node |
-| 7 | Under the OS service a start error is only logged (#59), so if the owner picks D2 (c) the runtime looks healthy while it runs nothing | high (only under D2 (c)) | runtime | recommended D2 (a) avoids it; otherwise sequence after #59 |
 
 ## Improvement opportunities
 
@@ -254,5 +251,7 @@ Tests ship in the same change as the code. Unit tests use `t.TempDir()` and in-m
 - Open Mercato specs with similar scope: none directly; `module-runtime-start-hook` for start-up checks (ideas only).
 
 ## Changelog
+
+- 2026-11-25: Łukasz approved D2 and D3. Recorded the Phase 2 compatibility path and aligned the opt-out with #64.
 
 - 2026-11-24: created as draft.

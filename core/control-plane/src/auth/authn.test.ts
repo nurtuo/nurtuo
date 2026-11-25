@@ -11,6 +11,8 @@ import { PASSWORD, j, setup } from "./test-util.js";
 test("auth disabled is explicit and keeps legacy behaviour", async () => {
   const h = createHandler(new MemoryRepository(), { auth: "disabled" });
   assert.equal((await h({ method: "GET", path: "/v1/components" })).status, 200);
+  // Workspace creation is not reachable without the auth hook (instance config is not parsed then).
+  assert.equal((await h({ method: "POST", path: "/v1/workspaces", body: { slug: "mine", name: "m" } })).status, 405);
   const h2 = createHandler(new MemoryRepository()); // default (dev/test) is the same
   assert.equal((await h2({ method: "GET", path: "/v1/components" })).status, 200);
 });

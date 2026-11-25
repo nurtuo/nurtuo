@@ -38,7 +38,7 @@ type KeychainKeySource struct{}
 
 func (KeychainKeySource) Key() ([]byte, error) { return nil, ErrKeychainUnavailable }
 
-// FileKeySource keeps the key in a 0600 file, creating a random one on first use. Use
+// FileKeySource keeps the key in a private file (0600 / protected DACL), creating a random one on first use. Use
 // ReadOnly to forbid creation (e.g. for `get` on a store that does not exist yet).
 type FileKeySource struct {
 	Path     string
@@ -46,13 +46,14 @@ type FileKeySource struct {
 }
 
 func (f FileKeySource) Key() ([]byte, error) {
+	// Check before reading, so a too-open or planted key file is refused unread.
+	if fi, serr := os.Lstat(f.Path); serr == nil {
+		if perr := checkPerm(f.Path, fi); perr != nil {
+			return nil, perr
+		}
+	}
 	b, err := os.ReadFile(f.Path)
 	if err == nil {
-		if fi, serr := os.Lstat(f.Path); serr == nil {
-			if perr := checkPerm(f.Path, fi); perr != nil {
-				return nil, perr
-			}
-		}
 		if len(b) != 32 {
 			return nil, fmt.Errorf("master key %s: want 32 bytes, got %d", f.Path, len(b))
 		}
@@ -65,11 +66,13 @@ func (f FileKeySource) Key() ([]byte, error) {
 	if _, err := rand.Read(k); err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Dir(f.Path), 0o700); err != nil {
+	// A missing parent is created private; an existing one (possibly an operator-chosen key_file
+	// location) is left unchanged (D9). The key file itself is private from its creation.
+	if err := mkdirPrivate(filepath.Dir(f.Path)); err != nil {
 		return nil, err
 	}
-	// O_EXCL: if another process created it meanwhile, use theirs.
-	fh, err := os.OpenFile(f.Path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	// Exclusive create: if another process created it meanwhile, use theirs.
+	fh, err := createPrivateExclusive(f.Path)
 	if errors.Is(err, fs.ErrExist) {
 		return FileKeySource{Path: f.Path, ReadOnly: true}.Key()
 	}
@@ -136,17 +139,21 @@ func (e *Encrypted) aead() (cipher.AEAD, error) {
 }
 
 func (e *Encrypted) load() (map[string]string, error) {
-	raw, err := os.ReadFile(e.Path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return map[string]string{}, nil
-	}
-	if err != nil {
+	// Check before reading (the directory too, on Windows), so a too-open store is refused unread.
+	if err := checkStoreDir(filepath.Dir(e.Path)); err != nil {
 		return nil, err
 	}
 	if fi, serr := os.Lstat(e.Path); serr == nil {
 		if perr := checkPerm(e.Path, fi); perr != nil {
 			return nil, perr
 		}
+	}
+	raw, err := os.ReadFile(e.Path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return map[string]string{}, nil
+	}
+	if err != nil {
+		return nil, err
 	}
 	g, err := e.aead()
 	if err != nil {
@@ -182,7 +189,8 @@ func (e *Encrypted) save(m map[string]string) error {
 	}
 	out := append(append([]byte{}, encMagic...), nonce...)
 	out = g.Seal(out, nonce, plain, encMagic)
-	if err := os.MkdirAll(filepath.Dir(e.Path), 0o700); err != nil {
+	// Missing directory: created private. Existing: checked, never re-ACLed (D9).
+	if err := ensurePrivateDirNoRepair(filepath.Dir(e.Path)); err != nil {
 		return err
 	}
 	return writeFileAtomic(e.Path, out)
