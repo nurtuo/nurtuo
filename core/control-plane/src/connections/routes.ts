@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { createHash, createPrivateKey, randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { isIP } from "node:net";
 import { permissionsIn } from "../auth/authz.js";
 import type { Endpoint, EndpointCtx } from "../auth/endpoints.js";
 import { ApiError } from "../domain.js";
 import { binding, checkSecretPlacement } from "./binding.js";
 import { ConnectionCoordinator } from "./coordinator.js";
+import { validHostKey } from "./host-key.js";
+import { validatePrivateKey } from "./private-key.js";
 import type { ConnectionRepository, Connection } from "./repository.js";
 import { MAX_SECRET_BYTES, type SecretStore } from "./secrets.js";
 import { secretFields, secretRefs, validateConnection, validateConnectionId } from "./validate.js";
@@ -64,7 +66,7 @@ function applyTrust(settings: Record<string, unknown>, input: Record<string, unk
       throw new ApiError(400, "known_hosts_ambiguous", "paste one host key or enter its fingerprint");
     }
     const key = Buffer.from(entry[2], "base64");
-    if (key.length < 4 || key.readUInt32BE() !== entry[1].length || key.subarray(4, 4 + entry[1].length).toString() !== entry[1]) {
+    if (!validHostKey(entry[1], key)) {
       throw new ApiError(400, "known_hosts_ambiguous", "paste one host key or enter its fingerprint");
     }
     settings.hostKeyPolicy = "fingerprint";
@@ -149,8 +151,7 @@ export function connectionEndpoints(d: ConnectionDeps): Record<string, Endpoint>
           if (value !== undefined) values.set(field, value);
         }
         if (values.has("privateKey") && (Object.hasOwn(credentials, "privateKey") || Object.hasOwn(credentials, "passphrase"))) {
-          try { createPrivateKey({ key: values.get("privateKey")!, passphrase: values.get("passphrase") }); }
-          catch { throw new ApiError(400, "invalid_credential_set", "private key could not be opened with the supplied passphrase"); }
+          await validatePrivateKey(values.get("privateKey")!, values.get("passphrase"));
         }
         const staged: string[] = [];
         try {
@@ -166,8 +167,14 @@ export function connectionEndpoints(d: ConnectionDeps): Record<string, Endpoint>
         }
         let result;
         try {
-          result = await d.connections.put(ws, write);
+          result = await d.connections.put(ws, write, (isNew, append) =>
+            c.auditMutation(isNew ? 201 : 200, { resourceId: id, after: refs.map(({ field }) => binding(write, field)) }, append),
+          );
         } catch (error) {
+          if (error instanceof ApiError && error.code === "audit_unavailable") {
+            for (const name of staged) await d.secrets.delete(ws, name);
+            throw error;
+          }
           const saves = coordinator.pending.get(ws) ?? new Map();
           saves.set(id, { created: staged, retired, generation });
           coordinator.pending.set(ws, saves);
@@ -178,7 +185,6 @@ export function connectionEndpoints(d: ConnectionDeps): Record<string, Endpoint>
         for (const name of retired) await d.secrets.delete(ws, name);
         return {
           status: result.created ? 201 : 200, body: await present(d, ws, result.connection),
-          audit: { resourceId: id, after: refs.map(({ field }) => binding(write, field)) },
         };
       });
     },

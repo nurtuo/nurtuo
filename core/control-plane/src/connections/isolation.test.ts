@@ -9,7 +9,7 @@ test("workspace A cannot list, get, put or delete workspace B's connections or s
   const { ws: b } = await w.owner("b@x.io", "ws-b");
   const A = await w.login("a@x.io"), B = await w.login("b@x.io");
   const as = (s: typeof A) => ({ cookie: s.cookie, csrf: s.csrf });
-  await w.call("PUT", `/v1/workspaces/${b.id}/connections/secret-conn`, { ...as(B), body: { ...sftpConn(), credentials: { password: "b-only-value" } } });
+  await w.call("PUT", `/v1/workspaces/${b.id}/connections/secret-conn`, { ...as(B), ip: "127.0.0.1", body: { ...sftpConn(), credentials: { password: "b-only-value" } } });
 
   // A addressing B's workspace path: 404 (existence is not disclosed)
   for (const [m, p, body] of [

@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { ApiError } from "../domain.js";
 import type { ApiRequest, ApiResponse } from "../api.js";
 import { sha256hex, safeEqual } from "./crypto.js";
-import { endpoints, type AuditDetail, type Endpoint, type EndpointResult, type OidcSetup } from "./endpoints.js";
+import { endpoints, type AppendAudit, type AuditDetail, type Endpoint, type EndpointResult, type OidcSetup } from "./endpoints.js";
 import { MUTATING, authorize, matchPolicy, type RoutePolicy } from "./policy.js";
 import type { AuthService } from "./service.js";
 import type { Principal, Workspace } from "./types.js";
@@ -72,10 +72,10 @@ export function createAuthHook(o: AuthHookOptions): AuthHook {
     return errRes(400, "workspace_required", "send X-Nurtuo-Workspace: <workspace id or slug>");
   }
 
-  async function audit(req: ApiRequest, base: { requestId: string; ip: string | null; policy: RoutePolicy; params: Record<string, string>; principal: Principal | null; ws?: Workspace | null; status: number; detail?: AuditDetail; before?: unknown; after?: unknown; extra?: Record<string, unknown> }) {
+  async function audit(req: ApiRequest, base: { requestId: string; ip: string | null; policy: RoutePolicy; params: Record<string, string>; principal: Principal | null; ws?: Workspace | null; status: number; detail?: AuditDetail; before?: unknown; after?: unknown; extra?: Record<string, unknown> }, append: AppendAudit = (entry) => service.repo.appendAudit(entry)) {
     const d = base.detail ?? {};
     const actor = d.actor ?? (base.principal ? { type: base.principal.kind, id: base.principal.tokenId ?? base.principal.userId } : { type: "anonymous" as const, id: null });
-    await service.repo.appendAudit({
+    await append({
       workspaceId: d.workspaceId !== undefined ? d.workspaceId : (base.ws?.id ?? null),
       actorType: actor.type, actorId: actor.id,
       action: base.policy.action, resource: base.policy.resource,
@@ -123,9 +123,17 @@ export function createAuthHook(o: AuthHookOptions): AuthHook {
     const ctxBase = { req, principal, params, query, ip, requestId, service, oidc: o.oidc, signal: req.signal };
     const auditBase = { requestId, ip, policy, params, principal };
 
+    let auditWritten = false;
     const run = async (ws?: Workspace): Promise<EndpointResult> => {
       const ep = handlers[policy.action];
-      if (ep) return ep({ ...ctxBase, workspace: ws });
+      if (ep) return ep({
+        ...ctxBase,
+        workspace: ws,
+        async auditMutation(status, detail, append) {
+          await safeAudit(() => audit(req, { ...auditBase, ws, status, detail }, append));
+          auditWritten = true;
+        },
+      });
       // Legacy route implemented by api.ts. Capture the before-state for PATCH/PUT/DELETE.
       let before: unknown;
       if (policy.beforePath && mutating) {
@@ -173,11 +181,11 @@ export function createAuthHook(o: AuthHookOptions): AuthHook {
         : await run(ws);
     }
     catch (e) {
-      if (e instanceof ApiError && mutating) { await safeAudit(() => audit(req, { ...auditBase, ws, status: e.status, extra: { error: e.code } })); }
+      if (e instanceof ApiError && mutating && e.code !== "audit_unavailable") { await safeAudit(() => audit(req, { ...auditBase, ws, status: e.status, extra: { error: e.code } })); }
       throw e;
     }
     if (policy.action === "workspace.delete" && res.status < 300 && ws) await o.onWorkspaceDeleted?.(ws.id);
-    if (mutating) await safeAudit(() => audit(req, { ...auditBase, ws, status: res.status, detail: res.audit }));
+    if (mutating && !auditWritten) await safeAudit(() => audit(req, { ...auditBase, ws, status: res.status, detail: res.audit }));
     return strip(res);
   }
 

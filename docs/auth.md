@@ -43,6 +43,9 @@ migrations `0103_auth_seed_roles.sql` and `0104_auth_seed_connection_permissions
 | deployer | read-only plus `deployment:create`, own tokens |
 | runtime | machine role: register runtimes, read desired state, report deployment status |
 
+On upgrade, migration `0104_auth_seed_connection_permissions.sql` grants the new permissions to
+existing workspaces. Existing editors gain `connection:write` and `secret:write` on deployment.
+
 Canvas Run permissions (experimental): `connection:read` is held by owner, admin, editor, viewer and
 deployer; `connection:write`, `connection:delete`, `secret:write`, `secret:delete` and
 `test_run:execute` by owner, admin and editor; `runtime` holds none of them. Secret values have no read

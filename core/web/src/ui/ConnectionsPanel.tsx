@@ -64,7 +64,7 @@ export function ConnectionsPanel({ api, workspaceId, items, onChanged, onClose }
     for (const f of FIELDS) {
       if (f.writeOnly) continue;
       const raw = values[f.name];
-      if (raw === undefined || raw === "") continue;
+      if (raw === undefined || (raw === "" && f.name !== "rootPath")) continue;
       settings[f.name] = f.type === "integer" || f.type === "number" ? Number(raw) : raw;
     }
     if (typed.length === 0 && !existing) return setError("password is required");

@@ -86,7 +86,6 @@ shortened to "documented in the same release"; FROZEN and ADDITIVE-ONLY rules ap
 | `nurtuoctl` commands, flags, exit codes, config file location, `--json` output fields | STABLE (commands, flags, exit codes); ADDITIVE-ONLY (`--json` output) | human-readable output is not a contract |
 | MCP tool names and input schemas | STABLE; output fields ADDITIVE-ONLY | agents are prompted with tool names |
 | `runtime.yaml` keys and value sets, `NURTUO_SECRET_<NAME>`, `NURTUO_DATA_DIR`, control plane env (`DATABASE_URL`, `PORT`, `GATEWAY_*`, `NURTUO_AUTH_SECRET`, `NURTUO_BOOTSTRAP_*`) | STABLE | unknown keys: warn, do not fail (today `yaml.Unmarshal` ignores them silently) |
-| Operation limits configuration surface and its eventual environment variable | EXPERIMENTAL | see the [operation limits spec](2026-11-24-operation-limits-and-credential-binding.md) |
 | Go SDK `sdk/go/connector`, `contracttest`, `sdk/go/flow`; TS `@nurtuo/client`; bridge SDKs | EXPERIMENTAL until each module tags `v1.0.0`, then STABLE (SemVer of the module) | |
 | `core/**/internal/**`, generated code layout, web UI | not a contract | |
 
