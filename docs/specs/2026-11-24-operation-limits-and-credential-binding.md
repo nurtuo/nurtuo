@@ -273,8 +273,9 @@ stated physical bound**, reserved before allocation:
   `M_proc = H_parent + E_parent + W + N`, where `H_parent` is the parent isolate's
   `heap_size_limit` (as configured today), `E_parent` is the parent's off-heap buffer budget
   (socket read chunks, PostgreSQL driver buffers of small requests, response write buffers),
-  `W` is the **large-operation budget** (the sum of all worker `resourceLimits`, young and old
-  generation, code range and stack, plus a measured fixed overhead per worker) and `N` is the
+  `W` is the **large-operation budget** (the sum over all workers of the heap share `h`, the
+  `resourceLimits` young and old generation, code range and stack; the **external share** `x`,
+  enforced by the pre-allocation gate below; and a measured fixed overhead `o` per worker) and `N` is the
   documented native overhead measured in L1a. Startup computes `M_proc` and refuses to start when
   it exceeds the D4 resource budget minus the gateway headroom; when a cgroup memory limit is
   present it is an upper bound for that budget. `W`, `E_parent`, the headroom and the pool sizes
@@ -305,6 +306,36 @@ stated physical bound**, reserved before allocation:
     size. For `MemoryRepository` the copy given to the worker is charged to the worker reservation.
   - Database results of small reads and the small-request pool are the only bodies the parent
     materializes, and they are bounded by the threshold.
+- **Worker external memory (pre-allocation gate).** Worker `resourceLimits` cap only the V8 heap.
+  `ArrayBuffer`s, `Buffer`s and native allocations of the PostgreSQL driver and of `crypto` are
+  outside it, so a worker reservation is split into `h` (heap, set as `resourceLimits`), `x`
+  (external) and `o` (fixed overhead), with `h = k × bytes` and `x = k_ext × bytes` plus the
+  transfer window; `k_ext` is a measured code value like `k`. Every external allocation that grows
+  with the payload is **checked against `x` before it is made**, and no allocation that is not
+  checked may grow with the payload:
+  - *Transfer window.* Credit-based: the parent sends the next chunk only after the worker has
+    returned the credit for a consumed one, so at most the window is in flight. It is charged once,
+    to `E_parent`, wherever its `ArrayBuffer`s currently are.
+  - *String-to-bytes conversions* (digest input, response encoding) run in slices of at most one
+    window, cut on code point boundaries; the worker never creates a whole-payload `Buffer`.
+  - *PostgreSQL write.* The driver serializes the whole parameter into one growing buffer. The
+    worker knows the canonical byte length before the `INSERT`; the gate charges
+    `k_ext × length` against `x` and, if it does not fit, fails the request with 500
+    `resource_exhausted` **before the query is issued**.
+  - *PostgreSQL read.* The driver buffers one whole `DataRow` message. The stored size is read
+    first (see "Single row" and "Revision list"); the gate charges `k_ext × largest row` plus one
+    socket read chunk against `x` before the `SELECT`, and fails the request the same way.
+  - The worker entry module may import only the modules listed in its allowlist (repository
+    client, `pg`, `crypto`, the canonical JSON module); a test fails when the list grows, so a new
+    external allocation path needs a reviewed gate.
+  If L1a measurement finds an external allocation proportional to the payload that the gate cannot
+  check in advance (for example a driver version that buffers differently), large operations run in
+  the **child-process alternative** instead (see "Isolation"), with an OS-enforced memory limit per
+  child (cgroup v2 `memory.max` or `RLIMIT_AS`) equal to its reservation, and the same tests.
+- **Parent failure headroom.** The parent reserves a fixed `R_fail` inside `H_parent` and
+  `E_parent` that no reservation can take. Detecting a worker or child failure, sending the 500,
+  closing the socket and releasing the reservation use only `R_fail`, so the promised 500 is sent
+  even when every reservation is in use.
 - **Fixed-length upload.** With `Content-Length`, the full reservation is taken after
   authorization and **before the first body byte is read**. While waiting the socket is paused.
 - **Chunked upload.** Without `Content-Length`, bytes are read into the small-request pool up to
@@ -329,16 +360,18 @@ stated physical bound**, reserved before allocation:
   readers keep their reservation; that is why the wait deadline and the instance-wide ingress
   budget (D7) exist.
 - **Isolation.** The large-operation work above runs in a worker thread whose `resourceLimits`
-  equal its reservation. A worker heap failure ends that worker and that request only (500
+  equal its heap share `h` and whose external allocations pass the gate against `x`. A worker heap
+  failure (`ERR_WORKER_OUT_OF_MEMORY`) or a gate refusal ends that worker and that request only (500
   `resource_exhausted`), never the process or the gateway. On `main` the same request would kill
   the whole process, so no request that succeeds today is lost by this (the load-test gate below
   proves it). A child process is the alternative if measurement shows worker transfer cost is too
   high; L1a chooses by measurement, and the same physical bound and byte locations apply to it.
 - **Exclusive admission.** A reservation larger than `W` is not rejected (owner decision prevails:
   no new default 413). It waits for exclusive admission: new large reservations queue behind it,
-  it starts when `W` is idle, and it runs isolated in one worker whose limits are the **whole of
-  `W`**, never more. The process bound `M_proc` therefore holds for it too. If the operation
-  physically needs more than `W`, its worker reaches its heap limit and that request alone fails
+  it starts when `W` is idle, and it runs isolated in one worker whose `h + x + o` is the **whole
+  of `W`**, never more. The process bound `M_proc` therefore holds for it too. If the operation
+  physically needs more than `W`, its worker reaches its heap limit or the gate refuses an external
+  allocation, and that request alone fails
   with 500 `resource_exhausted` (request-only failure above capacity); the parent, the gateway and
   other requests continue. The load-test gate requires `W` to fit the operations at `S_main`.
 - **When 503 is permitted.** Only when a reservation cannot be obtained before the wait deadline
@@ -351,7 +384,8 @@ stated physical bound**, reserved before allocation:
   the release must succeed at `S_main` too, with the same digest. (2) With high-expansion JSON,
   concurrent large and small reads and writes, slow readers, mid-upload and mid-response
   disconnects, and an **oversized upload and an oversized readback** (single row and list, each
-  needing more than `W`), the process is not killed, the gateway's mTLS listener keeps answering
+  needing more than `W`, one exhausting the heap share and one exhausting the external share, in
+  both directions), the process is not killed, the gateway's mTLS listener keeps answering
   its heartbeat within its existing timeout, **peak process RSS stays within `M_proc`**, the
   oversized operations fail alone with 500 `resource_exhausted` while concurrent small requests
   succeed, and all reservations return to zero afterwards.
@@ -593,7 +627,7 @@ benchmark-gated:
 | SAML or SCIM stub route | 501 as on `main`, body not read |
 | unauthenticated or unauthorized request with a body (including `userOnly`, CSRF and instance-permission denials) | 401/403 as today, with the same audit record, body not read, `Connection: close` |
 | reservation not available before the wait deadline, or ingress queue full | 503 `capacity_unavailable`, `Retry-After` (D14, D7) |
-| isolated worker exceeds its heap | 500 `resource_exhausted`, process and gateway unaffected (D14) |
+| isolated worker exceeds its heap, or the pre-allocation gate refuses an external allocation | 500 `resource_exhausted` (sent from `R_fail`), process and gateway unaffected (D14) |
 | run/scan concurrency or dial rate exhausted | 429 `too_many_runs`, `Retry-After` (D2, D7) |
 | failed-authentication rate exceeded | 429 `rate_limited`, `Retry-After` (existing code; new trigger on STABLE routes, D7) |
 | per-peer pre-auth in-flight limit reached | 429 `rate_limited`, `Retry-After`, `Connection: close`, body not read (existing code; new trigger on STABLE routes, D7) |
@@ -777,6 +811,9 @@ per-row reservation, backpressure, abort on mid-stream failure.
   stays within its reservation and contains exactly the snapshot's revisions.
 - WHEN an upload or a readback needs more than `W` THEN only that request fails (500
   `resource_exhausted`), RSS stays within `M_proc` and the gateway keeps answering.
+- WHEN a large operation's driver or encoding buffers would exceed its external share `x` THEN the
+  request fails with 500 before the allocation (no content query issued), the parent sends the 500
+  from its reserved headroom, and RSS stays within `M_proc`.
 - WHEN an existing client posts and fetches a revision above 1 MiB (fixed length and chunked, both
   digest modes, memory and PostgreSQL) THEN it gets 201 / 200 with full content and the same digest
   as on `main`.
@@ -860,11 +897,12 @@ messages; a file check alone does not satisfy these tests.
 | T21 | invalid D4 overrides (unknown key, bad unit, negative, zero-as-unlimited, raise of a safety ceiling or of a tighten-only dimension, isolation threshold above the coded maximum, budget sum above `heap_size_limit` minus headroom) fail startup with a clear error; valid finite raises of each group (a) Run, (b) threshold up to the coded maximum, (c) every D7 setting including the failed-authentication bucket are accepted | `limits.test.ts` | L1a |
 | T22 | rebinding: DNS answer changes between preflight and dial; connector retry; A+AAAA with IPv4 and IPv6 listeners; one disallowed answer -> no connection; host-key mismatch -> 0 auth; stored `known_hosts` -> 409, 0 connections; pasted `known_hosts`: one unmarked key -> fingerprint; several keys -> 400; **only `@revoked` entry -> 400, no pin saved**; unmarked key also listed `@revoked` -> 400; **only `@cert-authority` entry -> 400, no pin saved**; `@cert-authority` plus an unmarked key -> 400; unknown marker, unparsable line -> 400; hashed `\|1\|` and `[host]:port` entries match; negated pattern excludes | `runner.test.ts`, `egress.test.ts`, `flowrun_sftp_test.go` | socket level, Run and scan |
 | T23 | large SFTP download and metadata-heavy listing above D2 limits: child RSS and temp-dir high-water bounded, `output_too_large`, no documents, temp dir removed, child reaped | `flowrun_sftp_test.go`, `runner.test.ts` | SFTP |
-| T24 | D14 load tests: `S_main` regression, high-expansion JSON, concurrent large and small reads and writes, slow readers, disconnects, uploads above `S_main`; oversized upload and oversized readback (single row and list) above `W` fail alone with 500 `resource_exhausted`; peak process RSS ≤ `M_proc`; parent holds at most one transfer window per large operation; gateway heartbeat answered; reservations return to zero; many peers, rapid scans, stalled uploads, repeated timeouts and disconnects with capacity recovery | `bench/` (new, `make bench`-style job) | L1a release gate |
+| T24 | D14 load tests: `S_main` regression, high-expansion JSON, concurrent large and small reads and writes, slow readers, disconnects, uploads above `S_main`; oversized upload and oversized readback (single row and list) above `W` fail alone with 500 `resource_exhausted`; **external-buffer exhaustion in both directions**: an upload whose PostgreSQL parameter (`k_ext × canonical length`) exceeds `x` and a readback whose largest row exceeds `x` while the heap share still fits, each failing with 500 before the query is issued (statement log shows no `INSERT`/`SELECT` of content), with every reservation in use so the 500 comes from `R_fail`; worker `arrayBuffers` and `external` high-water ≤ `x` for every passing large operation; peak process RSS ≤ `M_proc`; parent holds at most one transfer window per large operation; gateway heartbeat answered; reservations return to zero; many peers, rapid scans, stalled uploads, repeated timeouts and disconnects with capacity recovery | `bench/` (new, `make bench`-style job) | L1a release gate |
 | T25 | D7 429 on STABLE routes: per-peer in-flight limit exceeded -> 429 `rate_limited` with `Retry-After` and `Connection: close`, body not read, before 401; empty failed-authentication bucket -> 429 before credential verification on a protected route and on login; login throttle/lockout codes unchanged; precedence against unmatched routes (401 or 403 `no_policy`, or 404/405 with auth disabled), 401, 413, 503 and 400; every affected OpenAPI operation declares 429 | `api.test.ts`, `limits.test.ts` | L1a |
 | T26 | pre-body authorization reuses the `main` decision: owner without `instance:workspace_create` -> `POST /v1/workspaces` with a large body gets audited 403 `forbidden` with 0 body bytes read; bearer token -> 403 `forbidden` (`userOnly`), 0 bytes; cookie session without CSRF -> 403 `csrf`, 0 bytes; granted session with CSRF -> 201; workspace and permission denials keep their audit records | `api.test.ts`, `auth/instance.test.ts` | L1a |
 | T27 | unmatched method/path, auth enabled: anonymous -> 401 `unauthenticated` with `WWW-Authenticate`, invalid credentials -> 401, valid principal -> 403 `no_policy`; auth disabled: 404 / 405; each with an empty body and with a malformed JSON body (no 400), 0 body bytes read | `api.test.ts` | L1a, both auth modes |
 | T28 | SAML (`GET` login and metadata, `POST` ACS) and SCIM (each method) with and without a body: response identical to `main` (501 from `notImplemented`), 0 body bytes read; OIDC login and callback: query only, callback audit kept; per-peer 429 applies to all three, the failed-authentication bucket to none of the stubs | `api.test.ts`, `auth/oidc.test.ts` | L1a, tested separately |
+| T29 | worker isolation unit tests: the worker entry module's import allowlist is fixed (a new import fails the test); the gate refuses before the query when `k_ext × bytes` exceeds `x` for write and read, with an injected PostgreSQL client that records issued queries; digest and response encoding never allocate a `Buffer` larger than one window (instrumented `Buffer.alloc`/`TextEncoder`), including a code point split at a slice boundary; at most one window in flight under credit flow; `R_fail` is not available to reservations | `limits/worker.test.ts` (new) | L1a |
 
 ## Gaps and risks
 
@@ -880,7 +918,7 @@ messages; a file check alone does not satisfy these tests.
 | 8 | Initial thresholds (8 MiB, `k`, budgets, rate buckets) are wrong for real workloads | medium | performance | benchmark-gated; metrics from L1a |
 | 9 | c-ares resolver ignores `/etc/hosts`/search domains, so a host that resolves for the system resolver fails in Run | low | UX | documented; CI uses IP literals with `NURTUO_TEST_RUN_ALLOW_PRIVATE=1` |
 | 10 | Isolation worker transfer (structured clone) doubles memory for large trees | medium | performance | reservation counts it in `k`; child-process alternative chosen by measurement |
-| 11 | A deployment behind a TLS proxy without `NURTUO_TRUST_PROXY=1` cannot save credentials (403 `tls_required`) | low | UX | documented in operations; the error names the setting |
+| 13 | A worker allocates external memory (driver, `crypto`, encoding) that its heap limit does not cap, and the shared process is OOM-killed before the parent can answer | high | availability | pre-allocation gate against `x` with `k_ext`, sliced conversions, import allowlist, `R_fail`; T24, T29; child process with an OS memory limit if a path cannot be gated || 11 | A deployment behind a TLS proxy without `NURTUO_TRUST_PROXY=1` cannot save credentials (403 `tls_required`) | low | UX | documented in operations; the error names the setting |
 | 12 | `NURTUO_TRUST_PROXY=1` while the listener is also reachable directly, or behind a proxy that appends client headers: a client forges `X-Forwarded-Proto: https` or its peer key | medium | security | trusted-proxy deployment invariant documented in operations and the error text; rule (a) needs exactly one `https` value; T17. A bind-address setting would let the server enforce part of it, but is a new configuration key (Ask First) and not part of this spec |
 
 ## Council
@@ -1004,6 +1042,18 @@ Boomi alignment are unchanged.
 | 8 (major) | forwarded-HTTPS trust needs a trusted-proxy invariant | "Trusted-proxy deployment invariant"; rule (a) needs exactly one `https`; rule (b) refuses requests with forwarded headers; Gaps #12; T17 extended |
 | 9 (major) | T14 contradicts login | T14 restricted to pre-body denials, with login cases (valid body, overflow, pre-admission 429 with zero bytes); acceptance aligned |
 | 10 (minor) | open questions under a closed gate | each remaining implementation question has an owner, decision point and blocked phase exit; question 4 (D4 name) stays with Łukasz |
+
+### Fourth review (Astra delta, head `53e26c5`)
+
+Reviewer: GPT-6.2 Astra (OpenAI), delta review of head `53e26c5` posted on
+https://github.com/nurtuo/nurtuo/pull/92 (2026-11-25 18:40 UTC). Verdict: request changes (1
+blocker, 1 major); nine of the ten earlier findings resolved. Claude Opus's answer changes design
+detail and tests only; D1-D14 are unchanged (D14's worker isolation stays, and the child-process
+alternative was already allowed by "Isolation").
+
+| Item | Finding | Change in this spec |
+|---|---|---|
+| 1 (blocker) | worker heap limits do not cap upload or PostgreSQL driver buffers (external memory) | "Memory budget": reservation split into heap `h`, external `x` and overhead `o`; pre-allocation gate checks every payload-sized external allocation (driver write and read buffers, `k_ext`) before it is made, conversions sliced to one window, credit-based transfer window, worker import allowlist; child process with an OS memory limit if a path cannot be gated; parent failure headroom `R_fail`; T24 exercises external exhaustion in both directions; T29; Gaps #13 |
 
 ## Boomi alignment
 
@@ -1216,3 +1266,8 @@ it is decided and the phase exit it blocks. A phase cannot exit while its questi
   stubs get a body-free profile; P90 is mapped to #100-#102; the trusted-proxy invariant is
   stated; T14 is restricted to pre-body denials; T26-T28 added; open questions get owners. D1-D14
   unchanged; status stays approved.
+- 2026-11-25: Claude Opus's spec-only edit answering the Astra delta review of `53e26c5`
+  (blocker): worker reservations are split into heap, external and overhead shares; a
+  pre-allocation gate bounds worker external memory (PostgreSQL driver buffers, encoding) before
+  it is allocated; the parent keeps failure headroom; T24 and new T29 test external exhaustion in
+  both directions. D1-D14 unchanged; status stays approved.
