@@ -36,7 +36,7 @@ failed-authentication rate) with evidence; and D4 and D14 are clarifications, no
 | Pull requests | this spec (approved by Łukasz 2026-11-24, not yet merged). Affects [PR #90](https://github.com/nurtuo/nurtuo/pull/90) (canvas Run implementation, head `aa02133`), now split into #99 (merged) and #100-#102 (see Phase P90) |
 | Owner direction | "Spoko zrób tak jak jest na boomi" (Łukasz, 2026-11-24 19:52, see "Owner requirement"); answered by the Boomi alignment council (see "Boomi alignment") |
 | Owner approval | D1-D14 approved by Łukasz on 2026-11-24: the Boomi direction and every recommendation other than the three open questions earlier that day; Q-threshold, Q-D7 and Q-labels at 21:06 Europe/Warsaw (see "Owner requirement", "Open questions (closed)") |
-| Reviews it answers | Astra review of `e8d24f3` https://github.com/nurtuo/nurtuo/pull/92#issuecomment-7171018980 (see "Third review"), Codex review https://github.com/nurtuo/nurtuo/pull/90#issuecomment-7134020883, Astra review https://github.com/nurtuo/nurtuo/pull/90#issuecomment-7134187185, owner decision https://github.com/nurtuo/nurtuo/pull/90#issuecomment-7134459612, cross-provider reviews of this spec https://github.com/nurtuo/nurtuo/pull/92#issuecomment-7140661227 and https://github.com/nurtuo/nurtuo/pull/92#issuecomment-7142837972 |
+| Reviews it answers | Astra delta review of `53e26c5` https://github.com/nurtuo/nurtuo/pull/92#issuecomment-7171233823 (see "Fourth review"), Astra review of `e8d24f3` https://github.com/nurtuo/nurtuo/pull/92#issuecomment-7171018980 (see "Third review"), Codex review https://github.com/nurtuo/nurtuo/pull/90#issuecomment-7134020883, Astra review https://github.com/nurtuo/nurtuo/pull/90#issuecomment-7134187185, owner decision https://github.com/nurtuo/nurtuo/pull/90#issuecomment-7134459612, cross-provider reviews of this spec https://github.com/nurtuo/nurtuo/pull/92#issuecomment-7140661227 and https://github.com/nurtuo/nurtuo/pull/92#issuecomment-7142837972 |
 | Amends | [canvas Run](2026-11-23-canvas-run.md): D2 scope, D4 (`known_hosts` paste), D11 egress (check at the actual dial), Phase 2 body limit, D3/D6 secret workflow, Gaps #3, #7, #9, #19; [backward compatibility contract](2026-11-22-backward-compatibility-contract.md): classification row for the D4 surface (D4; the `nurtuo flow` row is already on `main`) |
 | ADRs | [ADR 0010](../adr/0010-connections-and-secrets.md) (connections and secrets), [ADR 0009](../adr/0009-outbound-only-runtime-gateway.md) (gateway), [ADR 0005](../adr/0005-set-at-a-time-engine-with-per-document-status.md) (engine) |
 | Related specs | [backward compatibility contract](2026-11-22-backward-compatibility-contract.md), [auth rate limiting and lockout](2026-11-22-auth-rate-limiting-and-lockout.md), [bundle artifact delivery](2026-11-22-bundle-artifact-delivery.md), [HTTP listener routing](2026-11-22-http-listener-routing.md) |
@@ -338,12 +338,29 @@ stated physical bound**, reserved before allocation:
   even when every reservation is in use.
 - **Fixed-length upload.** With `Content-Length`, the full reservation is taken after
   authorization and **before the first body byte is read**. While waiting the socket is paused.
-- **Chunked upload.** Without `Content-Length`, bytes are read into the small-request pool up to
-  the in-memory threshold. At the threshold the operation becomes a large operation: it takes a
-  worker reservation and a transfer window before more bytes are read, and the buffered prefix is
-  transferred to the worker. Each further step (the reservation doubles, starting at the threshold)
-  is reserved before more bytes are read; the socket is paused while waiting. A step that cannot be
-  reserved before the wait deadline ends the request as below.
+- **Chunked upload (bounded spooling before admission).** Worker `resourceLimits` are fixed when
+  the worker is constructed, so a worker is never started before the body size is known. Without
+  `Content-Length`, bytes are read into the small-request pool up to the in-memory threshold; a
+  body that ends there is a small request. At the threshold the parent writes the buffered prefix
+  to a **spool file** and releases the prefix from the pool, then keeps writing the body to the
+  file without holding it in memory (one socket chunk at a time, charged to `E_parent`). Disk is
+  charged to an instance-wide **spool budget** in steps (the step doubles, starting at the
+  threshold), each reserved before more bytes are read; the socket is paused while waiting. When
+  the body ends, its exact wire length is known, and the operation takes the same worker
+  reservation as a fixed-length upload of that length (exclusive admission if above `W`); only
+  then is its worker constructed, once, with limits from that reservation, and it reads the spool
+  through the transfer window. The spool budget follows the memory rules: it is never a reason to
+  reject a request for its own size; a body larger than the whole budget waits for exclusive use
+  of it and, if it physically needs more, fails alone with 500 `resource_exhausted`; a step that
+  cannot be reserved before the wait deadline because other spools hold the budget gets 503 as
+  below. Spool files live under the process temp directory (`os.tmpdir()`, no new setting), are
+  created `0600` with an unguessable name, and are unlinked on completion, abort, worker failure
+  and at startup; `ENOSPC` fails that request only (500 `resource_exhausted`). Only classes that
+  can produce a large operation (`document`, `control`) spool; `preauth`, `secret-bearing`,
+  `scan` and `interactive-run` bodies are below their ceilings and are never spooled. The spool
+  budget (placeholder 4 GiB, benchmark-gated) is a D4 dimension outside groups (a)-(c), so
+  operators may only tighten it; startup validates it against the free space of the temp
+  directory, and the load-test gate requires it to fit `S_main`.
 - **Single row.** `GET …/revisions/{n}` and every internal read of one revision (deploy, digest
   checks) first read the stored size (PostgreSQL: `octet_length(content::text)` or a size column added
   by migration, measured in L1a; memory: size kept at creation), reserve, then load the row.
@@ -626,6 +643,7 @@ benchmark-gated:
 | route with no policy entry | as on `main`: auth enabled 401 `unauthenticated` (anonymous) or 403 `no_policy` (authenticated); auth disabled 404/405; body not read, `Connection: close` |
 | SAML or SCIM stub route | 501 as on `main`, body not read |
 | unauthenticated or unauthorized request with a body (including `userOnly`, CSRF and instance-permission denials) | 401/403 as today, with the same audit record, body not read, `Connection: close` |
+| spool write fails (`ENOSPC`) or a spooled body needs more than the whole spool budget | 500 `resource_exhausted` for that request only, spool file removed (D14) |
 | reservation not available before the wait deadline, or ingress queue full | 503 `capacity_unavailable`, `Retry-After` (D14, D7) |
 | isolated worker exceeds its heap, or the pre-allocation gate refuses an external allocation | 500 `resource_exhausted` (sent from `R_fail`), process and gateway unaffected (D14) |
 | run/scan concurrency or dial rate exhausted | 429 `too_many_runs`, `Retry-After` (D2, D7) |
@@ -814,6 +832,9 @@ per-row reservation, backpressure, abort on mid-stream failure.
 - WHEN a large operation's driver or encoding buffers would exceed its external share `x` THEN the
   request fails with 500 before the allocation (no content query issued), the parent sends the 500
   from its reserved headroom, and RSS stays within `M_proc`.
+- WHEN a chunked upload crosses the in-memory threshold THEN it is spooled to disk under the spool
+  budget, its worker is constructed only after the last byte with limits for the final length,
+  and it gets the same result and digest as the same body sent with `Content-Length`.
 - WHEN an existing client posts and fetches a revision above 1 MiB (fixed length and chunked, both
   digest modes, memory and PostgreSQL) THEN it gets 201 / 200 with full content and the same digest
   as on `main`.
@@ -903,6 +924,7 @@ messages; a file check alone does not satisfy these tests.
 | T27 | unmatched method/path, auth enabled: anonymous -> 401 `unauthenticated` with `WWW-Authenticate`, invalid credentials -> 401, valid principal -> 403 `no_policy`; auth disabled: 404 / 405; each with an empty body and with a malformed JSON body (no 400), 0 body bytes read | `api.test.ts` | L1a, both auth modes |
 | T28 | SAML (`GET` login and metadata, `POST` ACS) and SCIM (each method) with and without a body: response identical to `main` (501 from `notImplemented`), 0 body bytes read; OIDC login and callback: query only, callback audit kept; per-peer 429 applies to all three, the failed-authentication bucket to none of the stubs | `api.test.ts`, `auth/oidc.test.ts` | L1a, tested separately |
 | T29 | worker isolation unit tests: the worker entry module's import allowlist is fixed (a new import fails the test); the gate refuses before the query when `k_ext × bytes` exceeds `x` for write and read, with an injected PostgreSQL client that records issued queries; digest and response encoding never allocate a `Buffer` larger than one window (instrumented `Buffer.alloc`/`TextEncoder`), including a code point split at a slice boundary; at most one window in flight under credit flow; `R_fail` is not available to reservations | `limits/worker.test.ts` (new) | L1a |
+| T30 | one revision (high-expansion JSON, several times the threshold) uploaded **chunked** across several spool growth steps, with slow trickle and with large chunks, and **fixed length**: both give 201 and the same digest as on `main`, in both repositories; for the chunked upload no worker exists before the last byte, exactly one worker is constructed and its `resourceLimits` equal the reservation for the final wire length (same as the fixed-length upload); each spool step is reserved before more bytes are read (socket paused while waiting); readback returns the same content; spool held by other uploads until the wait deadline -> 503 with `Retry-After`; body above the whole spool budget waits for exclusive use; mid-upload disconnect, worker failure, injected `ENOSPC` and restart each leave no spool file and return the spool and memory reservations to zero; spool files are `0600` | `api.test.ts`, `pg-*.test.ts`, `limits/spool.test.ts` (new) | L1a; Pg tests need a database |
 
 ## Gaps and risks
 
@@ -919,6 +941,7 @@ messages; a file check alone does not satisfy these tests.
 | 9 | c-ares resolver ignores `/etc/hosts`/search domains, so a host that resolves for the system resolver fails in Run | low | UX | documented; CI uses IP literals with `NURTUO_TEST_RUN_ALLOW_PRIVATE=1` |
 | 10 | Isolation worker transfer (structured clone) doubles memory for large trees | medium | performance | reservation counts it in `k`; child-process alternative chosen by measurement |
 | 13 | A worker allocates external memory (driver, `crypto`, encoding) that its heap limit does not cap, and the shared process is OOM-killed before the parent can answer | high | availability | pre-allocation gate against `x` with `k_ext`, sliced conversions, import allowlist, `R_fail`; T24, T29; child process with an OS memory limit if a path cannot be gated || 11 | A deployment behind a TLS proxy without `NURTUO_TRUST_PROXY=1` cannot save credentials (403 `tls_required`) | low | UX | documented in operations; the error names the setting |
+| 14 | Spooled chunked uploads fill the disk or leave component content on disk | medium | availability, confidentiality | instance spool budget validated at startup against free space, `ENOSPC` fails the request only, files `0600` with unguessable names, unlinked on completion, abort and startup; T30 |
 | 12 | `NURTUO_TRUST_PROXY=1` while the listener is also reachable directly, or behind a proxy that appends client headers: a client forges `X-Forwarded-Proto: https` or its peer key | medium | security | trusted-proxy deployment invariant documented in operations and the error text; rule (a) needs exactly one `https` value; T17. A bind-address setting would let the server enforce part of it, but is a new configuration key (Ask First) and not part of this spec |
 
 ## Council
@@ -1045,8 +1068,8 @@ Boomi alignment are unchanged.
 
 ### Fourth review (Astra delta, head `53e26c5`)
 
-Reviewer: GPT-6.2 Astra (OpenAI), delta review of head `53e26c5` posted on
-https://github.com/nurtuo/nurtuo/pull/92 (2026-11-25 18:40 UTC). Verdict: request changes (1
+Reviewer: GPT-6.2 Astra (OpenAI), delta review of head `53e26c5`,
+https://github.com/nurtuo/nurtuo/pull/92#issuecomment-7171233823. Verdict: request changes (1
 blocker, 1 major); nine of the ten earlier findings resolved. Claude Opus's answer changes design
 detail and tests only; D1-D14 are unchanged (D14's worker isolation stays, and the child-process
 alternative was already allowed by "Isolation").
@@ -1054,6 +1077,7 @@ alternative was already allowed by "Isolation").
 | Item | Finding | Change in this spec |
 |---|---|---|
 | 1 (blocker) | worker heap limits do not cap upload or PostgreSQL driver buffers (external memory) | "Memory budget": reservation split into heap `h`, external `x` and overhead `o`; pre-allocation gate checks every payload-sized external allocation (driver write and read buffers, `k_ext`) before it is made, conversions sliced to one window, credit-based transfer window, worker import allowlist; child process with an OS memory limit if a path cannot be gated; parent failure headroom `R_fail`; T24 exercises external exhaustion in both directions; T29; Gaps #13 |
+| 2 (major) | chunked uploads grow the reservation after the worker starts, but heap limits are fixed at construction | "Chunked upload": bounded spooling before admission; above the threshold the body is spooled to disk under an instance spool budget (stepped reservations, tighten-only D4 dimension, same exclusive and 503 rules as memory), and the worker is constructed once, after the last byte, from the final wire length; T30 tests several growth steps against the same body with `Content-Length`; Failure modes; Gaps #14 |
 
 ## Boomi alignment
 
@@ -1271,3 +1295,7 @@ it is decided and the phase exit it blocks. A phase cannot exit while its questi
   pre-allocation gate bounds worker external memory (PostgreSQL driver buffers, encoding) before
   it is allocated; the parent keeps failure headroom; T24 and new T29 test external exhaustion in
   both directions. D1-D14 unchanged; status stays approved.
+- 2026-11-25: Claude Opus's spec-only edit answering the Astra delta review of `53e26c5`
+  (major): chunked uploads above the threshold are spooled to disk under an instance spool budget
+  before admission, so the worker is constructed once with limits for the final length; T30 tests
+  several growth steps in both transfer modes. D1-D14 unchanged; status stays approved.
