@@ -11,6 +11,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"path"
 	"strings"
 	"testing"
 	"time"
@@ -117,8 +118,44 @@ func settings(t *testing.T, addr, fp, pw string) *connectorv1.ConnectionConfig {
 	return &connectorv1.ConnectionConfig{Settings: s}
 }
 
+// discardLarge makes the in-memory SFTP server drop everything written to files whose name
+// contains "large.bin" (and accept their rename), so that the contract suite's large-payload
+// subtest measures the connector's heap and not the fixture's storage, which lives in the same
+// process.
+func discardLarge(h pkgsftp.Handlers) pkgsftp.Handlers {
+	large := func(p string) bool { return strings.Contains(path.Base(p), "large.bin") }
+	return pkgsftp.Handlers{
+		FileGet:  h.FileGet,
+		FileList: h.FileList,
+		FilePut: putFunc(func(r *pkgsftp.Request) (io.WriterAt, error) {
+			if large(r.Filepath) {
+				return discardAt{}, nil
+			}
+			return h.FilePut.Filewrite(r)
+		}),
+		FileCmd: cmdFunc(func(r *pkgsftp.Request) error {
+			if r.Method == "Rename" && large(r.Target) {
+				return nil
+			}
+			return h.FileCmd.Filecmd(r)
+		}),
+	}
+}
+
+type putFunc func(*pkgsftp.Request) (io.WriterAt, error)
+
+func (f putFunc) Filewrite(r *pkgsftp.Request) (io.WriterAt, error) { return f(r) }
+
+type cmdFunc func(*pkgsftp.Request) error
+
+func (f cmdFunc) Filecmd(r *pkgsftp.Request) error { return f(r) }
+
+type discardAt struct{}
+
+func (discardAt) WriteAt(p []byte, _ int64) (int, error) { return len(p), nil }
+
 func TestContract(t *testing.T) {
-	addr, fp := startServer(t)
+	addr, fp, _ := startServerH(t, discardLarge)
 	conn := settings(t, addr, fp, testPassword)
 	op := func(o connectorv1.OperationType, custom string) *connectorv1.ExecuteStart {
 		return &connectorv1.ExecuteStart{OperationType: o, CustomType: custom}
@@ -129,6 +166,12 @@ func TestContract(t *testing.T) {
 		New:        func(testing.TB) connector.Connector { return sftp.New() },
 		Connection: conn,
 		Secrets:    []string{testPassword},
+		// The upload is streamed to the remote file chunk by chunk; the suite checks that the heap
+		// stays bounded while a payload larger than the 4 MiB gRPC message size goes through.
+		LargePayload: &contracttest.LargePayloadCase{
+			Start:      op(connectorv1.OperationType_OPERATION_TYPE_CREATE, ""),
+			Properties: map[string]string{"path": "/in/large.bin"},
+		},
 		Execute: []contracttest.ExecuteCase{
 			{
 				Name:  "put",
