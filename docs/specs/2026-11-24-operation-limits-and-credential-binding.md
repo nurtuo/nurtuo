@@ -365,14 +365,36 @@ stated physical bound**, reserved before allocation:
   checks) first read the stored size (PostgreSQL: `octet_length(content::text)` or a size column added
   by migration, measured in L1a; memory: size kept at creation), reserve, then load the row.
 - **Revision list (one snapshot).** Before L1b, the size and the rows come from **one consistent
-  read**, so an append between the two reads cannot exceed the reservation. PostgreSQL: one
-  read-only `REPEATABLE READ` transaction runs the size query (`sum` of stored sizes and `max(number)`
-  for the component) and then loads only rows with `number <= ` that maximum, ordered by `number`.
+  read**, so an append between the two reads cannot exceed the reservation. Sizing is owned by the
+  parent, because the reservation decides the worker's limits; loading is owned by whoever serves
+  the response (the parent below the threshold, the worker above it). PostgreSQL:
+  - The parent opens a read-only `REPEATABLE READ` transaction on one connection of its own pool
+    and runs the size query (`sum` of stored sizes and `max(number)` for the component).
+  - Below the threshold the parent loads, in the same transaction, only rows with
+    `number <= ` that maximum, ordered by `number`, then commits.
+  - Above the threshold the worker uses its own connection, and a second transaction on another
+    connection does not share the parent's snapshot. So the parent calls `pg_export_snapshot()` in
+    its sizing transaction and passes the snapshot id and the `number` cutoff to the worker. The
+    worker's first statements are `BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY` and
+    `SET TRANSACTION SNAPSHOT '<id>'`, so it sees exactly the parent's snapshot. Only then does it
+    load rows with `number <= ` the cutoff. The parent **keeps its sizing transaction open until
+    the worker acknowledges the import** and then ends it. The worker's own transaction holds the
+    snapshot from that point on.
+  - The open sizing transaction is bounded by the request's wait deadline. Its connection is
+    counted in the parent pool and released exactly once, including on worker failure, disconnect
+    and deadline.
+  - If the import fails (for example the exporting transaction was ended by a server-side
+    `idle_in_transaction_session_timeout`), the worker issues no content query. The request fails
+    before headers with 500 `resource_exhausted` and every reservation is released.
+  - The `number` cutoff stays as a second guard. Revisions are immutable and never deleted
+    (migration `0001`: update trigger, `ON DELETE RESTRICT`), so the cutoff names the same rows in
+    any snapshot that contains the maximum.
   Memory: the size and the row count are captured in one synchronous step, and only that prefix of
-  the append-only revision array is serialized. A revision committed after the snapshot is not in
-  this response; it is in the next one, as with any read that precedes a write. L1a reserves
-  `k × total` before loading. L1b replaces this with an iterator that reserves per row (largest row
-  plus write buffers) inside the same snapshot. The list is never truncated or omitted.
+  the append-only revision array is serialized, or copied to the worker under its reservation. A
+  revision committed after the snapshot is not in this response. It is in the next one, as with any
+  read that precedes a write. L1a reserves `k × total` before loading. L1b replaces this with an
+  iterator that reserves per row (largest row plus write buffers) inside the same snapshot. The
+  list is never truncated or omitted.
 - **Responses.** A response reservation is held until the client drains it or disconnects. Slow
   readers keep their reservation; that is why the wait deadline and the instance-wide ingress
   budget (D7) exist.
@@ -826,7 +848,9 @@ per-row reservation, backpressure, abort on mid-stream failure.
   `@cert-authority`, unknown marker, several keys) THEN 400 `known_hosts_ambiguous` and no pin is
   saved.
 - WHEN a revision is appended between the size read and the row read of a list THEN the list
-  stays within its reservation and contains exactly the snapshot's revisions.
+  stays within its reservation and contains exactly the snapshot's revisions, also when the list
+  is above the isolation threshold and the rows are read by the worker on its own connection
+  (exported and imported snapshot).
 - WHEN an upload or a readback needs more than `W` THEN only that request fails (500
   `resource_exhausted`), RSS stays within `M_proc` and the gateway keeps answering.
 - WHEN a large operation's driver or encoding buffers would exceed its external share `x` THEN the
@@ -905,7 +929,7 @@ messages; a file check alone does not satisfy these tests.
 | T8 | scan against silent TCP peer closes at deadline | same | |
 | T9 | stalled resolver on run and scan frees slot at deadline | `runner.test.ts` | injected resolver |
 | T10 | edit with blank password keeps refs, `timeoutMs`, `maxListEntries` | `core/web` and `connections/routes.test.ts` | API-created connection |
-| T11 | revision POST/GET/list above 1 MiB, chunked and fixed, both digest modes, both repositories; a revision appended between the list's size read and row read (injected hook in both repositories) is not in that response and the reservation is never exceeded | `api.test.ts`, `pg-*.test.ts` | Pg tests need a database |
+| T11 | revision POST/GET/list above 1 MiB, chunked and fixed, both digest modes, both repositories; a revision appended between the list's size read and row read (injected hook in both repositories) is not in that response and the reservation is never exceeded; **a list above the isolation threshold** with a revision appended (and committed) between the parent's sizing query and the worker's content query: the worker imports the parent's exported snapshot, the response holds exactly the snapshot's revisions, and the parent's sizing transaction ends only after the import is acknowledged; an import that fails (exporting transaction ended by an injected `idle_in_transaction_session_timeout`) gives 500 before headers with no content query issued (statement log) and all reservations and the parent connection released | `api.test.ts`, `pg-*.test.ts` | Pg tests need a database |
 | T12 | test-runs body > 1 MiB -> 413; scan and connection PUT: largest valid escaped request succeeds, +1 byte -> 413 (declared and chunked) | `api.test.ts`, `connections/routes.test.ts` | envelope formulas |
 | T13 | fingerprint connection: binding uses the logical host; every TCP connection of the run goes to the vetted address | `runner.test.ts`, `flowrun_sftp_test.go` | socket level |
 | T14 | **pre-body denials only** (no route reads a body before its decision): unauthenticated or unauthorized large body on every non-`preauth` route, including unmatched routes and SAML/SCIM stubs: application consumes 0 body bytes, `Connection: close`, server-side buffered bytes ≤ socket high-water mark, socket closed after the grace; `Expect: 100-continue` gets the final status. Login (`preauth`): a valid body within the D3 limit is read and authenticates; a body over the limit gets 413 when the count crosses it; a pre-admission 429 (per-peer in-flight, failed-authentication bucket) reads 0 body bytes | `api.test.ts` | L1a |
@@ -943,6 +967,7 @@ messages; a file check alone does not satisfy these tests.
 | 13 | A worker allocates external memory (driver, `crypto`, encoding) that its heap limit does not cap, and the shared process is OOM-killed before the parent can answer | high | availability | pre-allocation gate against `x` with `k_ext`, sliced conversions, import allowlist, `R_fail`; T24, T29; child process with an OS memory limit if a path cannot be gated || 11 | A deployment behind a TLS proxy without `NURTUO_TRUST_PROXY=1` cannot save credentials (403 `tls_required`) | low | UX | documented in operations; the error names the setting |
 | 14 | Spooled chunked uploads fill the disk or leave component content on disk | medium | availability, confidentiality | instance spool budget validated at startup against free space, `ENOSPC` fails the request only, files `0600` with unguessable names, unlinked on completion, abort and startup; T30 |
 | 12 | `NURTUO_TRUST_PROXY=1` while the listener is also reachable directly, or behind a proxy that appends client headers: a client forges `X-Forwarded-Proto: https` or its peer key | medium | security | trusted-proxy deployment invariant documented in operations and the error text; rule (a) needs exactly one `https` value; T17. A bind-address setting would let the server enforce part of it, but is a new configuration key (Ask First) and not part of this spec |
+| 15 | A large list holds a parent PostgreSQL connection idle in transaction until the worker imports the exported snapshot; a server `idle_in_transaction_session_timeout` or an exhausted parent pool ends or delays it | low | availability | the hold lasts only until the import is acknowledged and is bounded by the wait deadline; the connection is counted in the parent pool; a failed import fails that request before headers (500) with no content query; T11 |
 
 ## Council
 
