@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import assert from "node:assert/strict";
+import { once } from "node:events";
+import { request, type Server } from "node:http";
 import { test } from "node:test";
 import type { AddressInfo } from "node:net";
 import { createHandler, createHttpServer, digestOf } from "./api.js";
@@ -150,4 +152,55 @@ test("request close aborts ApiRequest.signal", async () => {
     await Promise.race([abortedP, new Promise((_, rej) => setTimeout(() => rej(new Error("signal not aborted")), 2000))]);
     assert.equal(seen?.aborted, true);
   } finally { srv.close(); srv.closeAllConnections(); }
+});
+
+async function listen(server: Server) {
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  return `http://127.0.0.1:${address.port}`;
+}
+
+test("HTTP without auth returns 404 for workspace ID paths", async (t) => {
+  const server = createHttpServer(new MemoryRepository(), { auth: "disabled" });
+  t.after(() => server.close());
+  const base = await listen(server);
+  for (const [method, path, status] of [
+    ["GET", "/v1/workspaces/ws", 404],
+    ["PUT", "/v1/workspaces/ws/connections/sftp", 404],
+    ["POST", "/v1/workspaces/ws/test-runs", 404],
+    ["GET", "/v1/workspaces", 405],
+    ["PUT", "/v1/components", 405],
+  ] as const) {
+    const response = await fetch(base + path, { method });
+    assert.equal(response.status, status, path);
+    assert.equal(asAny(await response.json()).error.code, status === 404 ? "not_found" : "method_not_allowed");
+  }
+});
+
+test("HTTP aborts the handler signal when the client disconnects before the response", { timeout: 5000 }, async (t) => {
+  let handlerStarted!: (signal: AbortSignal) => void;
+  const started = new Promise<AbortSignal>((resolve) => { handlerStarted = resolve; });
+  const server = createHttpServer(new MemoryRepository(), { auth: {
+    async handle(req) {
+      assert.ok(req.signal);
+      if (req.path === "/complete") return { status: 200, body: { aborted: req.signal.aborted } };
+      handlerStarted(req.signal);
+      await once(req.signal, "abort");
+      return { status: 204 };
+    },
+  } });
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const base = await listen(server);
+  const client = request(base + "/disconnect");
+  client.on("error", () => {});
+  client.end();
+  const signal = await started;
+  assert.equal(signal.aborted, false);
+  const aborted = once(signal, "abort");
+  client.destroy();
+  await aborted;
+  assert.equal(signal.aborted, true);
+  assert.deepEqual(await (await fetch(base + "/complete")).json(), { aborted: false });
 });
