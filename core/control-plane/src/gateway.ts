@@ -47,7 +47,12 @@ class Queue<T> {
   }
 }
 
-interface Session { runtimeId: string; out: Queue<pb.ConnectResponse>; lastSeen: number }
+interface Session {
+  runtimeId: string;
+  out: Queue<pb.ConnectResponse>;
+  lastSeen: number;
+  highestQueuedGeneration?: bigint;
+}
 interface Artifact { data: Buffer; digest: string }
 
 export interface GatewayOptions {
@@ -129,7 +134,14 @@ export class Gateway {
     if (!s) return false;
     const msg = await this.desiredStateMessage(runtimeId);
     if (!msg) return false;
-    s.out.push(create(pb.ConnectResponseSchema, { msg: { case: "desiredState", value: msg } }));
+    return this.queueDesiredState(s, msg);
+  }
+
+  private queueDesiredState(session: Session, state: pb.DesiredState): boolean {
+    // Hello and outbox reads can finish out of order. Equal generations can carry new digests.
+    if (session.highestQueuedGeneration !== undefined && state.revision < session.highestQueuedGeneration) return false;
+    session.highestQueuedGeneration = state.revision;
+    session.out.push(create(pb.ConnectResponseSchema, { msg: { case: "desiredState", value: state } }));
     return true;
   }
 
@@ -214,7 +226,7 @@ export class Gateway {
           const ds = await this.desiredStateMessage(certId);
           // Signing configuration can change the payload at the same stored generation.
           if (ds) {
-            out.push(create(pb.ConnectResponseSchema, { msg: { case: "desiredState", value: ds } }));
+            this.queueDesiredState(session, ds);
           }
           continue;
         }
