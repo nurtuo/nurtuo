@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
-import { loadSigningKey, maxBundleSize, packBundle } from "./bundle.js";
+import { loadSigningKey, maxBundleEntrySize, packBundle } from "./bundle.js";
 
 const input = {
   name: "golden",
@@ -78,10 +78,13 @@ test("packBundle rejects invalid names, revisions and documents", (t) => {
   }
 });
 
-test("packBundle includes tar overhead in the 256 MiB cap", (t) => {
+test("packBundle accepts 64 MiB entries and rejects one byte over before signing", (t) => {
   const key = goldenKey(t);
-  const document = { payload: "a".repeat(maxBundleSize - 1024) };
-  assert.throws(() => packBundle({ ...input, component: { ...input.component, document } }, key), /archive exceeds/);
+  const payload = "a".repeat(maxBundleEntrySize - Buffer.byteLength('{"payload":""}'));
+  const withPayload = (value: string) => ({ ...input, component: { ...input.component, document: { payload: value } } });
+  const archive = packBundle(withPayload(payload), key);
+  assert.equal(Number(JSON.parse(archive.toString("utf8", 512, archive.indexOf(0, 512))).components[0].size), maxBundleEntrySize);
+  assert.throws(() => packBundle(withPayload(payload + "a"), { ...key, privateKey: createPublicKey(key.privateKey) }), /entry exceeds/);
 });
 
 test("loadSigningKey reports invalid and missing files without leaking key contents", (t) => {
