@@ -9,7 +9,7 @@ import type { OidcProvider } from "./oidc.js";
 import { ALL_PERMISSIONS, ROLES, ROLE_DESCRIPTIONS, ROLE_PERMISSIONS, canGrant, isRole, type Role } from "./permissions.js";
 import { permissionsIn } from "./authz.js";
 import { RateLimited, parseCookies, type AuthService } from "./service.js";
-import { publicToken, publicUser, type Principal, type Workspace } from "./types.js";
+import { publicToken, publicUser, type AuditEntry, type NewAuditEntry, type Principal, type Workspace } from "./types.js";
 
 export interface OidcSetup {
   provider: OidcProvider; issuer: string;
@@ -20,6 +20,7 @@ export interface OidcSetup {
 }
 
 export interface AuditDetail { resourceId?: string | null; before?: unknown; after?: unknown; metadata?: Record<string, unknown>; actor?: { type: "user" | "token" | "anonymous"; id: string | null }; workspaceId?: string | null }
+export type AppendAudit = (entry: NewAuditEntry) => Promise<AuditEntry>;
 export type EndpointResult = ApiResponse & { audit?: AuditDetail };
 
 export interface EndpointCtx {
@@ -27,6 +28,7 @@ export interface EndpointCtx {
   workspace?: Workspace; ip: string | null; requestId: string; service: AuthService; oidc?: OidcSetup;
   /** Aborted when the HTTP client disconnects before the response is sent. */
   signal?: AbortSignal;
+  auditMutation(status: number, detail: AuditDetail, append?: AppendAudit): Promise<void>;
 }
 export type Endpoint = (c: EndpointCtx) => Promise<EndpointResult>;
 

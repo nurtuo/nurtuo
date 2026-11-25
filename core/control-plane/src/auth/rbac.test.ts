@@ -8,6 +8,7 @@ import { POLICIES } from "./policy.js";
 import { PASSWORD, adminsConfig, j, setup } from "./test-util.js";
 import type { NewAuditEntry } from "./types.js";
 
+const EDIT: Role[] = ["owner", "admin", "editor"];
 const ALL: Role[] = ["owner", "admin", "editor", "viewer", "deployer", "runtime"];
 // Independent, hand-written expectation (NOT derived from permissions.ts) of who may call what.
 const EXPECT: Record<string, Role[]> = {
@@ -26,6 +27,9 @@ const EXPECT: Record<string, Role[]> = {
   "member.add": ["owner", "admin"], "member.update_role": ["owner", "admin"], "member.remove": ["owner", "admin"],
   "token.list": ["owner", "admin", "editor", "deployer"], "token.create": ["owner", "admin", "editor", "deployer"], "token.revoke": ["owner", "admin", "editor", "deployer"],
   "audit.query": ["owner", "admin"],
+  // canvas Run (docs/specs/2026-11-23-canvas-run.md D6); the secret and test-run routes are userOnly
+  "connection.list": ["owner", "admin", "editor", "viewer", "deployer"], "connection.get": ["owner", "admin", "editor", "viewer", "deployer"],
+  "connection.put": EDIT, "connection.delete": EDIT,
 };
 
 function concretePath(pattern: string, ws: string) {
@@ -36,6 +40,7 @@ const bodyFor = (action: string) =>
   : action === "member.update_role" ? { role: "viewer" }
   : action === "workspace.update" ? { name: "n" }
   : action === "token.create" ? { name: "n", scopes: ["component:read"] }
+  : action === "connection.put" ? { connector: "sftp", settings: {} }
   : {};
 
 test("role x route matrix: every permission-gated route, every role", async () => {

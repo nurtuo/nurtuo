@@ -99,7 +99,11 @@ export const POLICIES: readonly RoutePolicy[] = [
   P("DELETE", "/v1/workspaces/:ws/tokens/:tokenId", wsPerm("token:revoke", "token", "token.revoke")),
   P("GET", "/v1/workspaces/:ws/audit", wsPerm("audit:read", "audit", "audit.query")),
 
-
+  // ---- canvas Run: connections, write-only secrets, test runs (docs/specs/2026-11-23-canvas-run.md) ----
+  P("GET", "/v1/workspaces/:ws/connections", wsPerm("connection:read", "connection", "connection.list")),
+  P("GET", "/v1/workspaces/:ws/connections/:id", wsPerm("connection:read", "connection", "connection.get")),
+  P("PUT", "/v1/workspaces/:ws/connections/:id", wsPerm("connection:write", "connection", "connection.put")),
+  P("DELETE", "/v1/workspaces/:ws/connections/:id", wsPerm("connection:delete", "connection", "connection.delete")),
 ];
 
 export const MUTATING = new Set(["POST", "PUT", "PATCH", "DELETE"]);

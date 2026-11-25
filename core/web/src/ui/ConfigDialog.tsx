@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { STEP_ID_PATTERN, type Step } from "@nurtuo/flow-schema";
 import { useState } from "react";
+import type { ConnectionItem } from "../api/controlPlane";
 import { configSchemaOf } from "../model/catalog";
 import { fieldsOf, fromText, toText, withField, type Field } from "../model/formSchema";
 import { configPatch, type FlowStore } from "../model/flowStore";
 
 /** Modal form generated from the step kind's config JSON Schema. Edits go through the CommandBus. */
-export function ConfigDialog({ store, step, onClose, onRenamed }: {
+export function ConfigDialog({ store, step, onClose, onRenamed, connections }: {
+  /** Workspace connections for the `connection` picker; null/undefined offline (free text). */
+  connections?: ConnectionItem[] | null;
   store: FlowStore;
   step: Step;
   onClose: () => void;
@@ -62,7 +65,10 @@ export function ConfigDialog({ store, step, onClose, onRenamed }: {
         </label>
         {fields.map((f) => (
           // key includes the stored value so undo/redo resets the editor text
-          <FieldEditor key={`${step.id}:${f.name}:${JSON.stringify(step.config[f.name])}`} field={f} value={step.config[f.name]} onCommit={(t) => commit(f, t)} />
+          <FieldEditor key={`${step.id}:${f.name}:${JSON.stringify(step.config[f.name])}`} field={f} value={step.config[f.name]} onCommit={(t) => commit(f, t)}
+            {...(step.kind === "connector" && f.name === "connection" && connections
+              ? { choices: connections.filter((c) => !step.config["connector"] || c.connector === step.config["connector"]).map((c) => c.id) }
+              : {})} />
         ))}
         {fields.length === 0 && <p>This step has no configuration.</p>}
         {error && <p className="err">{error}</p>}
@@ -72,13 +78,21 @@ export function ConfigDialog({ store, step, onClose, onRenamed }: {
   );
 }
 
-function FieldEditor({ field, value, onCommit }: { field: Field; value: unknown; onCommit: (text: string) => string | null }) {
+function FieldEditor({ field, value, onCommit, choices }: { field: Field; value: unknown; onCommit: (text: string) => string | null; choices?: string[] }) {
   const [text, setText] = useState(toText(field, value));
   const [err, setErr] = useState<string | null>(null);
   const commit = (t: string) => setErr(onCommit(t));
   const title = field.description ?? field.name;
   let control;
-  if (field.type === "boolean") {
+  if (choices) {
+    const cur = typeof value === "string" && value !== "" && !choices.includes(value) ? [value] : [];
+    control = (
+      <select aria-label={field.name} value={text} onChange={(e) => { setText(e.target.value); commit(e.target.value); }}>
+        <option value="" />
+        {[...cur, ...choices].map((c) => <option key={c} value={c}>{c}</option>)}
+      </select>
+    );
+  } else if (field.type === "boolean") {
     control = <input type="checkbox" checked={value === true} onChange={(e) => commit(String(e.target.checked))} />;
   } else if (field.type === "enum") {
     control = (
