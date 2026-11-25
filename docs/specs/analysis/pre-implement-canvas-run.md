@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Pre-implement: canvas Run (test-run a flow from the canvas against a real connection)
 
-**Readiness:** no-go (as analysed; superseded by the [Resolution](#resolution-2026-11-23) below, spec now approved)
+**Readiness:** go (after resolution; as analysed it was no-go, see the [Resolution](#resolution-2026-11-23) below, spec now approved)
 **Spec:** docs/specs/2026-11-23-canvas-run.md
 
 Date: 2026-11-23. Analysis only: the spec, the code and tracker state were not changed. Code was

@@ -98,6 +98,8 @@ export const POLICIES: readonly RoutePolicy[] = [
   P("POST", "/v1/workspaces/:ws/tokens", wsPerm("token:create", "token", "token.create")),
   P("DELETE", "/v1/workspaces/:ws/tokens/:tokenId", wsPerm("token:revoke", "token", "token.revoke")),
   P("GET", "/v1/workspaces/:ws/audit", wsPerm("audit:read", "audit", "audit.query")),
+
+
 ];
 
 export const MUTATING = new Set(["POST", "PUT", "PATCH", "DELETE"]);

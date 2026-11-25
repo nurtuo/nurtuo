@@ -37,16 +37,25 @@ route is not rejected. Adding a route to `api.ts` therefore requires an explicit
 ## Roles and permissions
 
 Permissions are `resource:action`. Built-in roles (source of truth: `permissions.ts`; mirrored in
-migration `0103_auth_seed_roles.sql`, a test fails on drift):
+migrations `0103_auth_seed_roles.sql` and `0104_auth_seed_connection_permissions.sql`, a test fails on drift):
 
 | role | intent |
 | --- | --- |
 | owner | everything, including deleting the workspace and managing owners |
 | admin | everything except `workspace:delete`; cannot grant or touch owners |
-| editor | read plus `component:write/delete`, own tokens |
-| viewer | read-only |
+| editor | read plus `component:write/delete`, own tokens, and (canvas Run, experimental) `connection:write/delete`, `secret:write/delete`, `test_run:execute` |
+| viewer | read-only (includes `connection:read`) |
 | deployer | read-only plus `deployment:create`, own tokens |
 | runtime | machine role: register runtimes, read desired state, report deployment status |
+
+On upgrade, migration `0104_auth_seed_connection_permissions.sql` grants the new permissions to
+existing workspaces. Existing editors gain `connection:write` and `secret:write` on deployment.
+
+Canvas Run permissions (experimental): `connection:read` is held by owner, admin, editor, viewer and
+deployer; `connection:write`, `connection:delete`, `secret:write`, `secret:delete` and
+`test_run:execute` by owner, admin and editor; `runtime` holds none of them. Secret values have no read
+permission at all: the API lists names only. The secret and test-run routes are for session users, API
+tokens get 403.
 
 Escalation rule: a principal may grant, change or remove a role only if it holds every permission of
 that role (`canGrant`). It is role-agnostic: admin cannot mint owners, editors cannot mint admins,
