@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { FAKE_NURTUO, flowOf, sftpConn } from "../auth/test-util.js";
 import { binding } from "../connections/binding.js";
+import { ConnectionCoordinator } from "../connections/coordinator.js";
 import { MemoryConnectionRepository } from "../connections/repository.js";
 import { MemorySecretStore } from "../connections/secrets.js";
 import { TestRunner, redact, type TestRunDeps } from "./runner.js";
@@ -244,3 +245,52 @@ test("stalled DNS releases both run and scan slots on deadline or disconnect", a
     }
   }
 });
+
+for (const stall of ["workspace lock", "repository"] as const) {
+  test(`snapshot waiting on ${stall} releases the slot on deadline and disconnect`, { timeout: 5000 }, async () => {
+    const coordinator = new ConnectionCoordinator();
+    const limiter = new RunLimiter(1, 1);
+    const { runner, connections } = await world({ coordinator, limiter });
+    const controller = new AbortController();
+    let enter!: () => void;
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    let finish!: () => void;
+    const held = new Promise<void>((resolve) => { finish = resolve; });
+    const get = connections.get.bind(connections);
+    const locked = stall === "workspace lock" ? coordinator.withWorkspace("w1", async () => {
+      enter();
+      await held;
+    }) : undefined;
+    if (stall === "repository") connections.get = async (...args) => {
+      enter();
+      await held;
+      return get(...args);
+    };
+
+    const request = { flow: flowOf(), timeoutMs: 1000 };
+    try {
+      const first = runner.run("w1", request);
+      await entered;
+      assert.equal(((await first).body as any).error.code, "timeout");
+      const tryAcquire = limiter.tryAcquire.bind(limiter);
+      let admitted!: () => void;
+      const admission = new Promise<void>((resolve) => { admitted = resolve; });
+      limiter.tryAcquire = (workspace) => {
+        const release = tryAcquire(workspace);
+        if (release) admitted();
+        return release;
+      };
+      const second = runner.run("w1", request, controller.signal);
+      const disconnected = assert.rejects(second, { name: "AbortError" });
+      await admission;
+      controller.abort();
+      await disconnected;
+      const release = limiter.tryAcquire("w1");
+      assert.ok(release);
+      release();
+    } finally {
+      finish();
+      await locked;
+    }
+  });
+}
