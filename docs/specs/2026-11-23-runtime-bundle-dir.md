@@ -3,7 +3,7 @@
 
 Status: approved (2026-11-24, Łukasz). Date: 2026-11-23.
 
-Extends: [runtime-supervisor-and-deployer](implemented/2026-11-21-runtime-supervisor-and-deployer.md) (gap 1), [runtime-gateway-protocol-v1](implemented/2026-11-21-runtime-gateway-protocol-v1.md) (gap 5), [runtime-cli-service-standalone](implemented/2026-11-21-runtime-cli-service-standalone.md) (gap 2). Related: [bundle-artifact-delivery](2026-11-22-bundle-artifact-delivery.md) (`FetchArtifact`).
+Extends: [runtime-supervisor-and-deployer](implemented/2026-11-21-runtime-supervisor-and-deployer.md) (gap 1), [runtime-gateway-protocol-v1](implemented/2026-11-21-runtime-gateway-protocol-v1.md) (gap 5), [runtime-cli-service-standalone](implemented/2026-11-21-runtime-cli-service-standalone.md) (gap 2). Related: [bundle-artifact-delivery](2026-11-24-bundle-artifact-delivery.md) (`FetchArtifact`).
 
 ## TLDR
 
@@ -205,7 +205,7 @@ Approved by Łukasz on 2026-11-24 (Europe/Warsaw). Owner answers D2, D3, D6 are 
 ## References
 
 - Issue #58; issue #64 (phase 2); PR #69 (handshake fix); PR #25 (runtime).
-- [bundle-artifact-delivery](2026-11-22-bundle-artifact-delivery.md), [ADR 0006](../adr/0006-bundle-format-and-domain-separated-signature.md), [ADR 0009](../adr/0009-outbound-only-runtime-gateway.md).
+- [bundle-artifact-delivery](2026-11-24-bundle-artifact-delivery.md), [ADR 0006](../adr/0006-bundle-format-and-domain-separated-signature.md), [ADR 0009](../adr/0009-outbound-only-runtime-gateway.md).
 - Pre-implement report: [analysis/pre-implement-runtime-bundle-dir.md](analysis/pre-implement-runtime-bundle-dir.md).
 
 ## Changelog
