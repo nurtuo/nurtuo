@@ -90,3 +90,34 @@ func TestFakeConnectorConforms(t *testing.T) {
 		}},
 	})
 }
+
+// streaming is fake with an Execute that counts bytes instead of keeping them.
+type streaming struct{ fake }
+
+func (streaming) Execute(s connectorv1.ConnectorService_ExecuteServer) error {
+	var id string
+	for {
+		req, err := s.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if ch := req.GetChunk(); ch != nil {
+			id = ch.GetDocumentId()
+		}
+	}
+	return s.Send(&connectorv1.ExecuteResponse{Msg: &connectorv1.ExecuteResponse_Result{
+		Result: &connectorv1.DocumentResult{DocumentId: id, Status: connectorv1.DocumentStatus_DOCUMENT_STATUS_SUCCESS},
+	}})
+}
+
+func TestStreamingConnectorPassesLargePayload(t *testing.T) {
+	contracttest.Run(t, contracttest.Options{
+		New: func(testing.TB) connector.Connector { return streaming{} },
+		LargePayload: &contracttest.LargePayloadCase{
+			Start: &connectorv1.ExecuteStart{OperationType: connectorv1.OperationType_OPERATION_TYPE_CREATE},
+		},
+	})
+}
