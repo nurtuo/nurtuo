@@ -180,7 +180,12 @@ export function createHttpServer(repo: Repository, opts: HandlerOptions): Server
     const ac = new AbortController();
     rs.on("close", () => { if (!rs.writableFinished) ac.abort(); });
     const chunks: Buffer[] = [];
-    for await (const c of rq) chunks.push(c as Buffer);
+    try {
+      for await (const c of rq) chunks.push(c as Buffer);
+    } catch {
+      if (!rs.destroyed) rs.destroy();
+      return;
+    }
     let body: unknown;
     let out: ApiResponse;
     try { if (chunks.length) body = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
@@ -188,6 +193,7 @@ export function createHttpServer(repo: Repository, opts: HandlerOptions): Server
     const headers: Record<string, string> = {};
     for (const [k, v] of Object.entries(rq.headers)) if (v !== undefined) headers[k] = Array.isArray(v) ? v.join(", ") : v;
     out = await handle({ method: rq.method ?? "GET", path: url.pathname, query: Object.fromEntries(url.searchParams), body, headers, ip: rq.socket.remoteAddress, signal: ac.signal });
+    if (ac.signal.aborted) return;
     rs.writeHead(out.status, { "content-type": "application/json", ...out.headers });
     rs.end(out.body === undefined ? undefined : JSON.stringify(out.body));
   });

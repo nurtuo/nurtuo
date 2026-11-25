@@ -27,7 +27,7 @@ export function setup(over: { service?: Partial<AuthServiceOptions>; hook?: Part
     if (o.cookie) headers.cookie = `${SESSION_COOKIE}=${o.cookie}`;
     if (o.csrf) headers["x-nurtuo-csrf"] = o.csrf;
     if (o.ws) headers["x-nurtuo-workspace"] = o.ws;
-    return handle({ method, path, body: o.body, query: o.query, headers, ip: o.ip ?? "127.0.0.1" });
+    return handle({ method, path, body: o.body, query: o.query, headers, ip: o.ip ?? "10.0.0.1" });
   };
 
   /** Creates a user (and optionally a workspace they own). */

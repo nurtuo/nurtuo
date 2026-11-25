@@ -175,7 +175,7 @@ test("audit: every mutating request is logged, reads are not, secrets never appe
   const [c, u, , denied, t] = page as [any, any, any, any, any];
   assert.equal(c.actorType, "token"); assert.equal(c.actorId, ed.token.id); assert.equal(c.requestId, "req-12345678");
   assert.equal(c.resourceId, id); assert.equal(c.beforeHash, null); assert.match(c.afterHash, /^sha256:[0-9a-f]{64}$/);
-  assert.equal(c.ip, "127.0.0.1"); assert.equal(c.metadata.userId, ed.user.id);
+  assert.equal(c.ip, "10.0.0.1"); assert.equal(c.metadata.userId, ed.user.id);
   assert.match(u.beforeHash, /^sha256:/); assert.notEqual(u.beforeHash, u.afterHash, "before/after differ across the PATCH");
   assert.equal(denied.metadata.denied, "forbidden");
   assert.ok(!JSON.stringify(page).includes(j(tok).token), "plaintext token never reaches the audit log");
@@ -248,7 +248,7 @@ test("trustProxy only honoured when enabled", async () => {
     await call("POST", "/v1/components", { token: ed.token.raw, body: { name: "a" }, headers: { "x-forwarded-for": "203.0.113.9, 10.0.0.2" } });
     return (await authRepo.queryAudit({ workspaceId: ws.id, limit: 1 })).items[0]!.ip;
   };
-  assert.equal(await mk(false), "127.0.0.1");
+  assert.equal(await mk(false), "10.0.0.1");
   assert.equal(await mk(true), "203.0.113.9");
 });
 
@@ -259,4 +259,45 @@ test("audit failure fails the request closed", async () => {
   authRepo.appendAudit = async () => { throw new Error("db down"); };
   const r = await call("POST", "/v1/components", { token: ed.token.raw, body: { name: "a" } });
   assert.equal(r.status, 500); assert.equal(j(r).error.code, "audit_unavailable");
+});
+
+test("auth extension receives the resolved workspace and cancellation signal", async () => {
+  const signal = new AbortController().signal;
+  const { owner, login, handle } = setup({ hook: { extraEndpoints: {
+    async "component.list"(ctx) {
+      assert.equal(ctx.signal, signal);
+      return { status: 200, body: { workspaceId: ctx.workspace?.id } };
+    },
+  } } });
+  const { ws } = await owner("extension@x.io", "extension");
+  const { cookie } = await login("extension@x.io");
+  const response = await handle({ method: "GET", path: "/v1/components", signal,
+    headers: { cookie: `__Host-nurtuo_session=${cookie}`, "x-nurtuo-workspace": ws.id } });
+  assert.deepEqual(response.body, { workspaceId: ws.id });
+});
+
+test("workspace deletion is serialized and cleanup follows successful deletion only", async () => {
+  const events: string[] = [];
+  const { owner, login, call, authRepo } = setup({ hook: {
+    extraEndpoints: { async "workspace.delete"() { throw new Error("built-in endpoint overridden"); } },
+    async serializeWorkspaceDelete(id, remove) {
+      assert.ok(await authRepo.getWorkspace(id));
+      events.push("serialized");
+      const result = await remove();
+      assert.equal(await authRepo.getWorkspace(id), undefined);
+      events.push("deleted");
+      return result;
+    },
+    async onWorkspaceDeleted(id) {
+      assert.equal(await authRepo.getWorkspace(id), undefined);
+      events.push("cleaned");
+    },
+  } });
+  const { ws } = await owner("cleanup@x.io", "cleanup");
+  const { cookie, csrf } = await login("cleanup@x.io");
+  const path = `/v1/workspaces/${ws.id}`;
+  assert.equal((await call("DELETE", path, { cookie })).status, 403);
+  assert.deepEqual(events, []);
+  assert.equal((await call("DELETE", path, { cookie, csrf })).status, 204);
+  assert.deepEqual(events, ["serialized", "deleted", "cleaned"]);
 });

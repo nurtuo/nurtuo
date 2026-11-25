@@ -8,16 +8,17 @@ export interface Session {
 }
 
 /** Sign-in and workspace picker. Offline (no control plane) the canvas works as a local editor. */
-export function LoginBar({ session, workspaceId, onWorkspace, online, onLogin, onLogout }: {
+export function LoginBar({ session, workspaceId, onWorkspace, restoring, onLogin, onLogout }: {
   session: Session | null;
   workspaceId: string | null;
   onWorkspace: (id: string) => void;
-  online: boolean;
+  restoring: boolean;
   onLogin: (email: string, password: string) => Promise<string | null>;
   onLogout: () => Promise<string | null>;
 }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [signingIn, setSigningIn] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -38,13 +39,22 @@ export function LoginBar({ session, workspaceId, onWorkspace, online, onLogin, o
       </span>
     );
   }
-  if (!online) return <span className="hint">Offline: no control plane. Sign-in is unavailable.</span>;
   return (
-    <form className="loginbar" onSubmit={async (e) => { e.preventDefault(); setErr(await onLogin(email, password)); setPassword(""); }}>
+    <form className="loginbar" onSubmit={async (e) => {
+      e.preventDefault();
+      if (restoring || signingIn) return;
+      setSigningIn(true);
+      try {
+        setErr(await onLogin(email, password));
+        setPassword("");
+      } finally {
+        setSigningIn(false);
+      }
+    }}>
       <input aria-label="Email" placeholder="email" value={email} onChange={(e) => setEmail(e.target.value)} />
       <input aria-label="Password" type="password" placeholder="password" value={password} onChange={(e) => setPassword(e.target.value)} />
-      <button type="submit">Sign in</button>
-      {err && <span className="err">{err}</span>}
+      <button type="submit" disabled={restoring || signingIn}>Sign in</button>
+      {err && <span className="err" role="alert">{err}</span>}
     </form>
   );
 }
