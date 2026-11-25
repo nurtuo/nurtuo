@@ -87,6 +87,7 @@ YAML, or JSON when the file extension is `.json`. Loaded by `LoadConfig`; relati
 | `server_name` | no | TLS server name override (SNI and verification name) |
 | `log_level` | no | parsed, but **not used** by the code today: the logger does not read it |
 | `bundle_dir` | no | directory of bundle files; when empty the runtime still connects but cannot run anything: it logs a warning and reports every deployment as `error` ("no bundle_dir configured"), never `running` |
+| `state_dir` | no | private directory for runtime state: embedded JetStream queue data (`jetstream/`), the applied revision (`revision`) and a process lock (`lock`). With it set, queued messages and the applied revision checkpoint survive a restart. Unset: queues and the applied revision are in memory and the runtime logs a startup warning. If the directory or the queue backend cannot be opened, or `revision` is corrupt, the runtime refuses to start (no fallback to memory). `nurtuo service install` adds it (`/var/lib/nurtuo`, `/Library/Application Support/Nurtuo`, `%ProgramData%\Nurtuo`) when missing; standalone uses `<data-dir>/runtime`. One process per directory. Queued payloads are not encrypted at rest |
 | `trusted_keys` | no | list of hex Ed25519 public keys. When set, `bundle_dir` holds signed `<sha256>.bundle` archives that are digest-checked and signature-verified before use, and plain `.json` bundles are **not** accepted |
 | `http_addr` | no | listen address of HTTP-trigger listeners; default `127.0.0.1:0` (random loopback port). On a non-loopback address a listener starts only if its `start` step sets `auth` (or `insecure: true`); see [connectors/http.md](connectors/http.md#http-listener-start-step) |
 | `secrets` | no | `{provider: env\|dir\|encrypted-file, path, key_file}`: where `secret://name` references in bundle connections are resolved. Default `env` (`NURTUO_SECRET_<NAME>`). Manage values with `nurtuo secret`. Windows (upgrade step for service installs): an existing `path` or `key_file` must have a private DACL, or the runtime refuses to start with `icacls` fix guidance; Nurtuo does not change it ([security.md](security.md#windows-private-secrets-directory)) |
@@ -109,9 +110,10 @@ id, version, OS, architecture and last applied desired-state revision, sends a h
 `resume_listener` (argument `listener` = `<deployment>/<flow>`) are implemented; `replay_dlq`,
 `run_now` and `test_execute` are names in the gateway contract without a handler in the runtime,
 so they are answered with `ok=false`, "unknown command". On disconnect it keeps running its last applied state and reconnects with
-exponential backoff from 1 s to 60 s with jitter (reset after a session longer than 30 s). The
-applied revision is kept in memory only, so after a restart the runtime reports revision 0 and the
-control plane resends the desired state.
+exponential backoff from 1 s to 60 s with jitter (reset after a session longer than 30 s). With
+`state_dir` set, the runtime persists the applied revision checkpoint. A fresh process sends
+revision 0 in `Hello` so the control plane resends desired state and the runtime rebuilds its
+listeners. After the first successful reconcile, reconnects send the live applied revision.
 
 With `bundle_dir` set, a deployment's `bundle_digest` (a leading `sha256:` is stripped) is read as
 `<bundle_dir>/<digest>.json` (one flow document or `{"flows": [...]}`), or, when `trusted_keys` is
@@ -121,8 +123,8 @@ or queue start step get a listener. Connections referenced by connector steps ar
 bundle, their `secret://` values are resolved through the `secrets` store, and each connection is
 tested at deploy time according to `connection_test`.
 
-Limits of the current runtime process, because they surprise operators: queues use the in-memory
-backend (embedded JetStream is not wired into the runtime process yet), there are no `queue` or
+The runtime uses embedded JetStream for queues when both `bundle_dir` and `state_dir` are set.
+With `bundle_dir` set and `state_dir` unset, queues use the in-memory backend. There are no `queue` or
 `notify` step runners, `script` steps run in the WASM sandbox but the runtime has no way yet to
 deliver script modules (a script step fails with "script is not registered"), only the native
 connectors `http`, `sftp`, `postgres` and `nats` are available (bridges are not configurable from
@@ -183,6 +185,7 @@ Default data directory (`NURTUO_DATA_DIR` overrides everything):
   postgres/data/       PostgreSQL cluster
   postgres/runtime/    extracted PostgreSQL binaries
   postgres/cache/      downloaded binary cache
+  runtime/             mode 0700: queue data (jetstream/), applied revision, lock
   logs/control-plane.log   control plane output (also echoed to stderr)
   secrets/             mode 0700 (Windows: private DACL, see below)
     ca.pem             local CA (ECDSA P-256, valid 10 years)
@@ -226,8 +229,9 @@ password, so recreate the data directory as well).
 2. `nurtuo service stop`, replace the binary at the path the service was installed with, then
    `nurtuo service start`. The service definition stores the binary path and config path; if
    either changes, `uninstall` and `install` again.
-3. The runtime needs no migration of local state (the applied revision is in memory and the
-   control plane resends desired state). Control plane database migrations are SQL files in
+3. Keep the runtime's `state_dir` across upgrades to retain queued messages and the revision
+   checkpoint. The control plane resends desired state on restart so the runtime can rebuild its
+   listeners. Control plane database migrations are SQL files in
    `core/control-plane/migrations`, applied by the control plane at start when `DATABASE_URL` is
    set.
 
@@ -237,7 +241,7 @@ minor versions against each other; this is not yet enforced or tested.
 ## Backup
 
 - Runtime-only install: back up `runtime.yaml`, the certificate and key files and `bundle_dir`.
-  There is no other persistent runtime state yet (queues are in memory in the runtime process); if you use the `dir` or `encrypted-file` secrets provider, also back up its `path` (and `key_file`).
+  The runtime state lives in `state_dir` (queued messages and the applied revision); stop the runtime before copying it. If you use the `dir` or `encrypted-file` secrets provider, also back up its `path` (and `key_file`).
 - Standalone: stop `nurtuo standalone` and copy the whole data directory, including `secrets/`
   (without it the CA and database password are lost). A running-database backup with `pg_dump`
   against the embedded instance was not tried.

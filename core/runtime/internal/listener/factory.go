@@ -147,6 +147,15 @@ type QueueSource struct {
 
 // Consume subscribes and blocks until ctx is cancelled.
 func (s *QueueSource) Consume(ctx context.Context, deliver func(ctx context.Context, in *docs.Set) error) error {
+	sub, err := s.subscribe(ctx, deliver)
+	if err != nil {
+		return err
+	}
+	<-ctx.Done()
+	return sub.Close()
+}
+
+func (s *QueueSource) subscribe(ctx context.Context, deliver func(ctx context.Context, in *docs.Set) error) (queue.Subscription, error) {
 	durable := s.Durable
 	if durable == "" {
 		durable = "nurtuo-" + s.Queue
@@ -155,7 +164,7 @@ func (s *QueueSource) Consume(ctx context.Context, deliver func(ctx context.Cont
 	if sp == nil {
 		sp = docs.NewSpool(docs.SpoolConfig{})
 	}
-	sub, err := s.Backend.Subscribe(ctx, s.Queue, queue.SubOpts{Durable: durable}, func(hctx context.Context, d queue.Delivery) {
+	return s.Backend.Subscribe(ctx, s.Queue, queue.SubOpts{Durable: durable}, func(hctx context.Context, d queue.Delivery) {
 		m := d.Message()
 		payload, err := sp.FromBytes(m.Data)
 		if err != nil {
@@ -173,15 +182,14 @@ func (s *QueueSource) Consume(ctx context.Context, deliver func(ctx context.Cont
 		if m.Key != "" {
 			props["queue.key"] = m.Key
 		}
-		if err := deliver(hctx, docs.NewSet(docs.New(id, props, payload))); err != nil {
+		err = deliver(hctx, docs.NewSet(docs.New(id, props, payload)))
+		if hctx.Err() != nil {
+			return
+		}
+		if err != nil {
 			_ = d.Nak(hctx, 0)
 			return
 		}
 		_ = d.Ack(hctx)
 	})
-	if err != nil {
-		return err
-	}
-	<-ctx.Done()
-	return sub.Close()
 }
