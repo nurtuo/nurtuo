@@ -4,7 +4,7 @@ import { once } from "node:events";
 import { request, type Server } from "node:http";
 import { test } from "node:test";
 import type { AddressInfo } from "node:net";
-import { createHandler, createHttpServer, digestOf } from "./api.js";
+import { MAX_BODY_BYTES, MAX_LOGIN_BODY_BYTES, createHandler, createHttpServer, digestOf } from "./api.js";
 import { MemoryRepository } from "./memory-repository.js";
 
 function setup() {
@@ -123,6 +123,36 @@ async function serve(opts: Parameters<typeof createHttpServer>[1]) {
   await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
   return { srv, base: `http://127.0.0.1:${(srv.address() as AddressInfo).port}` };
 }
+
+test("body over 1 MiB is 413 before parsing; a body under the limit still works", async () => {
+  const { srv, base } = await serve({ auth: "disabled" });
+  try {
+    // not JSON on purpose: a parse error (400) would mean the limit was applied after parsing
+    const big = await fetch(`${base}/v1/workspaces/ws/test-runs`, { method: "POST", headers: { "content-type": "application/json" }, body: "x".repeat(MAX_BODY_BYTES + 1) });
+    assert.equal(big.status, 413);
+    assert.equal(asAny(await big.json()).error.code, "payload_too_large");
+    const ok = await fetch(`${base}/v1/components`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "small" }) });
+    assert.equal(ok.status, 201);
+  } finally { srv.close(); srv.closeAllConnections(); }
+});
+
+test("sign-in bodies have a pre-authentication cap and large revision uploads still work", async () => {
+  const { srv, base } = await serve({ auth: "disabled" });
+  try {
+    const login = await fetch(`${base}/v1/auth/login`, { method: "POST", body: "x".repeat(MAX_LOGIN_BODY_BYTES + 1) });
+    assert.equal(login.status, 413);
+    assert.equal(asAny(await login.json()).error.code, "payload_too_large");
+
+    const component = await fetch(`${base}/v1/components`, { method: "POST", body: JSON.stringify({ name: "large-revision" }) });
+    assert.equal(component.status, 201);
+    const { id } = asAny(await component.json());
+    const path = `${base}/v1/components/${id}/revisions`;
+    const content = { data: "x".repeat(MAX_BODY_BYTES + 1) };
+    const upload = await fetch(path, { method: "POST", body: JSON.stringify({ content }) });
+    assert.equal(upload.status, 201);
+    assert.deepEqual(asAny(await (await fetch(`${path}/1`)).json()).content, content);
+  } finally { srv.close(); srv.closeAllConnections(); }
+});
 
 test("request close aborts ApiRequest.signal", async () => {
   const { setup: authSetup } = await import("./auth/test-util.js");

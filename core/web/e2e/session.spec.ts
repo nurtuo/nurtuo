@@ -4,8 +4,8 @@ import { expect, test } from "@playwright/test";
 const me = {
   user: { email: "editor@example.test" },
   workspaces: [
-    { id: "one", name: "One", role: "owner" },
-    { id: "two", name: "Two", role: "viewer" },
+    { id: "one", name: "One", role: "owner", permissions: [] },
+    { id: "two", name: "Two", role: "viewer", permissions: [] },
   ],
   csrfToken: "csrf-login",
 };

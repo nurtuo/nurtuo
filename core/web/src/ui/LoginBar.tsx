@@ -8,10 +8,11 @@ export interface Session {
 }
 
 /** Sign-in and workspace picker. Offline (no control plane) the canvas works as a local editor. */
-export function LoginBar({ session, workspaceId, onWorkspace, restoring, onLogin, onLogout }: {
+export function LoginBar({ session, workspaceId, onWorkspace, online, restoring, onLogin, onLogout }: {
   session: Session | null;
   workspaceId: string | null;
   onWorkspace: (id: string) => void;
+  online: boolean;
   restoring: boolean;
   onLogin: (email: string, password: string) => Promise<string | null>;
   onLogout: () => Promise<string | null>;
@@ -56,6 +57,7 @@ export function LoginBar({ session, workspaceId, onWorkspace, restoring, onLogin
       <input aria-label="Email" placeholder="email" value={email} onChange={(e) => setEmail(e.target.value)} />
       <input aria-label="Password" type="password" placeholder="password" value={password} onChange={(e) => setPassword(e.target.value)} />
       <button type="submit" disabled={restoring || signingIn}>Sign in</button>
+      {!online && <span className="hint">Offline: Run and Connections are disabled.</span>}
       {err && <span className="err" role="alert">{err}</span>}
     </form>
   );

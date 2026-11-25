@@ -243,12 +243,33 @@ jobs:
           done
           if [ "$(wc -l < "$d/known_hosts")" -lt 3 ]; then docker logs "$id" 2>&1 | sed "s/$pw/***/g"; echo "sshd not ready"; exit 1; fi
           printf '{"schema":"nurtuo.connection/v1","id":"private-sftp","connector":"sftp","settings":{"host":"127.0.0.1","port":%s,"user":"deploy","password":"secret://sftp_password"}}\n' "$port" > "$d/conn.json"
+          bootstrap_pw="$(openssl rand -hex 16)"
+          echo "::add-mask::$bootstrap_pw"
+          fingerprint="$("$NURTUO_FLOW_RUN_BIN" flow host-key 127.0.0.1 --port "$port" --json | jq -er '.keys[0].fingerprintSha256')"
           {
+            echo "NURTUO_E2E_CP_PASSWORD=$bootstrap_pw"
+            echo "NURTUO_CANVAS_RUN_E2E=1"
+            echo "NURTUO_TEST_RUN_ALLOW_PRIVATE=1"
+            echo "NURTUO_E2E_SFTP_HOST=127.0.0.1"
+            echo "NURTUO_E2E_SFTP_PORT=$port"
+            echo "NURTUO_E2E_SFTP_USER=deploy"
+            echo "NURTUO_E2E_SFTP_PASSWORD=$pw"
+            echo "NURTUO_E2E_SFTP_FINGERPRINT=$fingerprint"
+            echo "NURTUO_E2E_SFTP_EXPECT=$expect"
+            echo "NURTUO_TEST_SFTP_HOST=127.0.0.1"
+            echo "NURTUO_TEST_SFTP_PORT=$port"
+            echo "NURTUO_TEST_SFTP_USER=deploy"
+            echo "NURTUO_TEST_SFTP_PASSWORD=$pw"
+            echo "NURTUO_TEST_SFTP_FINGERPRINT=$fingerprint"
             echo "NURTUO_FLOW_RUN_CONN=$d/conn.json"
             echo "NURTUO_FLOW_RUN_KNOWN_HOSTS=$d/known_hosts"
             echo "NURTUO_FLOW_RUN_EXPECT=$expect"
             echo "NURTUO_SECRET_SFTP_PASSWORD=$pw"
           } >> "$GITHUB_ENV"
+      - name: Build control plane and test the real runner
+        run: |
+          pnpm --filter @nurtuo/control-plane... run build
+          node --test core/control-plane/dist/testrun/runner.real.test.js
       - name: Playwright e2e
         run: pnpm --filter @nurtuo/web run test:e2e
       - name: Upload Playwright report and traces

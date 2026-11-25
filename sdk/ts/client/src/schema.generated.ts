@@ -629,6 +629,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/workspaces/{ws}/test-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * @description EXPERIMENTAL. Runs an inline `nurtuo.flow/v1` document synchronously through `nurtuo flow run` against
+         *     workspace connections (sftp GET/QUERY only). A failed or stopped run is a 200 result, not an API error.
+         *     Errors: 400 `invalid_flow`, `not_allowed_in_test_run`, `connection_required`, `host_not_allowed`;
+         *     404 `connection_not_found`; 409 `secret_missing`, `credential_unbound`, `dial_enforcement_unavailable`; 429 `too_many_runs`; 503 `test_run_unavailable`. Session users only.
+         */
+        post: operations["createTestRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -700,6 +725,39 @@ export interface components {
         };
         ConnectionList: {
             items?: components["schemas"]["Connection"][];
+        };
+        TestRunResult: {
+            runId?: string;
+            /** @enum {string} */
+            status?: "succeeded" | "failed" | "stopped";
+            durationMs?: number;
+            steps?: {
+                id?: string;
+                kind?: string;
+                /** @enum {string} */
+                status?: "ok" | "error" | "stopped" | "not_run";
+                in?: number;
+                out?: number;
+                failed?: number;
+                dropped?: number;
+            }[];
+            documents?: {
+                id?: string;
+                properties?: {
+                    [key: string]: string;
+                };
+                size?: number;
+                /** @description base64 */
+                payload?: string;
+            }[];
+            error?: {
+                code?: string;
+                message?: string;
+            };
+            stop?: {
+                status?: number;
+                message?: string;
+            };
         };
         /** @enum {string} */
         ComponentKind: "flow" | "map" | "connector" | "script";
@@ -799,7 +857,7 @@ export interface components {
                 "application/json": components["schemas"]["ErrorBody"];
             };
         };
-        /** @description Request exceeds the operation body limit (`payload_too_large`) */
+        /** @description Request body exceeds the limit for this operation (`payload_too_large`). */
         PayloadTooLarge: {
             headers: {
                 [name: string]: unknown;
@@ -1337,6 +1395,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            413: components["responses"]["PayloadTooLarge"];
             429: components["responses"]["Error"];
         };
     };
@@ -2157,6 +2216,50 @@ export interface operations {
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["Error"];
+            413: components["responses"]["PayloadTooLarge"];
+            429: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    createTestRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    flow: Record<string, never>;
+                    input?: {
+                        properties?: {
+                            [key: string]: string;
+                        };
+                    };
+                    /** @default 30000 */
+                    timeoutMs?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TestRunResult"];
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
             413: components["responses"]["PayloadTooLarge"];
             429: components["responses"]["Error"];
             503: components["responses"]["Error"];

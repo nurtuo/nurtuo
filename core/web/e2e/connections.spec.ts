@@ -11,7 +11,7 @@ test("clearing the SFTP root sends an explicit edit and preserves the password",
   await page.addInitScript(() => localStorage.setItem("nurtuo.cp.session", "1"));
   await page.route("**/v1/auth/me", (route) => route.fulfill({ json: {
     user: { email: "editor@example.test" },
-    workspaces: [{ id: "one", name: "One", role: "owner" }],
+    workspaces: [{ id: "one", name: "One", role: "owner", permissions: [] }],
     csrfToken: "test-csrf",
   } }));
   await page.route("**/v1/workspaces/one/connections", (route) => route.fulfill({ json: { items: [connection] } }));
@@ -41,7 +41,7 @@ test("Fetch leaves the saved key unchanged and Trust applies the key for the sca
   await page.addInitScript(() => localStorage.setItem("nurtuo.cp.session", "1"));
   await page.route("**/v1/auth/me", (route) => route.fulfill({ json: {
     user: { email: "editor@example.test" },
-    workspaces: [{ id: "one", name: "One", role: "owner" }],
+    workspaces: [{ id: "one", name: "One", role: "owner", permissions: [] }],
     csrfToken: "test-csrf",
   } }));
   await page.route("**/v1/workspaces/one/connections", (route) => route.fulfill({ json: { items: [connection] } }));

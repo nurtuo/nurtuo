@@ -4,11 +4,13 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 import { DND_MIME, STEP_CATALOG, emptyFlow } from "../model/catalog";
 import { parseLoaded, serializeFlow, serializeLayout } from "../model/flowAdapter";
 import { FlowStore } from "../model/flowStore";
-import { ApiError, ControlPlane, describeApiError, type ConnectionItem } from "../api/controlPlane";
+import { ApiError, ControlPlane, OfflineError, describeApiError, type ConnectionItem } from "../api/controlPlane";
+import { IDLE, hashFlow, reconcile, stepStatuses, type RunState } from "../model/runState";
 import { Canvas } from "./Canvas";
 import { ConfigDialog } from "./ConfigDialog";
 import { ConnectionsPanel } from "./ConnectionsPanel";
 import { LoginBar, type Session } from "./LoginBar";
+import { ResultsPanel, RunDialog } from "./RunPanel";
 
 const SESSION_HINT = "nurtuo.cp.session"; // "a session cookie probably exists"; avoids probing the control plane when offline
 
@@ -29,6 +31,7 @@ export function App() {
   const fileRef = useRef<HTMLInputElement>(null);
 
   const cp = useMemo(() => new ControlPlane(), []);
+  const [online, setOnline] = useState(true);
   const [restoring, setRestoring] = useState(() => Boolean(localStorage.getItem(SESSION_HINT)));
   const [restoreError, setRestoreError] = useState<string | null>(null);
   const signingIn = useRef(false);
@@ -37,7 +40,10 @@ export function App() {
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const [connections, setConnections] = useState<ConnectionItem[] | null>(null);
   const [showConnections, setShowConnections] = useState(false);
+  const [showRun, setShowRun] = useState(false);
+  const [run, setRun] = useState<RunState>(IDLE);
   const listRequest = useRef<AbortController>(null);
+  const runRequest = useRef<AbortController>(null);
   const currentWorkspace = useRef<string | null>(null);
 
   const enter = (me: { user: { email?: string } | null; workspaces: Session["workspaces"] }) => {
@@ -49,8 +55,9 @@ export function App() {
   const leave = () => {
     currentWorkspace.current = null;
     listRequest.current?.abort();
-    setSession(null); setWorkspaceId(null); setConnections(null);
-    setShowConnections(false);
+    runRequest.current?.abort();
+    setSession(null); setWorkspaceId(null); setConnections(null); setRun(IDLE);
+    setShowRun(false); setShowConnections(false);
     localStorage.removeItem(SESSION_HINT);
   };
 
@@ -61,8 +68,10 @@ export function App() {
     restore.current ??= cp.me();
     restore.current.then((me) => {
       if (active) me ? enter(me) : leave();
-    }, () => {
-      if (active) setRestoreError("Could not restore your session. Try signing in again.");
+    }, (error) => {
+      if (!active) return;
+      if (error instanceof OfflineError) setOnline(false);
+      setRestoreError("Could not restore your session. Try signing in again.");
     }).finally(() => { if (active) setRestoring(false); });
     return () => { active = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -93,9 +102,11 @@ export function App() {
     try {
       const me = await cp.login(email, password);
       if (!me) return "Sign-in failed";
+      setOnline(true);
       enter(me);
       return null;
     } catch (e) {
+      if (e instanceof OfflineError) setOnline(false);
       return e instanceof ApiError ? e.message : describeApiError(e);
     } finally {
       signingIn.current = false;
@@ -114,11 +125,13 @@ export function App() {
   const changeWorkspace = (id: string) => {
     currentWorkspace.current = id;
     listRequest.current?.abort();
-    setWorkspaceId(id); setConnections(null);
-    setShowConnections(false);
+    runRequest.current?.abort();
+    setWorkspaceId(id); setConnections(null); setRun(IDLE);
+    setShowRun(false); setShowConnections(false);
   };
 
   const workspace = session?.workspaces.find((w) => w.id === workspaceId) ?? null;
+  const canRun = workspace?.permissions.includes("test_run:execute") ?? false;
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -154,6 +167,38 @@ export function App() {
 
   const errors = state.diagnostics.filter((d) => d.severity === "error").length;
 
+  // Any edit invalidates the run colours and results.
+  useEffect(() => setRun((r) => reconcile(r, state.flow)), [state.flow]);
+  const runStatus = useMemo(() => stepStatuses(run, state.flow), [run, state.flow]);
+
+  const runDisabledReason = !online ? "Control plane unreachable"
+    : !session ? "Sign in to run flows"
+    : !workspace ? "Select a workspace"
+    : !canRun ? "Your role cannot run flows"
+    : errors > 0 ? "Fix the flow errors first"
+    : run.phase === "running" ? "A run is in progress" : null;
+
+  const doRun = async (properties: Record<string, string>, timeoutMs: number) => {
+    if (!workspaceId) return;
+    setShowRun(false);
+    const flow = state.flow;
+    const flowHash = hashFlow(flow);
+    const activeRun = { phase: "running", flowHash } as const;
+    runRequest.current?.abort();
+    const request = new AbortController();
+    runRequest.current = request;
+    setRun(activeRun);
+    try {
+      const result = await cp.testRun(workspaceId, { flow, input: { properties }, timeoutMs }, request.signal);
+      setRun((r) => (r === activeRun ? { phase: "done", flowHash, result } : r));
+    } catch (e) {
+      if (request.signal.aborted) return;
+      if (e instanceof ApiError && e.status === 401) leave();
+      if (e instanceof OfflineError) setOnline(false);
+      setRun((r) => (r === activeRun ? { phase: "error", flowHash, message: describeApiError(e) } : r));
+    }
+  };
+
   return (
     <div className="app">
       <div className="toolbar">
@@ -164,9 +209,10 @@ export function App() {
         <button onClick={() => download(`${state.flow.id}.flow.json`, serializeFlow(state.flow))}>Save flow</button>
         <button onClick={() => download(`${state.flow.id}.layout.json`, serializeLayout(state.flow.id, state.positions))}>Save layout</button>
         <span className="sep" />
-        <button disabled={!session || !workspace} title={session ? "" : "Sign in to manage connections"} onClick={() => setShowConnections(true)}>Connections</button>
+        <button disabled={!online || !session || !workspace} title={session ? "" : "Sign in to manage connections"} onClick={() => setShowConnections(true)}>Connections</button>
+        <button disabled={runDisabledReason !== null} title={runDisabledReason ?? "Run this flow against your workspace connections"} onClick={() => setShowRun(true)}>Run</button>
         <span className="sep" />
-        <LoginBar session={session} workspaceId={workspaceId} restoring={restoring} onLogin={onLogin} onLogout={onLogout}
+        <LoginBar session={session} workspaceId={workspaceId} online={online} restoring={restoring} onLogin={onLogin} onLogout={onLogout}
           onWorkspace={changeWorkspace} />
         {restoreError && <span className="err" role="alert">{restoreError}</span>}
         <input ref={fileRef} type="file" accept="application/json,.json" hidden
@@ -193,7 +239,7 @@ export function App() {
       </aside>
       <main className="canvas">
         <ReactFlowProvider>
-          <Canvas store={store} state={state} selectedId={selectedId} onSelect={setSelectedId} onEdit={setEditing} />
+          <Canvas store={store} state={state} selectedId={selectedId} onSelect={setSelectedId} onEdit={setEditing} runStatus={runStatus} />
         </ReactFlowProvider>
       </main>
       <aside className="panel">
@@ -216,7 +262,10 @@ export function App() {
           ))}
           {state.diagnostics.length === 0 && <li>No issues.</li>}
         </ul>
+        {runDisabledReason && !session && <p className="hint">Run needs a control plane: {runDisabledReason.toLowerCase()}.</p>}
+        <ResultsPanel run={run} onSelect={setSelectedId} />
       </aside>
+      {showRun && <RunDialog flow={state.flow} onRun={(p, t) => void doRun(p, t)} onClose={() => setShowRun(false)} />}
       {showConnections && workspaceId && (
         <ConnectionsPanel api={cp} workspaceId={workspaceId} items={connections ?? []} onChanged={reloadConnections} onClose={() => setShowConnections(false)} />
       )}

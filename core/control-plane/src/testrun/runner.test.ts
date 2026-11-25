@@ -246,6 +246,56 @@ test("stalled DNS releases both run and scan slots on deadline or disconnect", a
   }
 });
 
+test("a stored credential from a different destination, field or connection never reaches the peer", async (t) => {
+  const { createServer } = await import("node:net");
+  const { setup } = await import("../auth/test-util.js");
+  let connections = 0;
+  const peer = createServer((socket) => { connections++; socket.destroy(); });
+  await new Promise<void>((resolve) => peer.listen(0, "127.0.0.1", resolve));
+  t.after(() => { peer.close(); });
+  const address = peer.address();
+  assert.ok(address && typeof address !== "string");
+  let queries = 0;
+  const w = setup({ testRun: {
+    bin: process.env.NURTUO_FLOW_RUN_BIN ?? FAKE_NURTUO,
+    allowPrivate: true,
+    lookup: async () => { queries++; return ["127.0.0.1"]; },
+  } });
+  const { ws } = await w.owner("binding@x.io", "binding");
+  const session = await w.login("binding@x.io");
+  const auth = { cookie: session.cookie, csrf: session.csrf, ip: "127.0.0.1" };
+  const base = `/v1/workspaces/${ws.id}`;
+  const url = `${base}/connections/c1`;
+  const initial = await w.call("PUT", url, { ...auth, body: sftpConn() });
+  assert.equal(initial.status, 201);
+  const original = (await w.connections.get(ws.id, "c1"))!;
+  const proposed = { host: "other.example", port: address.port };
+  const reject = await w.call("PUT", url, { ...auth, body: { connector: "sftp", settings: proposed } });
+  assert.equal(reject.status, 409);
+  assert.equal((reject.body as any).error.code, "credential_rebind_required");
+
+  const run = (id: string) => w.call("POST", `${base}/test-runs`, { ...auth, body: { flow: flowOf(id) } });
+  const expectUnbound = async (id: string) => {
+    const result = await run(id);
+    assert.equal(result.status, 409);
+    assert.equal((result.body as any).error.code, "credential_unbound");
+  };
+  for (const settings of [
+    proposed, { port: address.port }, { user: "different" },
+    { hostKeyFingerprint: "SHA256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB" },
+    { password: undefined, privateKey: original.settings.password },
+    { user: original.settings.password },
+  ]) {
+    const updated: Record<string, unknown> = { ...original.settings, ...settings };
+    if (updated.password === undefined) delete updated.password;
+    await w.connections.put(ws.id, { ...original, settings: updated });
+    await expectUnbound("c1");
+  }
+  await w.connections.put(ws.id, { ...original, id: "c2", incarnation: "different-incarnation", settings: { ...original.settings, ...proposed } });
+  await expectUnbound("c2");
+  assert.equal(queries, 0);
+  assert.equal(connections, 0, "an unauthorized TCP peer must receive zero authentication attempts");
+});
 for (const stall of ["workspace lock", "repository"] as const) {
   test(`snapshot waiting on ${stall} releases the slot on deadline and disconnect`, { timeout: 5000 }, async () => {
     const coordinator = new ConnectionCoordinator();

@@ -20,18 +20,23 @@ import { DND_MIME, GRID, newStep } from "../model/catalog";
 import { checkConnection } from "../model/connection";
 import { flowToGraph, type StepNodeData } from "../model/flowAdapter";
 import type { FlowState, FlowStore } from "../model/flowStore";
+import { STATUS_LABEL, type StepStatus } from "../model/runState";
 
 type Severity = "error" | "warning";
-type RfData = StepNodeData & { severity?: Severity; title: string };
+type RfData = StepNodeData & { severity?: Severity; title: string; runStatus?: StepStatus };
 
 function StepNode({ id, data, selected }: NodeProps<Node<RfData>>) {
   const ports = data.ports;
   return (
-    <div className={`step-node${data.severity ? ` ${data.severity}` : ""}${selected ? " sel" : ""}`}>
+    <div
+      className={`step-node${data.severity ? ` ${data.severity}` : ""}${selected ? " sel" : ""}${data.runStatus ? ` run-${data.runStatus.replace("_", "-")}` : ""}`}
+      {...(data.runStatus ? { "data-run-status": data.runStatus } : {})}
+    >
       {data.kind !== "start" && <Handle type="target" position={Position.Top} />}
       <div className="step-kind">{data.kind}</div>
       <div>{data.title}</div>
       <div className="step-id">{id}</div>
+      {data.runStatus && <div className="run-label">{STATUS_LABEL[data.runStatus]}</div>}
       {ports.map((p, i) => (
         <Handle
           key={p}
@@ -55,6 +60,8 @@ interface Props {
   selectedId: string | null;
   onSelect: (id: string | null) => void;
   onEdit: (id: string) => void;
+  /** Per-step colours of the last test run (empty when there is none). */
+  runStatus?: ReadonlyMap<string, StepStatus>;
 }
 
 function severityByStep(state: FlowState): Map<string, Severity> {
@@ -66,7 +73,7 @@ function severityByStep(state: FlowState): Map<string, Severity> {
   return m;
 }
 
-export function Canvas({ store, state, selectedId, onSelect, onEdit }: Props) {
+export function Canvas({ store, state, selectedId, onSelect, onEdit, runStatus }: Props) {
   const { screenToFlowPosition } = useReactFlow();
   // fit-to-view is for opening an existing flow; on an empty canvas it would zoom/re-center on the first dropped step.
   const [startsNonEmpty] = useState(() => state.flow.steps.length > 0);
@@ -81,17 +88,18 @@ export function Canvas({ store, state, selectedId, onSelect, onEdit }: Props) {
       return graph.nodes.map((n) => {
         const old = prev.find((p) => p.id === n.id);
         const severity = sev.get(n.id);
+        const run = runStatus?.get(n.id);
         return {
           ...(old ?? {}), // keeps measured size and selection, avoiding re-measure flicker
           id: n.id,
           type: "step",
           position: n.position,
           selected: external ? n.id === selectedId : (old?.selected ?? false),
-          data: { ...n.data, title: n.data.label ?? n.data.kind, ...(severity ? { severity } : {}) },
+          data: { ...n.data, title: n.data.label ?? n.data.kind, ...(severity ? { severity } : {}), ...(run ? { runStatus: run } : {}) },
         };
       });
     },
-    [graph, sev, selectedId],
+    [graph, sev, selectedId, runStatus],
   );
 
   const [rfNodes, setRfNodes] = useState<Node<RfData>[]>(() => project([]));
