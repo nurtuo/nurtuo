@@ -1,0 +1,19 @@
+{
+  "schema": "nurtuo.flow/v1",
+  "id": "get-employee-test-run",
+  "name": "Get Employee Test Run",
+  "revision": 1,
+  "steps": [
+    { "id": "start", "kind": "start", "config": { "type": "manual" } },
+    { "id": "employee_request", "kind": "connector", "config": { "connector": "http", "operation": "GET", "connection": "employee-api" } },
+    { "id": "get_employee", "kind": "connector", "config": { "connector": "postgres", "operation": "QUERY", "connection": "employee-db" } },
+    { "id": "to_response", "kind": "map", "config": { "jsonata": "{ 'id': id, 'name': first_name & ' ' & last_name }" } },
+    { "id": "return", "kind": "returnDocuments", "config": {} }
+  ],
+  "edges": {
+    "start:default": "employee_request",
+    "employee_request:default": "get_employee",
+    "get_employee:default": "to_response",
+    "to_response:default": "return"
+  }
+}

@@ -256,9 +256,65 @@ func TestLiveRoundTrip(t *testing.T) {
 	if err := p.QueryRow(ctx, "select count(*) from nurtuo_conn_test").Scan(&n); err != nil || n != 1 {
 		t.Fatalf("QUERY wrote data: n=%d err=%v", n, err)
 	}
+	// Reject transaction control in a QUERY batch even with the table owner's credentials.
+	res = run(connectorv1.OperationType_OPERATION_TYPE_QUERY, true,
+		`{"sql":"select * from nurtuo_conn_test"}`, `{"sql":"commit"}`)
+	if res["0"].Status != connectorv1.DocumentStatus_DOCUMENT_STATUS_FAILURE ||
+		len(res["0"].OutputDocumentIds) != 0 ||
+		res["1"].Status != connectorv1.DocumentStatus_DOCUMENT_STATUS_APPLICATION_ERROR ||
+		res["1"].Message != "QUERY cannot change transaction or session settings" {
+		t.Fatalf("transaction control in QUERY batch: %v", res)
+	}
+	res = run(connectorv1.OperationType_OPERATION_TYPE_QUERY, true,
+		`{"sql":"select * from nurtuo_conn_test"}`,
+		`{"sql":"insert into nurtuo_conn_test values (2, 'x')"}`)
+	if res["0"].Status != connectorv1.DocumentStatus_DOCUMENT_STATUS_FAILURE ||
+		len(res["0"].OutputDocumentIds) != 0 ||
+		res["1"].Status != connectorv1.DocumentStatus_DOCUMENT_STATUS_APPLICATION_ERROR ||
+		!strings.Contains(res["1"].Message, "25006") {
+		t.Fatalf("write in read-only QUERY batch: %v", res)
+	}
+	// An ordinary batch still returns all results after the transaction completes.
+	res = run(connectorv1.OperationType_OPERATION_TYPE_QUERY, true,
+		`{"sql":"select * from nurtuo_conn_test"}`, `{"sql":"select 2"}`)
+	for _, r := range res {
+		if r.Status != connectorv1.DocumentStatus_DOCUMENT_STATUS_SUCCESS || len(r.OutputDocumentIds) != 1 {
+			t.Fatalf("read-only QUERY batch: %v", res)
+		}
+	}
 	// the other operations keep working
 	res = run(connectorv1.OperationType_OPERATION_TYPE_UPDATE, false, `{"sql":"update nurtuo_conn_test set name='b' where id=1"}`)
 	if res["0"].Status != connectorv1.DocumentStatus_DOCUMENT_STATUS_SUCCESS {
 		t.Fatalf("UPDATE must still work: %v", res)
+	}
+}
+
+func TestLiveQueryBufferBudget(t *testing.T) {
+	s, _ := liveSettings(t)
+	conn := settings(t, s)
+	const row = `{"n":"0123456789"}`
+	c := New()
+	c.MaxQueryResultBytes = len(row)
+	defer c.Close()
+
+	const query = `{"sql":"select '0123456789' as n"}`
+	run := func(transaction bool) map[string]*connectorv1.DocumentResult {
+		return runBatch(t, c, &connectorv1.ExecuteStart{
+			Connection: conn, OperationType: connectorv1.OperationType_OPERATION_TYPE_QUERY,
+			Options: &structpb.Struct{Fields: map[string]*structpb.Value{"transaction": structpb.NewBoolValue(transaction)}},
+		}, []string{query, query})
+	}
+	for _, r := range run(false) {
+		if r.Status != connectorv1.DocumentStatus_DOCUMENT_STATUS_SUCCESS || len(r.OutputDocumentIds) != 1 {
+			t.Fatalf("per-document buffer should admit one row at the limit: %v", r)
+		}
+	}
+	results := run(true)
+	first, second := results["0"], results["1"]
+	if first.Status != connectorv1.DocumentStatus_DOCUMENT_STATUS_FAILURE ||
+		second.Status != connectorv1.DocumentStatus_DOCUMENT_STATUS_APPLICATION_ERROR ||
+		!strings.Contains(second.Message, "buffer limit") ||
+		len(first.OutputDocumentIds)+len(second.OutputDocumentIds) != 0 {
+		t.Fatalf("batch should exceed the shared buffer and return no rows: %v", results)
 	}
 }

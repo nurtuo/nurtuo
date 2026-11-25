@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Connection validation at save time, mirroring the Go rules (connections.Parse / CheckLiterals and
 // the SFTP connector) so the user gets the error immediately; the `nurtuo flow run` child validates again.
+import { isIP } from "node:net";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { ApiError } from "../domain.js";
@@ -70,7 +71,8 @@ function validateNetworkSettings(connector: string, s: Record<string, unknown>) 
   const allowed = connector === "http" ? ["baseUrl", "auth"] : ["host", "port", "database", "user", "sslMode", "password"];
   if (Object.keys(s).some((key) => !allowed.includes(key))) throw bad("bad_request", "unsupported connection setting");
   if (connector === "postgres") {
-    if (typeof s.host !== "string" || !/^[a-z0-9][a-z0-9.-]{0,252}$/i.test(s.host)) throw bad("bad_request", "enter a valid database hostname or IPv4 address");
+    if (typeof s.host !== "string" || (!/^[a-z0-9][a-z0-9.-]{0,252}$/i.test(s.host) && isIP(s.host) !== 6)) throw bad("bad_request", "enter a valid database hostname or IP address");
+    if (isIP(s.host) === 6) s.host = new URL(`http://[${s.host}]`).hostname.slice(1, -1);
     for (const key of ["user", "database"]) {
       const value = s[key];
       if (typeof value !== "string" || !value.trim() || value.includes("\0")) throw bad("bad_request", `${key} is required`);
@@ -82,6 +84,7 @@ function validateNetworkSettings(connector: string, s: Record<string, unknown>) 
     if (!url || !["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash || !/^https?:\/\/[^/]+/i.test(String(s.baseUrl)) || /[\\\s]/.test(String(s.baseUrl))) {
       throw bad("bad_request", "enter an HTTP(S) base URL without user information, query or fragment");
     }
+    s.baseUrl = url.href;
     const auth = s.auth === undefined ? {} : s.auth;
     if (!auth || typeof auth !== "object" || Array.isArray(auth)) throw bad("bad_request", "auth must be an object");
     const a = auth as Record<string, unknown>;

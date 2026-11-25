@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"net/url"
 	"strconv"
 	"strings"
@@ -76,7 +77,7 @@ func (c *Config) URL() string {
 	u := url.URL{
 		Scheme: "postgres",
 		User:   url.UserPassword(c.User, c.Password),
-		Host:   c.Host + ":" + strconv.Itoa(c.Port),
+		Host:   net.JoinHostPort(c.Host, strconv.Itoa(c.Port)),
 		Path:   "/" + c.Database,
 	}
 	q := url.Values{}

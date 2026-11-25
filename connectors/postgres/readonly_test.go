@@ -25,6 +25,12 @@ func (f *fakeTx) Query(_ context.Context, sql string, _ ...any) (pgx.Rows, error
 	return nil, f.err
 }
 
+func (*fakeTx) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
+	return pgconn.NewCommandTag("SELECT 1"), nil
+}
+
+func (*fakeTx) Conn() *pgx.Conn { return nil }
+
 func (f *fakeTx) Rollback(context.Context) error { f.rolledBack = true; return nil }
 
 type fakeBeginner struct {
@@ -49,7 +55,7 @@ func TestTxOptions(t *testing.T) {
 func TestQueryRunsInReadOnlyTxAndRollsBack(t *testing.T) {
 	ro := &pgconn.PgError{Code: "25006", Message: "cannot execute INSERT in a read-only transaction", Detail: "host=db.internal"}
 	b := &fakeBeginner{tx: &fakeTx{err: ro}}
-	o := runReadOnly(context.Background(), b, &inDoc{id: "0", data: []byte(`{"sql":"insert into t values (1)"}`)}, 10, "pw")
+	o := runReadOnly(context.Background(), b, &inDoc{id: "0", data: []byte(`{"sql":"insert into t values (1)"}`)}, 10, &queryBuffer{}, "pw")
 	if len(b.opts) != 1 || b.opts[0].AccessMode != pgx.ReadOnly {
 		t.Fatalf("expected one READ ONLY BeginTx, got %+v", b.opts)
 	}
@@ -72,5 +78,18 @@ func TestMapErrorReadOnly(t *testing.T) {
 	// other class-25 errors stay technical failures
 	if st, _ := MapError(&pgconn.PgError{Code: "25P02", Message: "aborted"}); st != connectorv1.DocumentStatus_DOCUMENT_STATUS_FAILURE {
 		t.Errorf("25P02 must stay FAILURE, got %v", st)
+	}
+}
+
+func TestQueryRejectsTransactionCommandsBeforeExecution(t *testing.T) {
+	tx := &fakeTx{}
+	for _, input := range []string{
+		`{"sql":"-- notice\n /* outer /* nested */ comment */ ; CoMmIt"}`,
+		`{"sql":"set transaction read only"}`,
+	} {
+		result := runStatement(t.Context(), tx, &inDoc{data: []byte(input)}, true, 10, &queryBuffer{}, "")
+		if result.status != connectorv1.DocumentStatus_DOCUMENT_STATUS_APPLICATION_ERROR || len(tx.queried) != 0 {
+			t.Fatalf("expected application error before execution, got %+v", result)
+		}
 	}
 }

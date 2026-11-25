@@ -9,19 +9,14 @@ Status: tested against a PostgreSQL server in the connector tests and registered
 
 ## Security: arbitrary SQL, read-only QUERY
 
-**The SQL text of every statement comes from the input document and is executed as is with the
-privileges of the configured database user.** There is no allow-list. Values are bound as
-parameters, but the statement text is not restricted. The operation type (`QUERY`, `CREATE`, ...)
-is not checked against the SQL.
+The connector runs SQL from the input document with the configured database user's privileges.
+It binds values from `params` as SQL parameters.
 
-**`QUERY` is read-only, enforced by the database.** Every `QUERY` document runs inside a
-`READ ONLY` transaction (pgx `TxOptions{AccessMode: ReadOnly}`, rolled back at the end; with the
-`transaction` option all documents share one read-only transaction). A write attempted in a
-`QUERY` step (`INSERT`, `UPDATE`, `DELETE`, DDL, ...) is rejected by PostgreSQL with SQLSTATE
-`25006` (`read_only_sql_transaction`) and that document is reported as `APPLICATION_ERROR` with
-the message `write rejected: QUERY runs in a read-only transaction (SQLSTATE 25006)`, without
-connection details. `CREATE`, `UPDATE`, `DELETE`, `EXECUTE` and the `transaction` option behave as
-before.
+Each `QUERY` document runs one statement inside a PostgreSQL `READ ONLY` transaction. The
+connector establishes a snapshot before running user SQL and rejects transaction control and
+session-setting commands. With the `transaction` option, all documents share the same read-only
+transaction. PostgreSQL rejects writes to permanent tables with SQLSTATE `25006`
+(`read_only_sql_transaction`). The connector reports those writes as `APPLICATION_ERROR`.
 
 **What this does not protect against:**
 
@@ -29,11 +24,8 @@ before.
 - `CREATE`, `UPDATE`, `DELETE` and `EXECUTE` steps still run any statement the user may run,
   including `DELETE`, `DROP`, DDL and, if the role is allowed, server-side features such as
   `COPY ... PROGRAM`.
-- A hostile flow author. The read-only mode is a transaction setting of the session, not a
-  privilege; a statement that switches the transaction back to read-write may defeat it. It
-  protects against accidental or injected writes in a `QUERY` step, not against someone who may
-  author arbitrary SQL. The live-database test that asserts an `INSERT` in a `QUERY` is rejected
-  only runs when `NURTUO_TEST_POSTGRES_URL` is set; it has not been run against a real server yet.
+- Side effects permitted by the PostgreSQL role in a read-only transaction, including
+  operations on temporary tables and side effects outside the database.
 
 Recommended: use a **dedicated least-privilege database account per purpose**. Give `QUERY`-only
 flows a role that has only `SELECT` on the tables it needs (a real read-only role is the actual

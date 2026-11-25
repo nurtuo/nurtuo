@@ -102,6 +102,9 @@ Test Run adds HTTP GET and PostgreSQL QUERY. Both use workspace connections, cre
 binding and egress checks at the actual dial. The employee example chains HTTP, PostgreSQL
 and Map.
 
+Test Run withholds returned documents when they contain any nonempty bound credential,
+including inside decoded JSON strings. Short credentials may match unrelated output.
+
 ## Scope
 
 In scope:
@@ -122,7 +125,8 @@ Non-goals (deferred, each needs its own spec or decision):
 - Saving or loading flows to/from the control plane (canvas-editor gap 2), revisions, optimistic save.
 - Persistent or external secret stores (Vault, keychain), secret rotation.
 - Run history, run sharing, async jobs, streaming progress.
-- Connectors other than `sftp` and mutating operations in test runs (D11); `script` steps (no runner).
+- Additional connectors beyond SFTP, HTTP and PostgreSQL, mutating operations in test runs
+  (D11), and `script` steps.
 - Serving the canvas outside `vite dev` (`make dev`, Playwright): the same-origin session cookie relies on the Vite proxy; a production topology (static hosting behind the control plane or a reverse proxy) needs its own spec.
 - Control-plane hosts running Windows: the temp-dir modes (0700/0600) and the from-scratch child environment are specified for POSIX; on Windows `POST .../test-runs` answers 503 `test_run_unavailable`.
 - Any change to `nurtuo.flow/v1`, `nurtuo.connection/v1` (fields), the SFTP connector or `nurtuo run`.

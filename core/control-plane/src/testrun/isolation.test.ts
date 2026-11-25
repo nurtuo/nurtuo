@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { FAKE_NURTUO, flowOf, j, setup, sftpConn } from "../auth/test-util.js";
 
@@ -24,7 +25,7 @@ test("a run in workspace A never uses B's connections or secrets (fake binary re
   // A legitimate run reveals only A's secret to the child
   const ok = await w.call("POST", `/v1/workspaces/${a.id}/test-runs`, { ...as(A), body: { flow: flowOf("c1"), input: { properties: { mode: "echo" } } } });
   const info = JSON.parse(Buffer.from(j(ok).documents[0].payload, "base64").toString());
-  assert.deepEqual(Object.entries(info.env).filter(([key]) => key.startsWith("NURTUO_SECRET_")).map(([, value]) => value), ["A-SECRET-VALUE"]);
+  assert.deepEqual(Object.entries(info.env).filter(([key]) => key.startsWith("NURTUO_SECRET_")).map(([, value]) => value), [createHash("sha256").update("A-SECRET-VALUE").digest("hex")]);
   assert.ok(!JSON.stringify(info).includes("B-SECRET-VALUE"));
   assert.equal(Object.keys(info.env).filter((k) => k.startsWith("NURTUO_SECRET_")).length, 1);
 });

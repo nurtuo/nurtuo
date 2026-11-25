@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -53,6 +54,13 @@ const maxPools = 8
 
 // Connector implements connector.Connector for PostgreSQL.
 type Connector struct {
+	// ConfigurePool optionally sets host-provided connection policy before the pool opens.
+	// Set it before using the connector.
+	ConfigurePool func(*pgxpool.Config) error
+	// MaxQueryResultBytes optionally bounds the bytes of encoded rows buffered at once.
+	// Set it before using the connector.
+	MaxQueryResultBytes int
+
 	mu    sync.Mutex
 	pools map[string]*poolEntry
 	tick  uint64
@@ -93,13 +101,9 @@ func (c *Connector) pool(ctx context.Context, cc *connectorv1.ConnectionConfig) 
 	key := cfg.key()
 	e, ok := c.pools[key]
 	if !ok {
-		pc, err := cfg.poolConfig()
+		p, err := c.openPool(ctx, cfg)
 		if err != nil {
 			return nil, cfg, nil, err
-		}
-		p, err := pgxpool.NewWithConfig(ctx, pc)
-		if err != nil {
-			return nil, cfg, nil, errors.New(redact(err.Error(), cfg.Password))
 		}
 		e = &poolEntry{pool: p}
 		c.pools[key] = e
@@ -141,11 +145,16 @@ func (c *Connector) evictLocked(keep string) {
 	}
 }
 
-// ephemeralPool opens an uncached pool (used by Test); the caller must Close it.
-func ephemeralPool(ctx context.Context, cfg *Config) (*pgxpool.Pool, error) {
+// openPool applies the host policy before either Test or Execute can connect.
+func (c *Connector) openPool(ctx context.Context, cfg *Config) (*pgxpool.Pool, error) {
 	pc, err := cfg.poolConfig()
 	if err != nil {
 		return nil, err
+	}
+	if c.ConfigurePool != nil {
+		if err := c.ConfigurePool(pc); err != nil {
+			return nil, errors.New(redact(err.Error(), cfg.Password))
+		}
 	}
 	p, err := pgxpool.NewWithConfig(ctx, pc)
 	if err != nil {
@@ -228,7 +237,7 @@ func (c *Connector) Test(ctx context.Context, req *connectorv1.TestRequest) (*co
 	}
 	tctx, cancel := context.WithTimeout(ctx, time.Duration(cfg.ConnectTimeoutS)*time.Second)
 	defer cancel()
-	p, err := ephemeralPool(tctx, cfg)
+	p, err := c.openPool(tctx, cfg)
 	if err != nil {
 		return &connectorv1.TestResponse{Ok: false, Diagnostic: redact(err.Error(), cfg.Password)}, nil
 	}
@@ -343,11 +352,12 @@ recv:
 	if !tx {
 		for _, d := range docs {
 			sctx, cancel := context.WithTimeout(ctx, timeout)
+			budget := queryBuffer{limit: c.MaxQueryResultBytes}
 			var o docOutcome
 			if isQuery {
-				o = runReadOnly(sctx, pool, d, maxRows, cfg.Password)
+				o = runReadOnly(sctx, pool, d, maxRows, &budget, cfg.Password)
 			} else {
-				o = runStatement(sctx, pool, d, false, maxRows, cfg.Password)
+				o = runStatement(sctx, pool, d, false, maxRows, &budget, cfg.Password)
 			}
 			cancel()
 			if err := send(d, o); err != nil {
@@ -364,15 +374,16 @@ recv:
 			outcomes[i] = docOutcome{status: connectorv1.DocumentStatus_DOCUMENT_STATUS_FAILURE, message: msg}
 		}
 	}
-	t, err := pool.BeginTx(ctx, txOptions(isQuery))
+	t, err := beginStatementTx(ctx, pool, isQuery)
 	if err != nil {
 		_, msg := MapError(err, cfg.Password)
 		fail(-1, "transaction not started: "+msg)
 	} else {
 		failedAt := -1
+		budget := queryBuffer{limit: c.MaxQueryResultBytes}
 		for i, d := range docs {
 			sctx, cancel := context.WithTimeout(ctx, timeout)
-			o := runStatement(sctx, t, d, isQuery, maxRows, cfg.Password)
+			o := runStatement(sctx, t, d, isQuery, maxRows, &budget, cfg.Password)
 			cancel()
 			outcomes[i] = o
 			if o.status != connectorv1.DocumentStatus_DOCUMENT_STATUS_SUCCESS {
@@ -417,15 +428,29 @@ type beginner interface {
 	BeginTx(ctx context.Context, opts pgx.TxOptions) (pgx.Tx, error)
 }
 
+// Establish a snapshot before user SQL runs. PostgreSQL then refuses to switch
+// this read-only transaction to read-write, including through configuration functions.
+func beginStatementTx(ctx context.Context, b beginner, isQuery bool) (pgx.Tx, error) {
+	t, err := b.BeginTx(ctx, txOptions(isQuery))
+	if err != nil || !isQuery {
+		return t, err
+	}
+	if _, err := t.Exec(ctx, "select 1"); err != nil {
+		_ = t.Rollback(context.WithoutCancel(ctx))
+		return nil, err
+	}
+	return t, nil
+}
+
 // runReadOnly runs one document in its own READ ONLY transaction and always rolls it back (a
 // QUERY must not change anything, so there is nothing to commit).
-func runReadOnly(ctx context.Context, b beginner, d *inDoc, maxRows int, secret string) docOutcome {
-	t, err := b.BeginTx(ctx, txOptions(true))
+func runReadOnly(ctx context.Context, b beginner, d *inDoc, maxRows int, budget *queryBuffer, secret string) docOutcome {
+	t, err := beginStatementTx(ctx, b, true)
 	if err != nil {
 		st, msg := MapError(err, secret)
 		return docOutcome{status: st, message: "transaction not started: " + msg}
 	}
-	o := runStatement(ctx, t, d, true, maxRows, secret)
+	o := runStatement(ctx, t, d, true, maxRows, budget, secret)
 	_ = t.Rollback(context.WithoutCancel(ctx))
 	return o
 }
@@ -435,11 +460,78 @@ type querier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
-func runStatement(ctx context.Context, q querier, d *inDoc, isQuery bool, maxRows int, secret string) docOutcome {
+// queryCommand reads the first SQL keyword, skipping PostgreSQL whitespace,
+// empty statements and comments. Block comments can nest.
+func queryCommand(sql string) string {
+	for {
+		sql = strings.TrimLeft(sql, " \t\n\r\f\v;")
+		switch {
+		case strings.HasPrefix(sql, "--"):
+			end := strings.IndexAny(sql, "\r\n")
+			if end < 0 {
+				return ""
+			}
+			sql = sql[end:]
+		case strings.HasPrefix(sql, "/*"):
+			depth := 1
+			sql = sql[2:]
+			for depth > 0 && len(sql) > 0 {
+				switch {
+				case strings.HasPrefix(sql, "/*"):
+					depth++
+					sql = sql[2:]
+				case strings.HasPrefix(sql, "*/"):
+					depth--
+					sql = sql[2:]
+				default:
+					sql = sql[1:]
+				}
+			}
+		default:
+			end := 0
+			for end < len(sql) && ((sql[end] >= 'A' && sql[end] <= 'Z') || (sql[end] >= 'a' && sql[end] <= 'z')) {
+				end++
+			}
+			return strings.ToUpper(sql[:end])
+		}
+	}
+}
+
+// Query rows are retained until they can be emitted, so a transaction shares a
+// single budget across all its documents.
+type queryBuffer struct {
+	limit int
+	used  int
+}
+
+func (b *queryBuffer) reserve(bytes int) bool {
+	if b.limit <= 0 {
+		return true
+	}
+	if bytes > b.limit-b.used {
+		return false
+	}
+	b.used += bytes
+	return true
+}
+
+func runStatement(ctx context.Context, q querier, d *inDoc, isQuery bool, maxRows int, budget *queryBuffer, secret string) docOutcome {
 	sql, args, err := ParseStatement(d.data)
 	if err != nil {
 		st, msg := MapError(err, secret)
 		return docOutcome{status: st, message: msg}
+	}
+	if isQuery {
+		switch queryCommand(sql) {
+		case "ABORT", "BEGIN", "COMMIT", "DISCARD", "END", "PREPARE", "RELEASE", "RESET", "ROLLBACK", "SAVEPOINT", "SET", "START":
+			return docOutcome{status: connectorv1.DocumentStatus_DOCUMENT_STATUS_APPLICATION_ERROR,
+				message: "QUERY cannot change transaction or session settings"}
+		}
+		// Extended protocol rejects multiple SQL statements in one document.
+		if tx, ok := q.(pgx.Tx); ok && tx.Conn() != nil &&
+			tx.Conn().Config().DefaultQueryExecMode == pgx.QueryExecModeSimpleProtocol {
+			args = append([]any{pgx.QueryExecModeDescribeExec}, args...)
+		}
 	}
 	rows, err := q.Query(ctx, sql, args...)
 	if err != nil {
@@ -467,6 +559,10 @@ func runStatement(ctx context.Context, q querier, d *inDoc, isQuery bool, maxRow
 		if err == nil {
 			var doc []byte
 			if doc, err = RowToDocument(cols, vals); err == nil {
+				if !budget.reserve(len(doc)) {
+					return docOutcome{status: connectorv1.DocumentStatus_DOCUMENT_STATUS_APPLICATION_ERROR,
+						message: "query rows exceed the test run buffer limit"}
+				}
 				out.rows = append(out.rows, doc)
 				continue
 			}

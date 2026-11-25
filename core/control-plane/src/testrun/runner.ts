@@ -4,6 +4,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { access, constants, lstat, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { isIP } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hasErrors, validateFlow } from "@nurtuo/flow-validate";
@@ -13,7 +14,7 @@ import { ConnectionCoordinator } from "../connections/coordinator.js";
 import type { ConnectionRepository } from "../connections/repository.js";
 import { envVar } from "../connections/env-var.js";
 import type { SecretStore } from "../connections/secrets.js";
-import { secretRefs, validateConnection, validateConnectionId } from "../connections/validate.js";
+import { credentialSlots, secretRefs, validateConnection, validateConnectionId } from "../connections/validate.js";
 import { checkEgress, type Lookup } from "./egress.js";
 import { checkFlowPolicy, type FlowStep } from "./policy.js";
 import type { RunLimiter } from "./semaphore.js";
@@ -52,11 +53,27 @@ type StepStatus = "ok" | "error" | "stopped" | "not_run";
 interface CliStep { id: string; kind: string; in: number; out: number; failed: number; dropped: number }
 interface CliError { code: string; message: string }
 
-/** Replaces every secret value in text; defence in depth on top of the child's own Redactor. */
+/** Redacts every nonempty credential, including short ones, before returning diagnostics. */
 export function redact(text: string, values: readonly string[]): string {
   let out = text;
-  for (const v of values) if (v.length >= 3) out = out.split(v).join("[redacted]");
+  for (const v of values) if (v) out = out.split(v).join("[redacted]");
   return out;
+}
+
+function containsEscapedCredential(text: string, values: readonly string[]): boolean {
+  if (!text.includes("\\")) return false;
+  try {
+    JSON.parse(text);
+  } catch {
+    return false;
+  }
+  // Inspect each original string token so that duplicate object keys cannot hide a value.
+  for (const [token] of text.matchAll(/"(?:[^"\\]|\\.)*"/gs)) {
+    if (!token.includes("\\")) continue;
+    const decoded: string = JSON.parse(token);
+    if (values.some((value) => decoded.includes(value))) return true;
+  }
+  return false;
 }
 
 async function dirSize(dir: string): Promise<number> {
@@ -133,7 +150,10 @@ export class TestRunner {
           const c = reconciled ?? await d.connections.get(workspaceId, id);
           operation.throwIfAborted();
           if (!c) throw new ApiError(404, "connection_not_found", `connection "${id}" not found`);
-          if (c.settings.hostKeyPolicy !== "fingerprint") throw new ApiError(409, "dial_enforcement_unavailable", "test runs require a pinned SSH host key fingerprint");
+          if (uses.some((use) => use.connection === id && use.connector !== c.connector)) {
+            throw new ApiError(400, "connection_type_mismatch", `connection "${id}" does not match the connector step`);
+          }
+          if (c.connector === "sftp" && c.settings.hostKeyPolicy !== "fingerprint") throw new ApiError(409, "dial_enforcement_unavailable", "test runs require a pinned SSH host key fingerprint");
           try {
             validateConnectionId(c.id);
             if (c.id !== id) throw new Error("connection id mismatch");
@@ -157,24 +177,41 @@ export class TestRunner {
             if (value === undefined) throw new ApiError(409, "secret_missing", `credential "${field}" of connection "${c.id}" is not set; open Connections and enter it again`);
             env[key] = value;
             secretValues.push(value);
+            if (c.connector === "http" && field === "password") {
+              const auth = credentialSlots(c.connector, c.settings);
+              secretValues.push(Buffer.from(`${String(auth.username)}:${value}`).toString("base64"));
+            }
           }
         }
         return { conns, env, secretValues };
       }));
       // 4. egress
-      const dialAddresses = [];
-      for (const c of conns) dialAddresses.push(await checkEgress(String(c.settings.host ?? ""), {
-        allowPrivate: d.allowPrivate ?? false, lookup: d.lookup, signal: operation,
-      }));
+      const dialPlan = { http: new Map<string, string>(), postgres: new Map<string, string>() };
+      const settingsForChild = [];
+      for (const c of conns) {
+        const url = c.connector === "http" ? new URL(String(c.settings.baseUrl)) : undefined;
+        const hostname = url?.hostname ?? String(c.settings.host);
+        const address = await checkEgress(hostname, {
+          allowPrivate: d.allowPrivate ?? false, lookup: d.lookup, signal: operation,
+        });
+        if (c.connector === "http" || c.connector === "postgres") {
+          const port = url ? url.port || (url.protocol === "https:" ? 443 : 80) : c.settings.port ?? 5432;
+          const host = isIP(hostname) === 6 ? `[${hostname}]` : hostname;
+          dialPlan[c.connector].set(`${host}:${port}`, address);
+        }
+        settingsForChild.push(url ? { ...c.settings, baseUrl: url.href }
+          : c.connector === "sftp" ? { ...c.settings, host: address } : c.settings);
+      }
+      const pinned = dialPlan.http.size + dialPlan.postgres.size > 0;
 
       // 5. temp dir with the flow and non-secret connection files
       tmp = await mkdtemp(join(d.tmpRoot ?? tmpdir(), "nurtuo-testrun-"));
       const flowFile = join(tmp, "flow.json");
       await writeFile(flowFile, JSON.stringify(req.flow), { mode: 0o600 });
-      const argv = ["flow", "run", flowFile, "--json", "--max-output-bytes", String(d.maxPayloadBytes ?? 1024 * 1024), "--max-documents", String(d.maxDocuments ?? 20)];
+      const argv = ["flow", pinned ? "run-pinned" : "run", flowFile, "--json", "--max-output-bytes", String(d.maxPayloadBytes ?? 1024 * 1024), "--max-documents", String(d.maxDocuments ?? 20)];
       for (const [index, c] of conns.entries()) {
         const f = join(tmp, `${c.id}.connection.json`);
-        await writeFile(f, JSON.stringify({ schema: "nurtuo.connection/v1", id: c.id, connector: c.connector, settings: { ...c.settings, host: dialAddresses[index]! } }), { mode: 0o600 });
+        await writeFile(f, JSON.stringify({ schema: "nurtuo.connection/v1", id: c.id, connector: c.connector, settings: settingsForChild[index]! }), { mode: 0o600 });
         argv.push("--connection", f);
       }
       for (const [k, v] of Object.entries(props)) argv.push("--set", `${k}=${v}`);
@@ -183,6 +220,9 @@ export class TestRunner {
       operation.throwIfAborted();
       argv.push("--timeout", `${Math.max(1, timeoutMs - (Date.now() - started))}ms`);
       const childEnv: Record<string, string> = { PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin", HOME: tmp, TMPDIR: tmp, ...env };
+      if (pinned) childEnv.NURTUO_TEST_RUN_DIAL_PLAN = JSON.stringify({
+        http: Object.fromEntries(dialPlan.http), postgres: Object.fromEntries(dialPlan.postgres),
+      });
       const res = await this.supervise(argv, childEnv, tmp, operation, deadline);
 
       // 8. map
@@ -337,6 +377,24 @@ export class TestRunner {
     if (status === "succeeded" && documents) {
       const total = documents.reduce((n, x) => n + Buffer.byteLength(x.payload ?? "", "base64"), 0);
       if (documents.length > (d.maxDocuments ?? 20) || total > (d.maxPayloadBytes ?? 1024 * 1024)) { status = "failed"; error = { code: "output_too_large", message: "output larger than 1 MiB or 20 documents; use `nurtuo flow run`" }; documents = undefined; }
+    }
+
+    const credentials = secretValues.filter((value) => value !== "");
+    if (status === "succeeded" && documents && credentials.length > 0) {
+      // Withhold output on any nonempty match. Short credentials can cause false positives.
+      const needles = credentials.map((value) => Buffer.from(value));
+      const containsCredential = documents.some((doc) => {
+        const payload = Buffer.from(doc.payload ?? "", "base64");
+        const fields = [doc.id, ...Object.entries(doc.properties ?? {}).flat()];
+        return needles.some((value) => payload.includes(value))
+          || fields.some((field) => credentials.some((value) => field.includes(value)))
+          || containsEscapedCredential(payload.toString("utf8"), credentials);
+      });
+      if (containsCredential) {
+        status = "failed";
+        error = { code: "credential_in_result", message: "the returned documents contained a workspace credential" };
+        documents = undefined;
+      }
     }
 
     const byId = new Map((cliSteps ?? []).map((s) => [s.id, s]));

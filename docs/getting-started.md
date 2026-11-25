@@ -158,8 +158,26 @@ password from the Rebex demo page). Click **Fetch host key**, compare the finger
 Rebex publishes, then click **Trust this key** and save. Load the sample flow, press **Run** and set
 `path=/readme.txt`. Rebex is a manual smoke test. The
 password is stored only as a workspace secret (in memory: gone after a control-plane restart) and
-never appears in the flow. Test runs allow `sftp` `GET` and `QUERY` only and refuse private
-addresses unless `NURTUO_TEST_RUN_ALLOW_PRIVATE=1`.
+never appears in the flow. Test runs refuse private addresses unless
+`NURTUO_TEST_RUN_ALLOW_PRIVATE=1` is set on the control plane.
+
+To run the [employee example](../examples/flows/get-employee-test-run.flow.json) against local
+fixtures, enable private addresses on the local control plane and use a runtime built from this
+checkout.
+
+1. In **Connections**, save an HTTP connection named `employee-api` with the fixture's base URL
+   and authentication settings. The fixture returns a PostgreSQL QUERY input document, for example
+   `{"sql":"select id, first_name, last_name from employee where id = $1","params":[7]}`.
+2. Save a PostgreSQL connection named `employee-db` with the database host, port, name, login and
+   TLS mode. Use a role with SELECT access to the fixture table. The QUERY runs in a database
+   read-only transaction. Use verified TLS for production database endpoints.
+3. Load the example. In each Connector step, choose the saved connection and its operation
+   (**GET** or **QUERY**). The manual Start passes through to HTTP, PostgreSQL turns the query
+   results into documents, and Map creates the response. Click **Run** to see the returned document.
+
+When editing a connection, leave the credential input empty to keep it. When the destination or
+trust settings change, re-enter the credential in the same save. HTTP redirects are disabled
+during Test Run.
 
 ## Run the tests that matter for docs and contracts
 
