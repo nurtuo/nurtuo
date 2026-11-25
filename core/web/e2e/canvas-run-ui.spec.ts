@@ -325,3 +325,52 @@ test("editing PostgreSQL prefills settings and explicitly removes the stored pas
   await expect(removePassword).toHaveCount(0);
   expect(m.connectionPuts).toEqual([{ connector: "postgres", settings, credentials: { password: null } }]);
 });
+
+async function openLegacyHttpStep(page: Page) {
+  const flow = JSON.parse(readFileSync(SAMPLE, "utf8"));
+  flow.steps[1].config = { connector: "http", operation: "POST", objectType: "legacy" };
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "legacy.flow.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(flow)),
+  });
+  await page.locator(".react-flow__node[data-id='connector-1']").dblclick();
+  return page.getByRole("dialog", { name: "Configure connector-1" });
+}
+
+test("workspace binding configures HTTP GET and PostgreSQL QUERY and can be cleared", async ({ page }) => {
+  await mockApi(page, { connections: [
+    { id: "web", connector: "http", settings: {}, secrets: {} },
+    { id: "db", connector: "postgres", settings: {}, secrets: {} },
+  ] });
+  await open(page);
+  await login(page);
+  const d = await openLegacyHttpStep(page);
+  await expect(d.getByRole("textbox", { name: "operation" })).toHaveValue("POST");
+  await expect(d.getByRole("textbox", { name: "objectType" })).toHaveValue("legacy");
+
+  for (const [id, connector, operation] of [["web", "http", "GET"], ["db", "postgres", "QUERY"]] as const) {
+    await d.getByLabel("connection", { exact: true }).selectOption(id);
+    await expect(d.getByRole("combobox", { name: "operation" })).toHaveValue(operation);
+    await expect(d.getByRole("textbox", { name: "objectType" })).toHaveCount(0);
+    await d.getByLabel("connection", { exact: true }).selectOption("");
+    await expect(d.getByRole("textbox", { name: "connector", exact: false })).toHaveValue(connector);
+    await expect(d.getByRole("textbox", { name: "operation" })).toHaveValue(operation);
+    await expect(d.getByRole("textbox", { name: "objectType" })).toHaveValue("");
+  }
+});
+
+test("an empty workspace connection list preserves the legacy connector editor", async ({ page }) => {
+  await mockApi(page);
+  await open(page);
+  await login(page);
+  const d = await openLegacyHttpStep(page);
+  await expect(d.getByRole("textbox", { name: "operation" })).toHaveValue("POST");
+  await expect(d.getByRole("textbox", { name: "objectType" })).toHaveValue("legacy");
+  await expect(d.getByRole("textbox", { name: "connection" })).toBeEditable();
+  const connector = d.getByRole("textbox", { name: "connector" });
+  await connector.fill("sftp");
+  await connector.press("Tab");
+  await expect(connector).toHaveValue("sftp");
+  await d.getByRole("button", { name: "Close" }).click();
+  await page.locator(".react-flow__node[data-id='connector-1']").dblclick();
+  await expect(connector).toHaveValue("sftp");
+});
