@@ -69,6 +69,9 @@ type Client struct {
 	cfg    Config
 	outbox chan *gatewayv1.ConnectRequest
 	log    *slog.Logger
+
+	connMu sync.Mutex
+	conn   *grpc.ClientConn
 }
 
 func NewClient(cfg Config) *Client {
@@ -113,7 +116,15 @@ func (c *Client) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("dial gateway: %w", err)
 	}
-	defer func() { _ = conn.Close() }()
+	c.connMu.Lock()
+	c.conn = conn
+	c.connMu.Unlock()
+	defer func() {
+		c.connMu.Lock()
+		c.conn = nil
+		c.connMu.Unlock()
+		_ = conn.Close()
+	}()
 	api := gatewayv1.NewRuntimeGatewayServiceClient(conn)
 
 	attempt := 0
@@ -136,6 +147,47 @@ func (c *Client) Run(ctx context.Context) error {
 		}
 	}
 	return ctx.Err()
+}
+
+const fetchArtifactTimeout = 5 * time.Minute
+
+// FetchArtifact streams an artifact over the connection owned by Run.
+func (c *Client) FetchArtifact(ctx context.Context, digest string, w io.Writer, limit int64) (int64, error) {
+	c.connMu.Lock()
+	conn := c.conn
+	c.connMu.Unlock()
+	if conn == nil {
+		return 0, errors.New("gateway: not connected")
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, fetchArtifactTimeout)
+	defer cancel()
+	stream, err := gatewayv1.NewRuntimeGatewayServiceClient(conn).FetchArtifact(ctx, &gatewayv1.FetchArtifactRequest{Digest: digest})
+	if err != nil {
+		return 0, err
+	}
+	var total int64
+	for {
+		chunk, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			return total, nil
+		}
+		if err != nil {
+			return total, err
+		}
+		data := chunk.GetData()
+		if int64(len(data)) > limit-total {
+			return total, fmt.Errorf("artifact larger than %d bytes", limit)
+		}
+		n, err := w.Write(data)
+		total += int64(n)
+		if err != nil {
+			return total, err
+		}
+		if n != len(data) {
+			return total, io.ErrShortWrite
+		}
+	}
 }
 
 func (c *Client) session(ctx context.Context, api gatewayv1.RuntimeGatewayServiceClient) error {

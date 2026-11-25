@@ -87,7 +87,7 @@ YAML, or JSON when the file extension is `.json`. Loaded by `LoadConfig`; relati
 | `server_name` | no | TLS server name override (SNI and verification name) |
 | `log_level` | no | parsed, but **not used** by the code today: the logger does not read it |
 | `bundle_dir` | no | directory of bundle files; when empty the runtime still connects but cannot run anything: it logs a warning and reports every deployment as `error` ("no bundle_dir configured"), never `running` |
-| `trusted_keys` | no | list of hex Ed25519 public keys. When set, `bundle_dir` holds signed `<sha256>.bundle` archives that are digest-checked and signature-verified before use, and plain `.json` bundles are **not** accepted |
+| `trusted_keys` | no | list of hex Ed25519 public keys. When set, `bundle_dir` holds signed `<sha256>.bundle` archives. The runtime verifies their digest and signature before use and fetches missing or invalid archives over the gateway |
 | `http_addr` | no | listen address of HTTP-trigger listeners; default `127.0.0.1:0` (random loopback port). On a non-loopback address a listener starts only if its `start` step sets `auth` (or `insecure: true`); see [connectors/http.md](connectors/http.md#http-listener-start-step) |
 | `secrets` | no | `{provider: env\|dir\|encrypted-file, path, key_file}`: where `secret://name` references in bundle connections are resolved. Default `env` (`NURTUO_SECRET_<NAME>`). Manage values with `nurtuo secret`. Windows (upgrade step for service installs): an existing `path` or `key_file` must have a private DACL, or the runtime refuses to start with `icacls` fix guidance; Nurtuo does not change it ([security.md](security.md#windows-private-secrets-directory)) |
 | `connection_test` | no | `strict` (default: a failing connection `Test` fails the deployment), `warn` or `off` |
@@ -129,6 +129,24 @@ connectors `http`, `sftp`, `postgres` and `nats` are available (bridges are not 
 `runtime.yaml` yet), and the HTTP listener binds `127.0.0.1:0` unless `http_addr` is set. See
 [flow-reference.md](flow-reference.md).
 
+### Enable signing for distributed runtimes
+
+1. Provision an Ed25519 key and store its 32-byte seed as hex in a file readable only by the
+   control plane's service identity.
+2. Configure every runtime with a writable `bundle_dir` and add the corresponding hex-encoded
+   32-byte public key to `trusted_keys`. On Unix, restrict the directory to the runtime service
+   identity with mode `0700`. On Windows, restrict access with a private DACL. Unix permission
+   modes on cache files do not enforce Windows ACLs.
+3. Set `NURTUO_BUNDLE_SIGNING_KEY_FILE` on the control plane to the seed file's path and restart
+   it. It then advertises signed archive digests for derived revisions and serves the archives
+   over the runtime gateway. Revisions with an explicit artifact digest still require the
+   corresponding archive to be placed in `bundle_dir`.
+
+A signed-mode runtime fetches on a cache miss or failed verification. Each download has a
+five-minute deadline and a 256 MiB limit. Verified archives remain cached across restarts and
+undeploys. Deployment failures surface through deployment status. A later desired-state update
+or reconnect can trigger another attempt.
+
 ## Standalone mode
 
 `nurtuo standalone` runs, on one host: a locally generated certificate authority and secrets, an
@@ -160,7 +178,7 @@ control plane to answer `GET /`.
 Limitation (#58, phase 2 tracked in #64): standalone has no bundle source yet (`bundle_dir` is not
 set), so the runtime connects but cannot run deployments. They are reported as `error` with
 "no bundle_dir configured" and appear as `failed` in the control plane, never `running`. Running
-flows in standalone needs `FetchArtifact` (bundle artifact delivery).
+flows in standalone still needs the standalone bundle directory and signing-key setup.
 
 The control plane serves the runtime gateway (mTLS, TLS 1.3, runtime identity taken from the client
 certificate) on `--gateway-addr`. Nothing was run end to end against a real embedded PostgreSQL; the

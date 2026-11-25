@@ -3,9 +3,20 @@
 package interop
 
 import (
+	"context"
+	"crypto/ed25519"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nurtuo/nurtuo/core/deploy/bundle"
+	"github.com/nurtuo/nurtuo/core/runtime/internal/gateway"
+	gatewayv1 "github.com/nurtuo/nurtuo/sdk/go/gen/nurtuo/runtime/v1"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // TestRuntimeAgainstTSGateway is the headline test: real Go runtime <-> real TS gateway over mTLS,
@@ -86,10 +97,9 @@ func TestWrongIdentityRejected(t *testing.T) {
 
 // TestSignedBundleArtifactPath: the artifact flow. The packager signs a bundle, stores it under its
 // sha256 digest in the runtime's bundle_dir, and the control plane's revision references that digest.
-// The runtime verifies digest + Ed25519 signature before running it. FetchArtifact is not
-// implemented, so "stores it in bundle_dir" stands in for the artifact transfer.
+// The runtime verifies the manually placed archive before running it.
 func TestSignedBundleArtifactPath(t *testing.T) {
-	cp := startControlPlane(t, 0, 0)
+	cp, _ := startSigningControlPlane(t)
 	be := newBackend(t)
 	cp.registerRuntime(t, "rt-1")
 	p := startRuntime(t, cp, "rt-1", "rt-1", be.URL, true)
@@ -107,8 +117,8 @@ func TestSignedBundleArtifactPath(t *testing.T) {
 	comp2, _ := cp.component(t, "missing", flow("missing"), "sha256:"+strings.Repeat("c", 64))
 	dep2 := cp.deploy(t, comp2, 1, "rt-1")
 	cp.waitStatus(t, dep2, "failed")
-	if _, msg := cp.deploymentStatus(t, dep2); msg == "" {
-		t.Fatal("failed deployment without message")
+	if _, msg := cp.deploymentStatus(t, dep2); !strings.Contains(msg, "artifact not available from the control plane for this runtime") {
+		t.Fatalf("unexpected failure: %s", msg)
 	}
 }
 
@@ -138,4 +148,87 @@ func TestCertificateIdentities(t *testing.T) {
 	dep2 := cp.deploy(t, comp2, 1, "rt-san")
 	cp.waitStatus(t, dep2, "running")
 	san.waitServing(t)
+}
+
+func startSigningControlPlane(t *testing.T) (*controlPlane, ed25519.PublicKey) {
+	t.Helper()
+	pub, priv, err := bundle.GenerateKey()
+	must(t, err)
+	path := filepath.Join(t.TempDir(), "signing.key")
+	must(t, os.WriteFile(path, []byte(bundle.EncodePrivateKey(priv)), 0o600))
+	return startControlPlane(t, 0, 0, "NURTUO_BUNDLE_SIGNING_KEY_FILE="+path), pub
+}
+
+func TestFetchArtifactSignedByControlPlane(t *testing.T) {
+	cp, pub := startSigningControlPlane(t)
+	cp.registerRuntime(t, "rt-1")
+	p := startRuntimeWithKey(t, cp, "rt-1", "rt-1", newBackend(t).URL, true, pub)
+	comp, _ := cp.component(t, "employee", flow("v1"), "")
+	for rev := 1; rev <= 2; rev++ {
+		if rev == 2 {
+			cp.mustCall(t, "POST", "/v1/components/"+comp+"/revisions", map[string]any{"content": flow("v2")}, 201)
+		}
+		dep := cp.deploy(t, comp, rev, "rt-1")
+		cp.waitStatus(t, dep, "running")
+		p.waitServing(t)
+		archives, err := filepath.Glob(filepath.Join(p.bundles, "*.bundle"))
+		must(t, err)
+		if len(archives) != rev {
+			t.Fatalf("cached %d archives after revision %d", len(archives), rev)
+		}
+	}
+}
+
+func TestFetchArtifactWrongKeyRejected(t *testing.T) {
+	cp, _ := startSigningControlPlane(t)
+	testFetchFailure(t, cp, "signature verification failed")
+}
+
+func TestFetchArtifactNoSigningKey(t *testing.T) {
+	testFetchFailure(t, startControlPlane(t, 0, 0), "no bundle signing key")
+}
+
+func testFetchFailure(t *testing.T, cp *controlPlane, want string) {
+	t.Helper()
+	cp.registerRuntime(t, "rt-1")
+	p := startRuntime(t, cp, "rt-1", "rt-1", newBackend(t).URL, true)
+	comp, _ := cp.component(t, "employee", flow("v1"), "")
+	dep := cp.deploy(t, comp, 1, "rt-1")
+	cp.waitStatus(t, dep, "failed")
+	if _, msg := cp.deploymentStatus(t, dep); !strings.Contains(msg, want) {
+		t.Fatalf("failure = %q, want %q", msg, want)
+	}
+	files, err := os.ReadDir(p.bundles)
+	must(t, err)
+	if len(files) != 0 {
+		t.Fatalf("failed download left %d cache files", len(files))
+	}
+	p.waitRefused(t)
+}
+
+func TestFetchArtifactForeignDigestNotFound(t *testing.T) {
+	cp, pub := startSigningControlPlane(t)
+	cp.registerRuntime(t, "rt-1")
+	cp.registerRuntime(t, "rt-2")
+	p := startRuntimeWithKey(t, cp, "rt-1", "rt-1", newBackend(t).URL, true, pub)
+	comp, _ := cp.component(t, "employee", flow("v1"), "")
+	cp.waitStatus(t, cp.deploy(t, comp, 1, "rt-1"), "running")
+	archives, err := os.ReadDir(p.bundles)
+	must(t, err)
+	if len(archives) != 1 || !strings.HasSuffix(archives[0].Name(), ".bundle") {
+		t.Fatal("expected one fetched archive")
+	}
+	digest := "sha256:" + strings.TrimSuffix(archives[0].Name(), ".bundle")
+	creds, err := gateway.MTLSCredentials(filepath.Join(certsDir(), "rt-2.pem"), filepath.Join(certsDir(), "rt-2.key"), filepath.Join(certsDir(), "ca.pem"), "localhost")
+	must(t, err)
+	conn, err := grpc.NewClient(cp.gatewayAddr(), grpc.WithTransportCredentials(creds))
+	must(t, err)
+	defer func() { _ = conn.Close() }()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	stream, err := gatewayv1.NewRuntimeGatewayServiceClient(conn).FetchArtifact(ctx, &gatewayv1.FetchArtifactRequest{Digest: digest})
+	must(t, err)
+	if _, err := stream.Recv(); status.Code(err) != codes.NotFound {
+		t.Fatalf("foreign digest returned %v, want NotFound", err)
+	}
 }

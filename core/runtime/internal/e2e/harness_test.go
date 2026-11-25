@@ -30,7 +30,9 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	httpconn "github.com/nurtuo/nurtuo/connectors/http"
@@ -45,12 +47,13 @@ import (
 
 type gw struct {
 	gatewayv1.UnimplementedRuntimeGatewayServiceServer
-	mu       sync.Mutex
-	desired  *gatewayv1.DesiredState
-	push     chan *gatewayv1.ConnectResponse
-	statuses chan *gatewayv1.DeploymentStatus
-	results  chan *gatewayv1.CommandResult
-	hellos   chan *gatewayv1.Hello
+	mu        sync.Mutex
+	desired   *gatewayv1.DesiredState
+	artifacts map[string][]byte
+	push      chan *gatewayv1.ConnectResponse
+	statuses  chan *gatewayv1.DeploymentStatus
+	results   chan *gatewayv1.CommandResult
+	hellos    chan *gatewayv1.Hello
 	// transcript is the text of every status / command result the runtime sent (guarded by mu).
 	transcript []string
 }
@@ -65,6 +68,25 @@ func (g *gw) sent() string {
 func newGW() *gw {
 	return &gw{push: make(chan *gatewayv1.ConnectResponse, 16), statuses: make(chan *gatewayv1.DeploymentStatus, 64),
 		results: make(chan *gatewayv1.CommandResult, 16), hellos: make(chan *gatewayv1.Hello, 8)}
+}
+
+func (g *gw) serveArtifact(digest string, data []byte) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.artifacts == nil {
+		g.artifacts = make(map[string][]byte)
+	}
+	g.artifacts[digest] = data
+}
+
+func (g *gw) FetchArtifact(req *gatewayv1.FetchArtifactRequest, stream gatewayv1.RuntimeGatewayService_FetchArtifactServer) error {
+	g.mu.Lock()
+	data, ok := g.artifacts[req.GetDigest()]
+	g.mu.Unlock()
+	if !ok {
+		return status.Error(codes.Unimplemented, "artifact unavailable in test gateway")
+	}
+	return stream.Send(&gatewayv1.FetchArtifactResponse{Data: data})
 }
 
 func (g *gw) Connect(stream gatewayv1.RuntimeGatewayService_ConnectServer) error {
