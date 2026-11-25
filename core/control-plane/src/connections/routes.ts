@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { createHash, createPrivateKey, randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { isIP } from "node:net";
 import { permissionsIn } from "../auth/authz.js";
 import type { Endpoint, EndpointCtx } from "../auth/endpoints.js";
@@ -7,6 +7,7 @@ import { ApiError } from "../domain.js";
 import { binding, checkSecretPlacement } from "./binding.js";
 import { ConnectionCoordinator } from "./coordinator.js";
 import { validHostKey } from "./host-key.js";
+import { validatePrivateKey } from "./private-key.js";
 import type { ConnectionRepository, Connection } from "./repository.js";
 import { MAX_SECRET_BYTES, type SecretStore } from "./secrets.js";
 import { secretFields, secretRefs, validateConnection, validateConnectionId } from "./validate.js";
@@ -150,8 +151,7 @@ export function connectionEndpoints(d: ConnectionDeps): Record<string, Endpoint>
           if (value !== undefined) values.set(field, value);
         }
         if (values.has("privateKey") && (Object.hasOwn(credentials, "privateKey") || Object.hasOwn(credentials, "passphrase"))) {
-          try { createPrivateKey({ key: values.get("privateKey")!, passphrase: values.get("passphrase") }); }
-          catch { throw new ApiError(400, "invalid_credential_set", "private key could not be opened with the supplied passphrase"); }
+          await validatePrivateKey(values.get("privateKey")!, values.get("passphrase"));
         }
         const staged: string[] = [];
         try {
