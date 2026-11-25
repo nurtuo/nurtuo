@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { parseInstanceConfig } from "./instance.js";
-import { ROLES, type Role } from "./permissions.js";
+import { ROLES, ROLE_PERMISSIONS, type Role } from "./permissions.js";
 import { POLICIES } from "./policy.js";
 import { PASSWORD, adminsConfig, j, setup } from "./test-util.js";
 import type { NewAuditEntry } from "./types.js";
@@ -44,10 +44,15 @@ test("role x route matrix: every permission-gated route, every role", async () =
   for (const role of ROLES) {
     for (const pol of gated) {
       // fresh world per call: destructive routes (workspace delete, member remove) must not affect the next one
-      const { call, owner, member } = setup();
+      const { call, owner, member, login } = setup();
       const { ws } = await owner("owner@x.io", "ws-a");
       const { token } = await member(ws.id, `${role}@x.io`, role);
-      const r = await call(pol.method, concretePath(pol.pattern, ws.id), { token: token.raw, body: bodyFor(pol.action), ws: pol.workspace === "context" ? ws.id : undefined });
+      // userOnly routes refuse API tokens for every role (checked below); drive them with a session.
+      const sess = pol.userOnly ? await login(`${role}@x.io`) : undefined;
+      const r = pol.userOnly
+        ? await call(pol.method, concretePath(pol.pattern, ws.id), { cookie: sess!.cookie, csrf: sess!.csrf, body: bodyFor(pol.action) })
+        : await call(pol.method, concretePath(pol.pattern, ws.id), { token: token.raw, body: bodyFor(pol.action), ws: pol.workspace === "context" ? ws.id : undefined });
+      if (pol.userOnly) assert.equal((await call(pol.method, concretePath(pol.pattern, ws.id), { token: token.raw, body: bodyFor(pol.action) })).status, 403, `${role} token on userOnly ${pol.pattern}`);
       const allowed = EXPECT[pol.action]!.includes(role);
       if (allowed) assert.ok(r.status !== 403 && r.status !== 401, `${role} should reach ${pol.method} ${pol.pattern} but got ${r.status} ${JSON.stringify(r.body)}`);
       else assert.equal(r.status, 403, `${role} must be denied ${pol.method} ${pol.pattern}, got ${r.status}`);
@@ -399,4 +404,10 @@ test("cross-workspace access is denied for users and tokens", async () => {
   const bRaw = j(bTok).token as string;
   assert.equal((await call("GET", "/v1/components", { token: bRaw, ws: A.ws.id })).status, 403);
   assert.equal((await call("GET", `/v1/workspaces/${A.ws.id}`, { token: bRaw })).status, 404);
+});
+
+test("runtime role holds no connection, secret or test_run permission; connection:read is widely held", () => {
+  for (const p of ROLE_PERMISSIONS.runtime) assert.ok(!/^(connection|secret|test_run):/.test(p), p);
+  for (const r of ["owner", "admin", "editor", "viewer", "deployer"] as Role[]) assert.ok(ROLE_PERMISSIONS[r].includes("connection:read"), r);
+  for (const r of ["viewer", "deployer"] as Role[]) for (const p of ["connection:write", "connection:delete", "secret:write", "secret:delete", "test_run:execute"] as const) assert.ok(!ROLE_PERMISSIONS[r].includes(p), `${r} ${p}`);
 });
