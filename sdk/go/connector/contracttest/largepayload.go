@@ -18,8 +18,8 @@ import (
 // message size, so it can only be delivered as several chunks, and large enough that a connector
 // which buffers the whole document exceeds the heap bound.
 const (
-	DefaultLargePayloadSize = 16 << 20
-	DefaultMaxHeapGrowth    = 8 << 20
+	DefaultLargePayloadSize = 64 << 20
+	DefaultMaxHeapGrowth    = 24 << 20
 )
 
 // LargePayloadCase configures the ExecuteLargePayload subtest: one document of Size bytes is
