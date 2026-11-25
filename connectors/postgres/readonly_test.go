@@ -55,7 +55,7 @@ func TestTxOptions(t *testing.T) {
 func TestQueryRunsInReadOnlyTxAndRollsBack(t *testing.T) {
 	ro := &pgconn.PgError{Code: "25006", Message: "cannot execute INSERT in a read-only transaction", Detail: "host=db.internal"}
 	b := &fakeBeginner{tx: &fakeTx{err: ro}}
-	o := runReadOnly(context.Background(), b, &inDoc{id: "0", data: []byte(`{"sql":"insert into t values (1)"}`)}, 10, 0, "pw")
+	o := runReadOnly(context.Background(), b, &inDoc{id: "0", data: []byte(`{"sql":"insert into t values (1)"}`)}, 10, &queryBuffer{}, "pw")
 	if len(b.opts) != 1 || b.opts[0].AccessMode != pgx.ReadOnly {
 		t.Fatalf("expected one READ ONLY BeginTx, got %+v", b.opts)
 	}
@@ -87,7 +87,7 @@ func TestQueryRejectsTransactionCommandsBeforeExecution(t *testing.T) {
 		`{"sql":"-- notice\n /* outer /* nested */ comment */ ; CoMmIt"}`,
 		`{"sql":"set transaction read only"}`,
 	} {
-		result := runStatement(t.Context(), tx, &inDoc{data: []byte(input)}, true, 10, 0, "")
+		result := runStatement(t.Context(), tx, &inDoc{data: []byte(input)}, true, 10, &queryBuffer{}, "")
 		if result.status != connectorv1.DocumentStatus_DOCUMENT_STATUS_APPLICATION_ERROR || len(tx.queried) != 0 {
 			t.Fatalf("expected application error before execution, got %+v", result)
 		}

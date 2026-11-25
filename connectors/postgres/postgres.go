@@ -56,7 +56,7 @@ type Connector struct {
 	// ConfigurePool optionally sets host-provided connection policy before the pool opens.
 	// Set it before using the connector.
 	ConfigurePool func(*pgxpool.Config) error
-	// MaxQueryResultBytes optionally bounds the encoded rows buffered for one input document.
+	// MaxQueryResultBytes optionally bounds the bytes of encoded rows buffered at once.
 	// Set it before using the connector.
 	MaxQueryResultBytes int
 
@@ -351,11 +351,12 @@ recv:
 	if !tx {
 		for _, d := range docs {
 			sctx, cancel := context.WithTimeout(ctx, timeout)
+			budget := queryBuffer{limit: c.MaxQueryResultBytes}
 			var o docOutcome
 			if isQuery {
-				o = runReadOnly(sctx, pool, d, maxRows, c.MaxQueryResultBytes, cfg.Password)
+				o = runReadOnly(sctx, pool, d, maxRows, &budget, cfg.Password)
 			} else {
-				o = runStatement(sctx, pool, d, false, maxRows, c.MaxQueryResultBytes, cfg.Password)
+				o = runStatement(sctx, pool, d, false, maxRows, &budget, cfg.Password)
 			}
 			cancel()
 			if err := send(d, o); err != nil {
@@ -378,9 +379,10 @@ recv:
 		fail(-1, "transaction not started: "+msg)
 	} else {
 		failedAt := -1
+		budget := queryBuffer{limit: c.MaxQueryResultBytes}
 		for i, d := range docs {
 			sctx, cancel := context.WithTimeout(ctx, timeout)
-			o := runStatement(sctx, t, d, isQuery, maxRows, c.MaxQueryResultBytes, cfg.Password)
+			o := runStatement(sctx, t, d, isQuery, maxRows, &budget, cfg.Password)
 			cancel()
 			outcomes[i] = o
 			if o.status != connectorv1.DocumentStatus_DOCUMENT_STATUS_SUCCESS {
@@ -441,13 +443,13 @@ func beginStatementTx(ctx context.Context, b beginner, isQuery bool) (pgx.Tx, er
 
 // runReadOnly runs one document in its own READ ONLY transaction and always rolls it back (a
 // QUERY must not change anything, so there is nothing to commit).
-func runReadOnly(ctx context.Context, b beginner, d *inDoc, maxRows, maxBytes int, secret string) docOutcome {
+func runReadOnly(ctx context.Context, b beginner, d *inDoc, maxRows int, budget *queryBuffer, secret string) docOutcome {
 	t, err := beginStatementTx(ctx, b, true)
 	if err != nil {
 		st, msg := MapError(err, secret)
 		return docOutcome{status: st, message: "transaction not started: " + msg}
 	}
-	o := runStatement(ctx, t, d, true, maxRows, maxBytes, secret)
+	o := runStatement(ctx, t, d, true, maxRows, budget, secret)
 	_ = t.Rollback(context.WithoutCancel(ctx))
 	return o
 }
@@ -494,7 +496,25 @@ func queryCommand(sql string) string {
 	}
 }
 
-func runStatement(ctx context.Context, q querier, d *inDoc, isQuery bool, maxRows, maxBytes int, secret string) docOutcome {
+// Query rows are retained until they can be emitted, so a transaction shares a
+// single budget across all its documents.
+type queryBuffer struct {
+	limit int
+	used  int
+}
+
+func (b *queryBuffer) reserve(bytes int) bool {
+	if b.limit <= 0 {
+		return true
+	}
+	if bytes > b.limit-b.used {
+		return false
+	}
+	b.used += bytes
+	return true
+}
+
+func runStatement(ctx context.Context, q querier, d *inDoc, isQuery bool, maxRows int, budget *queryBuffer, secret string) docOutcome {
 	sql, args, err := ParseStatement(d.data)
 	if err != nil {
 		st, msg := MapError(err, secret)
@@ -523,7 +543,7 @@ func runStatement(ctx context.Context, q querier, d *inDoc, isQuery bool, maxRow
 	for _, f := range rows.FieldDescriptions() {
 		cols = append(cols, f.Name)
 	}
-	n, size := 0, 0
+	n := 0
 	for rows.Next() {
 		n++
 		if !isQuery {
@@ -538,11 +558,10 @@ func runStatement(ctx context.Context, q querier, d *inDoc, isQuery bool, maxRow
 		if err == nil {
 			var doc []byte
 			if doc, err = RowToDocument(cols, vals); err == nil {
-				if maxBytes > 0 && len(doc) > maxBytes-size {
+				if !budget.reserve(len(doc)) {
 					return docOutcome{status: connectorv1.DocumentStatus_DOCUMENT_STATUS_APPLICATION_ERROR,
 						message: "query rows exceed the test run buffer limit"}
 				}
-				size += len(doc)
 				out.rows = append(out.rows, doc)
 				continue
 			}

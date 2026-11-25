@@ -288,3 +288,33 @@ func TestLiveRoundTrip(t *testing.T) {
 		t.Fatalf("UPDATE must still work: %v", res)
 	}
 }
+
+func TestLiveQueryBufferBudget(t *testing.T) {
+	s, _ := liveSettings(t)
+	conn := settings(t, s)
+	const row = `{"n":"0123456789"}`
+	c := New()
+	c.MaxQueryResultBytes = len(row)
+	defer c.Close()
+
+	const query = `{"sql":"select '0123456789' as n"}`
+	run := func(transaction bool) map[string]*connectorv1.DocumentResult {
+		return runBatch(t, c, &connectorv1.ExecuteStart{
+			Connection: conn, OperationType: connectorv1.OperationType_OPERATION_TYPE_QUERY,
+			Options: &structpb.Struct{Fields: map[string]*structpb.Value{"transaction": structpb.NewBoolValue(transaction)}},
+		}, query, query)
+	}
+	for _, r := range run(false) {
+		if r.Status != connectorv1.DocumentStatus_DOCUMENT_STATUS_SUCCESS || len(r.OutputDocumentIds) != 1 {
+			t.Fatalf("per-document buffer should admit one row at the limit: %v", r)
+		}
+	}
+	results := run(true)
+	first, second := results["0"], results["1"]
+	if first.Status != connectorv1.DocumentStatus_DOCUMENT_STATUS_FAILURE ||
+		second.Status != connectorv1.DocumentStatus_DOCUMENT_STATUS_APPLICATION_ERROR ||
+		!strings.Contains(second.Message, "buffer limit") ||
+		len(first.OutputDocumentIds)+len(second.OutputDocumentIds) != 0 {
+		t.Fatalf("batch should exceed the shared buffer and return no rows: %v", results)
+	}
+}
