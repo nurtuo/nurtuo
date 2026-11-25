@@ -174,7 +174,7 @@ paths:
       responses: { "200": { description: OK }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
     post:
       operationId: createWorkspace
-      description: Creates a workspace; the caller becomes its owner. Session users only.
+      description: Creates a workspace. Requires the instance-level permission `instance:workspace_create` (instance admins, see `NURTUO_INSTANCE_ADMINS` and `NURTUO_ALLOW_WORKSPACE_CREATE`). The caller becomes its owner. Session users only.
       requestBody: { required: true, content: { application/json: { schema: { type: object, required: [slug, name], properties: { slug: { type: string, pattern: "^[a-z0-9][a-z0-9-]{1,62}$" }, name: { type: string } } } } } }
       responses: { "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/Workspace" } } } }, "400": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Unauthenticated" }, "403": { $ref: "#/components/responses/Forbidden" } }
   /v1/workspaces/{ws}:

@@ -24,7 +24,7 @@ runtimes, external systems reached by connectors, and anyone who can send reques
 | Deployment bundle to runtime | tampered or substituted bundle | bundle format with Ed25519 signature and hash pinning (below); with `trusted_keys` set in `runtime.yaml` the runtime accepts only signed `.bundle` archives whose digest matches the deployment and whose signature verifies against a trusted key | without `trusted_keys` the runtime still reads plain `<digest>.json` files without any signature check (the default); no key rotation or revocation list |
 | Flow author to external systems | author makes a connector do more than intended | per-connector notes (below); connection secrets are `secret://` references resolved by the runtime secret store; secrets redaction | no authorization model for who may use which connection; no egress controls |
 | Network client to listeners | unauthenticated calls, eavesdropping, oversized bodies | HTTP listener: opt-in `auth` on the `start` step (`bearer`, `apiKey`, or `hmac` body signatures; secrets from the secret store, constant-time comparison, `401` before the flow runs, credential header kept out of document properties); opt-in `tls` (TLS 1.2 minimum); refuses a non-loopback `http_addr` without `auth` unless `insecure: true`; body limit 1 MiB (413), method check, pause support, binds `127.0.0.1` by default; see [connectors/http.md](connectors/http.md#http-listener-start-step) | auth and TLS are off unless configured; no rate limiting, no replay protection for `hmac`, no client certificates; secrets are read at listener start (redeploy after rotation) |
-| Users to the control plane REST API | unauthorised reads and writes | authentication (sessions, API tokens, optional OIDC), workspace RBAC with a fail-closed route policy, CSRF protection and an audit log; see [auth.md](auth.md) | components, runtimes and deployments are not partitioned by workspace yet (single-tenant in practice); SAML and SCIM are stubs; no TLS termination, put it behind a proxy; `NURTUO_INSECURE_NO_AUTH=1` disables everything |
+| Users to the control plane REST API | unauthorised reads and writes | authentication (sessions, API tokens, optional OIDC), workspace RBAC with a fail-closed route policy, workspace creation limited to instance admins (`instance:workspace_create`, `NURTUO_INSTANCE_ADMINS`), CSRF protection and an audit log; see [auth.md](auth.md) | components, runtimes and deployments are not partitioned by workspace yet (single-tenant in practice); `NURTUO_ALLOW_WORKSPACE_CREATE=any` lets every user create a workspace and so reopen that escalation (warned at start); SAML and SCIM are stubs; no TLS termination, put it behind a proxy; `NURTUO_INSECURE_NO_AUTH=1` disables everything |
 | AI agent to flows | agent makes destructive changes | MCP tools only edit flows through validated commands (`apply_ops`, atomic, revision checked); `dry_run` refuses invalid flows; the `deploy` tool exists only with `--allow-deploy` and requires a second call with `confirm=true` after the human has seen the plan | the confirmation is a protocol convention the server enforces, not an authorization boundary: whoever can call the tool with the server's control plane token can deploy |
 | Supply chain | malicious dependency or release artifact | license allow-lists in CI, goreleaser config with cosign keyless signing and SBOM (`.goreleaser.yaml`), committed lockfiles | release signing and CI jobs were not run for this page; the runtime does **not** verify bridge signatures (it starts whatever bridge command its configuration names) |
 
@@ -37,8 +37,8 @@ runtimes, external systems reached by connectors, and anyone who can send reques
   always initiates.
 - Standalone mode generates a local ECDSA P-256 CA (10 years), a server certificate and a client
   certificate (2 years, for `localhost`, `127.0.0.1`, `::1`), writes them under `secrets/` (private
-  keys mode 0600, directory 0700) and reuses them. There is no rotation or revocation. File modes
-  are POSIX semantics; how they map to Windows ACLs was not checked.
+  keys mode 0600, directory 0700; on Windows a private DACL, see "Windows: private secrets
+  directory" below) and reuses them. There is no rotation or revocation.
 - For distributed installs you provide the CA and issue one client certificate per runtime. The
   control plane gateway binds the identity: `Hello.runtime_id` must equal the certificate identity
   or the session is rejected (`core/control-plane/src/gateway.ts`; covered by unit and
@@ -88,10 +88,9 @@ What is **not** covered:
 - The runtime resolves `secret://name` references in bundle connections through a secret store
   selected by `secrets.provider` in `runtime.yaml`: `env` (default, `NURTUO_SECRET_<NAME>`), `dir`
   (one file per secret) or `encrypted-file` (AES-256-GCM, master key from a key file). Manage them
-  with `nurtuo secret`. Resolved values live in memory only. Known gap: on Windows the `dir` and
-  `encrypted-file` stores do not set restrictive ACLs and rely on the owner's profile permissions
-  ([ADR 0010](adr/0010-connections-and-secrets.md)). Secret values must not be written into flow
-  documents or bundles.
+  with `nurtuo secret`. Resolved values live in memory only. On POSIX the store directory and files
+  must not be group/other accessible; on Windows their DACL must be private (see below). Secret
+  values must not be written into flow documents or bundles.
 - All four native connectors redact their configured secrets from error messages and `Test`
   diagnostics, and the contract suite can assert that for any connector (`Options.Secrets`). The
   HTTP connector masks the API key and URL password in the recorded `url`. Redaction is by exact
@@ -99,6 +98,51 @@ What is **not** covered:
   not caught. Document payloads and properties are never scrubbed.
 - Standalone secrets (CA and leaf keys, `db-password`, `admin-token`) live as files under
   `<data-dir>/secrets`; the embedded database connection uses `sslmode=disable` on loopback.
+
+### Windows: private secrets directory
+
+POSIX modes mean nothing on Windows, and the standalone default data root `%ProgramData%\Nurtuo`
+inherits read access (and create-file access) for the local `Users` group. Nurtuo therefore uses
+explicit ACLs ([spec](specs/implemented/2026-11-24-windows-secrets-dacl.md), issue #57):
+
+- **Principals.** A private object has a protected DACL (nothing is inherited from `ProgramData`)
+  that allows only the account running Nurtuo, `NT AUTHORITY\SYSTEM` and `BUILTIN\Administrators`.
+  This is the equivalent of `0700`/`0600` plus root, not strictly owner-only: administrators and
+  `SYSTEM` keep access, so an elevated operator can run `nurtuo secret set` and a later service
+  install is not locked out. The owner must be one of those three principals too.
+- **Creation.** New private directories and files get that DACL in the same call that creates them,
+  so no other user can open them in between. Files written below a private directory inherit it.
+- **Standalone `secrets\` is repaired.** On every start, `nurtuo standalone` (and `nurtuo secret`
+  without flags, on the same store) verifies `<data-dir>\secrets` and everything below it. A
+  too-open DACL, for example the inherited `Users` read of an install made before this change, is
+  replaced by the private DACL, and each path is printed once to stderr:
+  `standalone: tightened permissions on <path>`. Repair never changes an owner and never adds a
+  principal.
+- **Foreign owner: refused.** If `secrets\` or anything below it is owned by another account (for
+  example a `master.key` another local user planted before the first start), standalone exits 1
+  naming the path and the owner SID, without reading or changing the object. Check its contents,
+  then remove it or take ownership (`takeown`). Symlinks and junctions in the tree are refused too.
+- **Operator-chosen paths are never changed.** For the distributed runtime and
+  `nurtuo secret --provider/--path/--key-file/--config`, an existing `dir` / `encrypted-file`
+  `secrets.path` or `key_file` is only checked. If it is too open or has a foreign owner, the
+  runtime refuses to start (and `nurtuo secret` exits 1) with an error that names the path, the
+  offending SID, the allowed principals and the `icacls` commands to fix it, for example
+  `icacls "<path>" /inheritance:r /grant:r "<account>:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F"`,
+  then `icacls "<path>" /remove "*<offending SID>"` (drop `(OI)(CI)` for a file). A path that
+  does not exist yet is created private on the first write.
+- **Every read checks.** Reading a secret, the master key or `secrets.enc` fails closed if its DACL
+  was opened up after start; the error names the path and SID, never a value. Standalone repairs
+  it at the next start; an operator-chosen path must be fixed by the operator.
+- **Rotate on multi-user hosts.** Before this change, every local user could read the standalone
+  `secrets\` (master key, `secrets.enc`, `admin-token`, `db-password`, TLS keys). On a host where
+  other people or services had local accounts, treat that material as exposed: rotate the
+  connection secrets, the admin token and the database password. There is no tool to rotate the
+  master key yet.
+- **Not covered.** The rest of the data root (`postgres\data`, `postgres\runtime`, `logs\`) keeps
+  the inherited `ProgramData` ACL; that is follow-up issue
+  [#78](https://github.com/nurtuo/nurtuo/issues/78). Running Nurtuo later as a different
+  non-administrator account than the one that created the install fails with access denied; run it
+  as that account or as an administrator.
 - Do not log full bundle or connection documents.
 
 ## Connector security notes
@@ -138,7 +182,8 @@ What is **not** covered:
 |---|---|
 | Bundle signature, hash pinning, canonical container, size cap | implemented and unit-tested; enforced by the runtime when `trusted_keys` is set |
 | Runtime mTLS client (TLS 1.3, CA verification) and gateway server (client certificates, identity check) | implemented; unit tests and cross-language interop tests, not run against a deployed control plane |
-| Secret store and reference resolution (`env`, `dir`, `encrypted-file`) | implemented and tested; no Windows ACL hardening |
+| Secret store and reference resolution (`env`, `dir`, `encrypted-file`) | implemented and tested |
+| Windows private DACL for standalone `secrets\` and the `dir` / `encrypted-file` stores | implemented; unit tests on Linux, ACL tests in the non-required `go-windows` CI job; the cross-user check on a real Windows host is pending (issue #57) |
 | Authentication and RBAC on the control plane REST API | implemented (sessions, tokens, OIDC, audit); SAML and SCIM are stubs |
 | HTTP listener authentication (`bearer`, `apiKey`, `hmac`), TLS, refusal of an unauthenticated non-loopback bind | implemented and unit-tested (`core/runtime/internal/listener`); opt-in per flow; not run against a deployed runtime |
 | WASM script sandbox | implemented (wazero) and tested; modules are not delivered by bundles yet |

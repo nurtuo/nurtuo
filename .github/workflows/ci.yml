@@ -35,6 +35,55 @@ jobs:
       - uses: golangci/golangci-lint-action@v9
         with: { args: "./core/runtime/... ./sdk/go/... ./connectors/..." }
 
+  # Windows private DACLs for secrets (docs/specs/implemented/2026-11-24-windows-secrets-dacl.md). Not a required
+  # check (D13). The required `go` job never compiles Windows-only files, so go-windows-vet does that
+  # on Linux and go-windows runs the real ACL tests.
+  go-windows-vet:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: core/runtime/go.mod
+          # No root go.sum: the workspace has one sum per module (go.work).
+          cache-dependency-path: |
+            core/runtime/go.sum
+            sdk/go/go.sum
+            connectors/go.sum
+      - name: GOOS=windows go vet
+        working-directory: core/runtime
+        env: { GOOS: windows }
+        run: go vet ./internal/secrets/... ./cmd/nurtuo/...
+
+  go-windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+        working-directory: core/runtime
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: core/runtime/go.mod
+          # No root go.sum: the workspace has one sum per module (go.work).
+          cache-dependency-path: |
+            core/runtime/go.sum
+            sdk/go/go.sum
+            connectors/go.sum
+      - run: go vet ./internal/secrets/... ./cmd/nurtuo/...
+      # No -race: it needs cgo.
+      - run: go test -count=1 ./internal/secrets/... ./cmd/nurtuo/...
+      # Creates a temporary local user (the hosted runner is an administrator). With the variable set
+      # the test fails instead of skipping; the grep also fails the job if it did not run at all.
+      - name: TestOtherLocalUserCannotReadSecrets (must run, not skip)
+        env: { NURTUO_TEST_WINDOWS_OTHER_USER: "1" }
+        run: |
+          go test -count=1 -v -run '^TestOtherLocalUserCannotReadSecrets$' ./internal/secrets/ 2>&1 | tee two-user.log
+          grep -q -- '--- PASS: TestOtherLocalUserCannotReadSecrets' two-user.log \
+            || { echo "::error::TestOtherLocalUserCannotReadSecrets did not pass (skipped or not run)"; exit 1; }
+
   # nurtuo flow run against a real SFTP server in a container (Docker is preinstalled on ubuntu-latest).
   # Gated by NURTUO_TEST_SFTP_E2E like the Postgres tests are gated by NURTUO_TEST_POSTGRES_URL.
   flow-run-sftp-e2e:

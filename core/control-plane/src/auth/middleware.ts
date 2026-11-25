@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // The single integration point with api.ts: createAuthHook(...).handle(req, next) wraps the router.
-// Order: match policy (fail closed) -> authenticate -> CSRF -> resolve workspace -> authorize ->
+// Order: match policy (fail closed) -> authenticate -> CSRF -> instance permission -> resolve workspace -> authorize ->
 // run handler -> audit (every mutating request by an authenticated caller, including denials).
 import { randomUUID } from "node:crypto";
 import { ApiError } from "../domain.js";
@@ -144,6 +144,14 @@ export function createAuthHook(o: AuthHookOptions): AuthHook {
     if (principal.viaCookie && mutating) {
       const sent = headers["x-nurtuo-csrf"];
       if (!sent || !principal.csrf || !safeEqual(sent, principal.csrf)) return errRes(403, "csrf", "missing or invalid X-Nurtuo-Csrf header");
+    }
+
+    if (policy.access === "instance") {
+      // Checked before the handler, so non-holders cannot probe body validation or slug conflicts.
+      if (!(await service.instancePermissions(principal)).has(policy.instancePermission!)) {
+        if (mutating) await safeAudit(() => audit(req, { ...auditBase, status: 403, extra: { denied: "forbidden", permission: policy.instancePermission } }));
+        return errRes(403, "forbidden", `missing permission ${policy.instancePermission}`);
+      }
     }
 
     let ws: Workspace | undefined;
