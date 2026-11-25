@@ -16,10 +16,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	nrt "github.com/nurtuo/nurtuo/core/runtime/internal/runtime"
 )
 
 // staticDB is a Database that is already running: DSN "" makes the control plane use its
@@ -66,9 +69,32 @@ func TestStandaloneE2EHandshakeAndDeploy(t *testing.T) {
 		}
 	}
 
-	var componentID, digest string
+	// The legacy launch must also omit any signing setting inherited from the test runner.
+	const signingEnv = "NURTUO_BUNDLE_SIGNING_KEY_FILE"
+	t.Setenv(signingEnv, "")
+	if err := os.Unsetenv(signingEnv); err != nil {
+		t.Fatal(err)
+	}
+	var deployment standaloneE2EDeployment
+	keyPath := filepath.Join(dirs.Secrets, "bundle-signing.key")
+	if dsn != "" {
+		if !t.Run("pre-upgrade deployment fails", func(t *testing.T) {
+			deployment = standaloneE2ERun(t, node, entry, dirs, dsn, deployment, "", true)
+		}) {
+			return
+		}
+		// The test uses modern bootstrap for mTLS and auth. Remove its unused
+		// signing seed to reproduce the on-disk layout before this upgrade.
+		if err := os.Remove(keyPath); err != nil {
+			t.Fatal(err)
+		}
+		archives, err := filepath.Glob(filepath.Join(dirs.Bundles, "*.bundle"))
+		if err != nil || len(archives) != 0 {
+			t.Fatalf("want empty pre-upgrade bundle cache, got %d (glob error %v)", len(archives), err)
+		}
+	}
 	t.Run("fetch", func(t *testing.T) {
-		componentID = standaloneE2ERun(t, node, entry, dirs, dsn, "", "")
+		deployment = standaloneE2ERun(t, node, entry, dirs, dsn, deployment, "", false)
 	})
 	if t.Failed() {
 		return
@@ -82,7 +108,7 @@ func TestStandaloneE2EHandshakeAndDeploy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	digest = fmt.Sprintf("sha256:%x", sha256.Sum256(data))
+	digest := fmt.Sprintf("sha256:%x", sha256.Sum256(data))
 	if filepath.Base(archive) != strings.TrimPrefix(digest, "sha256:")+".bundle" {
 		t.Fatal("cached bundle filename does not match its archive digest")
 	}
@@ -91,13 +117,16 @@ func TestStandaloneE2EHandshakeAndDeploy(t *testing.T) {
 	if err := os.Chtimes(archive, marker, marker); err != nil {
 		t.Fatal(err)
 	}
-	keyPath := filepath.Join(dirs.Secrets, "bundle-signing.key")
 	before, err := os.ReadFile(keyPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Run("cache hit after restart", func(t *testing.T) {
-		standaloneE2ERun(t, node, entry, dirs, dsn, componentID, digest)
+		if dsn == "" {
+			standaloneE2ERun(t, node, entry, dirs, dsn, standaloneE2EDeployment{}, digest, false)
+		} else {
+			standaloneE2ERun(t, node, entry, dirs, dsn, deployment, "", false)
+		}
 	})
 	after, err := os.ReadFile(keyPath)
 	if err != nil || !bytes.Equal(before, after) {
@@ -107,7 +136,8 @@ func TestStandaloneE2EHandshakeAndDeploy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !info.ModTime().Equal(marker) {
+	afterData, err := os.ReadFile(archive)
+	if err != nil || !bytes.Equal(data, afterData) || !info.ModTime().Equal(marker) {
 		t.Fatal("restart replaced the cached archive")
 	}
 	archives, err = filepath.Glob(filepath.Join(dirs.Bundles, "*.bundle"))
@@ -116,7 +146,12 @@ func TestStandaloneE2EHandshakeAndDeploy(t *testing.T) {
 	}
 }
 
-func standaloneE2ERun(t *testing.T, node, entry string, dirs DataDirs, dsn, compID, digest string) string {
+type standaloneE2EDeployment struct {
+	id        string
+	updatedAt string
+}
+
+func standaloneE2ERun(t *testing.T, node, entry string, dirs DataDirs, dsn string, previous standaloneE2EDeployment, digest string, legacy bool) standaloneE2EDeployment {
 	t.Helper()
 	restPort, err := freePort()
 	if err != nil {
@@ -138,16 +173,29 @@ func standaloneE2ERun(t *testing.T, node, entry string, dirs DataDirs, dsn, comp
 		Dirs: dirs, Bootstrap: NewLocalBootstrapper(), DB: staticDB{dsn}, CPURL: base, Log: log,
 		HealthWait: 30 * time.Second,
 		ControlPlane: func(dsn string, cr *Credentials) Service {
+			env := controlPlaneEnv(dsn, cr, int(restPort), gatewayAddr)
+			if legacy {
+				env = slices.DeleteFunc(env, func(entry string) bool {
+					return strings.HasPrefix(entry, "NURTUO_BUNDLE_SIGNING_KEY_FILE=")
+				})
+			}
 			return controlPlaneService{
 				child: NewChild(ChildSpec{
 					Name: "control-plane", Command: []string{node, entry}, Log: log, MaxRestarts: 2,
-					Env: controlPlaneEnv(dsn, cr, int(restPort), gatewayAddr),
+					Env: env,
 				}),
 				probe: HTTPProbe(base),
 			}
 		},
 		Register: registerRealRuntime,
-		Runtime:  runRealRuntime(gatewayAddr),
+		Runtime: func(ctx context.Context, env RuntimeEnv) error {
+			if !legacy {
+				return runRealRuntime(gatewayAddr)(ctx, env)
+			}
+			cfg := standaloneRuntimeConfig(gatewayAddr, env)
+			cfg.TrustedKeys = nil
+			return nrt.Run(ctx, cfg)
+		},
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -207,12 +255,13 @@ func standaloneE2ERun(t *testing.T, node, entry string, dirs DataDirs, dsn, comp
 	}
 	// The in-memory repository starts empty each time. On restart point the new
 	// revision at the first run's digest, which can only be served by the local cache.
-	// With Postgres, redeploy the original revision and let the server derive its digest.
-	if compID == "" || dsn == "" {
+	// With Postgres, read the existing deployment on both restarts.
+	depID := previous.id
+	if depID == "" {
 		sfx := make([]byte, 4)
 		_, _ = rand.Read(sfx)
 		comp := call(http.MethodPost, "v1/components", map[string]any{"name": "e2e-" + hex.EncodeToString(sfx), "kind": "flow"}, http.StatusCreated)
-		compID = comp["id"].(string)
+		compID := comp["id"].(string)
 		revision := map[string]any{"content": json.RawMessage(`{
 			"schema":"nurtuo.flow/v1","id":"standalone-e2e","name":"Standalone E2E","revision":1,
 			"steps":[{"id":"start","kind":"start","config":{"type":"manual"}},
@@ -223,21 +272,26 @@ func standaloneE2ERun(t *testing.T, node, entry string, dirs DataDirs, dsn, comp
 			revision["digest"] = digest
 		}
 		call(http.MethodPost, "v1/components/"+compID+"/revisions", revision, http.StatusCreated)
+		dep := call(http.MethodPost, "v1/deployments", map[string]any{"componentId": compID, "revision": 1, "runtimeId": standaloneRuntimeID}, http.StatusAccepted)
+		depID = dep["deployment"].(map[string]any)["id"].(string)
 	}
-	dep := call(http.MethodPost, "v1/deployments", map[string]any{"componentId": compID, "revision": 1, "runtimeId": standaloneRuntimeID}, http.StatusAccepted)
-	depID := dep["deployment"].(map[string]any)["id"].(string)
 
-	var status, message string
+	wantStatus := "running"
+	if legacy {
+		wantStatus = "failed"
+	}
+	var status, message, updatedAt string
 	for end := time.Now().Add(30 * time.Second); time.Now().Before(end); time.Sleep(100 * time.Millisecond) {
 		got := call(http.MethodGet, "v1/deployments/"+depID, nil, http.StatusOK)
 		status, _ = got["status"].(string)
 		message, _ = got["message"].(string)
-		if status == "failed" || status == "running" {
+		updatedAt, _ = got["updatedAt"].(string)
+		if status == wantStatus && updatedAt != "" && updatedAt != previous.updatedAt {
 			break
 		}
 	}
-	if status != "running" {
-		t.Fatalf("deployment status %q, want running (message %q)\nlog:\n%s", status, message, log)
+	if status != wantStatus || updatedAt == "" || updatedAt == previous.updatedAt {
+		t.Fatalf("deployment %s status %q, want a fresh %q report (message %q)\nlog:\n%s", depID, status, wantStatus, message, log)
 	}
 	if strings.Contains(log.String(), "does not match certificate identity") {
 		t.Fatalf("gateway refused the runtime identity\nlog:\n%s", log)
@@ -248,5 +302,5 @@ func standaloneE2ERun(t *testing.T, node, entry string, dirs DataDirs, dsn, comp
 	}
 	_, _, _ = apiCall(ctx, hc, http.MethodPost, base+"v1/auth/logout", jwt, nil)
 	stop()
-	return compID
+	return standaloneE2EDeployment{id: depID, updatedAt: updatedAt}
 }
