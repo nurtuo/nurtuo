@@ -204,3 +204,45 @@ test("HTTP aborts the handler signal when the client disconnects before the resp
   assert.equal(signal.aborted, true);
   assert.deepEqual(await (await fetch(base + "/complete")).json(), { aborted: false });
 });
+
+test("connection PUT accepts the body limit and rejects overflow before changing credentials", async (t) => {
+  const { setup: authSetup, sftpConn } = await import("./auth/test-util.js");
+  const w = authSetup();
+  const { ws } = await w.owner("o@x.io", "ws-a");
+  const session = await w.login("o@x.io");
+  const server = createHttpServer(w.repo, { auth: { handle: w.handle } });
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const base = await listen(server);
+  const url = `${base}/v1/workspaces/${ws.id}/connections/c1`;
+  const headers = {
+    cookie: `__Host-nurtuo_session=${session.cookie}`,
+    "x-nurtuo-csrf": session.csrf,
+    "content-type": "application/json",
+  };
+  const cap = 6 * (4 * 64 * 1024 + 253 + 255 + 4096) + 512;
+  const object = (password: string) => JSON.stringify({ ...sftpConn(), credentials: { password } });
+  const escaped = object("\u0001".repeat(64 * 1024));
+  const atLimit = escaped.padEnd(cap);
+  assert.equal(Buffer.byteLength(atLimit), cap);
+  const response = await fetch(url, { method: "PUT", headers, body: atLimit });
+  assert.equal(response.status, 201);
+  await response.json();
+  const before = await w.connections.get(ws.id, "c1");
+  const overflow = object("replacement").padEnd(cap + 1);
+  for (const declaredLength of [true, false]) {
+    const status = await new Promise<number | undefined>((resolve, reject) => {
+      const req = request(url, {
+        method: "PUT",
+        headers: { ...headers, ...(declaredLength ? { "content-length": cap + 1 } : { "transfer-encoding": "chunked" }) },
+      }, (res) => {
+        res.resume();
+        resolve(res.statusCode);
+      });
+      req.on("error", reject);
+      req.end(overflow);
+    });
+    assert.equal(status, 413);
+    assert.deepEqual(await w.connections.get(ws.id, "c1"), before);
+    assert.equal((await w.secrets.list(ws.id)).length, 1);
+  }
+});

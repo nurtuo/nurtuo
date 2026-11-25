@@ -8,7 +8,7 @@ async function world() {
   const w = setup();
   const { ws } = await w.owner("o@x.io", "ws-a");
   const owner = await w.login("o@x.io");
-  const auth = { cookie: owner.cookie, csrf: owner.csrf };
+  const auth = { cookie: owner.cookie, csrf: owner.csrf, ip: "127.0.0.1" };
   const base = `/v1/workspaces/${ws.id}`;
   const put = (body: unknown) => w.call("PUT", `${base}/connections/c1`, { ...auth, body });
   const get = () => w.call("GET", `${base}/connections/c1`, auth);
@@ -75,6 +75,11 @@ test("a single matching known_hosts key is converted to a fingerprint", async ()
   const line = `sftp.example.com ssh-ed25519 ${publicKey.toString("base64")}`;
   const ambiguous = await put(sftpConn({ knownHosts: `${line}\n${line}` }));
   assert.equal(j(ambiguous).error.code, "known_hosts_ambiguous");
+  for (const [algorithm, blob] of [["ssh-ed25519", publicKey.subarray(0, -1)], ["ssh-rsa", publicKey]] as const) {
+    const invalid = await put(sftpConn({ knownHosts: `sftp.example.com ${algorithm} ${blob.toString("base64")}` }));
+    assert.equal(invalid.status, 400);
+    assert.equal(j(invalid).error.code, "known_hosts_ambiguous");
+  }
   const result = await put(sftpConn({ knownHosts: line }));
   assert.equal(result.status, 201);
   assert.equal(j(result).settings.knownHosts, undefined);
@@ -121,5 +126,20 @@ test("ambiguous write outcomes preserve the prior or committed credential genera
   const resolved = await get();
   assert.equal(resolved.status, 200);
   assert.equal(j(resolved).secrets.password, "set");
+  assert.equal((await secrets.list(ws.id)).length, 1);
+});
+
+test("an audit failure preserves the prior connection and credential", async (t) => {
+  const { authRepo, put, connections, secrets, ws } = await world();
+  assert.equal((await put(sftpConn())).status, 201);
+  const before = (await connections.get(ws.id, "c1"))!;
+  const prior = String(before.settings.password).slice(9);
+  const audit = t.mock.method(authRepo, "appendAudit", async () => { throw new Error("audit unavailable"); });
+  const response = await put({ connector: "sftp", settings: { port: 2222 }, credentials: { password: "replacement" } });
+  assert.equal(response.status, 500);
+  assert.equal(j(response).error.code, "audit_unavailable");
+  assert.equal(audit.mock.callCount(), 1);
+  assert.deepEqual(await connections.get(ws.id, "c1"), before);
+  assert.equal(await secrets.has(ws.id, prior), true);
   assert.equal((await secrets.list(ws.id)).length, 1);
 });

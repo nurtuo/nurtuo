@@ -9,7 +9,7 @@ test("only a session with CSRF over trusted transport can write credentials, and
   const owner = await w.login("o@x.io");
   const { token } = await w.member(ws.id, "ed@x.io", "editor");
   const path = `/v1/workspaces/${ws.id}/connections/c1`;
-  const auth = { cookie: owner.cookie, csrf: owner.csrf };
+  const auth = { cookie: owner.cookie, csrf: owner.csrf, ip: "127.0.0.1" };
   const body = sftpConn();
   const put = (options: Parameters<typeof w.call>[2]) => w.call("PUT", path, { body, ...options });
   assert.equal((await put({ token: token.raw })).status, 403);
