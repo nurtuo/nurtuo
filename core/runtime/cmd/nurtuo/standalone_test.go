@@ -463,3 +463,29 @@ func TestControlPlaneEnvWiresGatewayAndAuth(t *testing.T) {
 		}
 	}
 }
+
+func TestPublishSigningKeyWithoutHardLinks(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bundle-signing.key")
+	staged := filepath.Join(dir, "staged")
+	for _, seed := range []string{"complete first seed", "complete second seed"} {
+		if err := os.WriteFile(staged, []byte(seed), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		err := publishSigningKey(staged, path)
+		if seed == "complete first seed" {
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Lstat(staged); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("publisher did not move staged file: %v", err)
+			}
+		} else if !errors.Is(err, os.ErrExist) {
+			t.Fatalf("second publication returned %v", err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil || string(got) != "complete first seed" {
+			t.Fatalf("published file did not preserve the complete first seed: %v", err)
+		}
+	}
+}

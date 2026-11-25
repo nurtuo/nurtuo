@@ -192,7 +192,7 @@ func loadOrGenSigningKey(path string) (string, error) {
 	if err := errors.Join(writeErr, f.Close()); err != nil {
 		return "", err
 	}
-	if err := os.Link(f.Name(), path); errors.Is(err, os.ErrExist) {
+	if err := publishSigningKey(f.Name(), path); errors.Is(err, os.ErrExist) {
 		return readBundlePublicKey(path)
 	} else if err != nil {
 		return "", err

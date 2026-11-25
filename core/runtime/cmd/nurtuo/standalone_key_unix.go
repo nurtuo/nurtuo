@@ -5,7 +5,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"golang.org/x/sys/unix"
 	"os"
 	"syscall"
 )
@@ -33,4 +35,29 @@ func checkStandaloneOwner(path string, info os.FileInfo) error {
 		return fmt.Errorf("%s: must be owned by the effective user", path)
 	}
 	return nil
+}
+
+// Serialize the existence check and rename across processes on volumes without
+// hard links. Keep the lock file in place so every caller locks the same inode.
+func publishSigningKey(staged, path string) error {
+	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = lock.Close() }()
+	for {
+		err = unix.Flock(int(lock.Fd()), unix.LOCK_EX)
+		if !errors.Is(err, unix.EINTR) {
+			break
+		}
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := os.Lstat(path); err == nil {
+		return os.ErrExist
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return os.Rename(staged, path)
 }
