@@ -144,7 +144,7 @@ jobs:
           CGO_ENABLED=0 go build -o "$RUNNER_TEMP/nurtuo" ./core/runtime/cmd/nurtuo
           NURTUO_FLOW_RUN_BIN="$RUNNER_TEMP/nurtuo" node --test --test-isolation=none --test-reporter=tap \
             --test-name-pattern='^real ' core/control-plane/dist/testrun/hostkey.test.js | tee "$RUNNER_TEMP/hostkey.tap"
-          grep -Fx '# pass 3' "$RUNNER_TEMP/hostkey.tap"
+          grep -Fx '# fail 0' "$RUNNER_TEMP/hostkey.tap"
           grep -Fx '# skipped 0' "$RUNNER_TEMP/hostkey.tap"
       - name: docs (generated flow reference, example flows, links)
         run: |

@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/nurtuo/nurtuo/core/runtime/internal/engine/docs"
 )
@@ -60,7 +61,14 @@ type Evaluator interface {
 // BasicEvaluator supports: true/false, `<operand> <op> <operand>` with op in == != < <= > >=, and
 // `!<expr>`. Operands: 'str' or "str" literals, numbers, doc.id, doc.props.NAME, process.props.NAME
 // (missing properties are the empty string). Templates substitute {{operand}}.
-type BasicEvaluator struct{}
+type BasicEvaluator struct{ templateBytes *atomic.Int64 }
+
+// NewBoundedEvaluator limits the total bytes expanded by templates in one execution.
+func NewBoundedEvaluator(maxBytes int64) BasicEvaluator {
+	budget := new(atomic.Int64)
+	budget.Store(maxBytes)
+	return BasicEvaluator{templateBytes: budget}
+}
 
 func (BasicEvaluator) Condition(expr string, d *docs.Document, p *Process) (bool, error) {
 	e := strings.TrimSpace(expr)
@@ -98,24 +106,46 @@ func (BasicEvaluator) Condition(expr string, d *docs.Document, p *Process) (bool
 	return b, nil
 }
 
-func (BasicEvaluator) Template(t string, d *docs.Document, p *Process) (string, error) {
+func (e BasicEvaluator) Template(t string, d *docs.Document, p *Process) (string, error) {
 	var sb strings.Builder
+	appendText := func(text string) error {
+		if budget := e.templateBytes; budget != nil {
+			size := int64(len(text))
+			for {
+				remaining := budget.Load()
+				if size > remaining {
+					return ErrReturnLimit
+				}
+				if budget.CompareAndSwap(remaining, remaining-size) {
+					break
+				}
+			}
+		}
+		sb.WriteString(text)
+		return nil
+	}
 	for {
 		i := strings.Index(t, "{{")
 		if i < 0 {
-			sb.WriteString(t)
+			if err := appendText(t); err != nil {
+				return "", err
+			}
 			return sb.String(), nil
 		}
 		j := strings.Index(t[i:], "}}")
 		if j < 0 {
 			return "", fmt.Errorf("template: unterminated {{ in %q", t)
 		}
-		sb.WriteString(t[:i])
+		if err := appendText(t[:i]); err != nil {
+			return "", err
+		}
 		v, err := operand(strings.TrimSpace(t[i+2:i+j]), d, p)
 		if err != nil {
 			return "", err
 		}
-		sb.WriteString(v)
+		if err := appendText(v); err != nil {
+			return "", err
+		}
 		t = t[i+j+2:]
 	}
 }

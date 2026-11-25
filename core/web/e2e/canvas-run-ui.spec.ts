@@ -37,13 +37,18 @@ async function mockApi(page: Page, over: Partial<Mock> = {}): Promise<Mock> {
     }
     const c = /\/connections\/([^/]+)$/.exec(pathname);
     if (c && req.method() === "PUT") {
-      const b = req.postDataJSON() as { connector: string; settings: Record<string, unknown>; credentials?: { password?: string } };
+      const b = req.postDataJSON() as { connector: string; settings: Record<string, unknown>; credentials?: Record<string, string | null> };
       m.connectionPuts.push(b);
       const index = m.connections.findIndex((item) => item.id === c[1]);
       const previous = m.connections[index];
       const settings = { ...(previous?.settings as object | undefined), ...b.settings };
-      if (b.credentials?.password) settings.password = "secret://server-assigned";
-      const connection = { id: c[1], connector: b.connector, settings, secrets: { password: "set" }, updatedAt: "now" };
+      const secrets = { ...previous?.secrets as Record<string, string> | undefined };
+      for (const [field, value] of Object.entries(b.credentials ?? {})) {
+        if (value === null) delete secrets[field];
+        else secrets[field] = "set";
+      }
+      if (b.connector === "sftp" && b.credentials?.password) settings.password = "secret://server-assigned";
+      const connection = { id: c[1], connector: b.connector, settings, secrets, updatedAt: "now" };
       m.connections.splice(index < 0 ? m.connections.length : index, index < 0 ? 0 : 1, connection);
       return json(connection);
     }
@@ -268,4 +273,55 @@ test("TOFU stores nothing until Trust", async ({ page }) => {
   await expect(d.locator('[data-connection="rebex-demo"]')).toBeVisible();
   expect(m.connections[0]?.settings.hostKeyPolicy).toBe("fingerprint");
   expect(errors).toEqual([]);
+});
+
+test("editing HTTP authentication clears stale credentials and clears the token after save", async ({ page }) => {
+  const m = await mockApi(page, { connections: [{
+    id: "web", connector: "http", settings: { baseUrl: "https://example.com", auth: { type: "basic", username: "demo" } },
+    secrets: { password: "set" },
+  }] });
+  await open(page);
+  await login(page);
+  await page.getByRole("button", { name: "Connections" }).click();
+  const d = page.getByRole("dialog", { name: "Connections" });
+  await d.locator('[data-connection="web"]').click();
+  await expect(d.getByLabel("baseUrl")).toHaveValue("https://example.com");
+  await expect(d.getByLabel("username")).toHaveValue("demo");
+  await expect(d.getByLabel("password")).toHaveValue("");
+  await d.getByLabel("password").fill("draft-password");
+  await d.getByLabel("type", { exact: true }).selectOption("bearer");
+  await d.getByLabel("token").fill("draft-token");
+  await d.getByLabel("type", { exact: true }).selectOption("basic");
+  await expect(d.getByLabel("password")).toHaveValue("");
+  await d.getByLabel("type", { exact: true }).selectOption("bearer");
+  await expect(d.getByLabel("token")).toHaveValue("");
+  await d.getByLabel("token").fill("replacement-token");
+  await d.getByRole("button", { name: "Save connection" }).click();
+  await expect(d.locator('[data-connection="web"]')).toContainText("token: set");
+  await expect(d.getByLabel("token")).toHaveValue("");
+  expect(m.connectionPuts).toEqual([{
+    connector: "http", settings: { baseUrl: "https://example.com", auth: { type: "bearer" } },
+    credentials: { token: "replacement-token", password: null },
+  }]);
+});
+
+test("editing PostgreSQL prefills settings and explicitly removes the stored password", async ({ page }) => {
+  const settings = { host: "db.example.com", port: 5433, database: "catalog", user: "reader", sslMode: "verify-full" };
+  const m = await mockApi(page, { connections: [{ id: "db", connector: "postgres", settings, secrets: { password: "set" } }] });
+  await open(page);
+  await login(page);
+  await page.getByRole("button", { name: "Connections" }).click();
+  const d = page.getByRole("dialog", { name: "Connections" });
+  await d.locator('[data-connection="db"]').click();
+  await expect(d.getByLabel("host", { exact: true })).toHaveValue(settings.host);
+  await expect(d.getByLabel("port", { exact: true })).toHaveValue("5433");
+  await expect(d.getByLabel("database")).toHaveValue(settings.database);
+  await expect(d.getByLabel("sslMode")).toHaveValue(settings.sslMode);
+  await expect(d.getByLabel("password", { exact: true })).toHaveValue("");
+  const removePassword = d.getByLabel("Remove stored password");
+  await removePassword.check();
+  await expect(d.getByLabel("password", { exact: true })).toBeDisabled();
+  await d.getByRole("button", { name: "Save connection" }).click();
+  await expect(removePassword).toHaveCount(0);
+  expect(m.connectionPuts).toEqual([{ connector: "postgres", settings, credentials: { password: null } }]);
 });

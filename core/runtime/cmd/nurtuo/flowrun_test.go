@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -545,4 +546,43 @@ func TestFlowRunErrorMessages(t *testing.T) {
 			t.Fatalf("stderr = %q", errs)
 		}
 	})
+}
+
+func TestFlowRunTemplateExpansionLimit(t *testing.T) {
+	for _, kind := range []string{"message", "setProperties"} {
+		t.Run(kind, func(t *testing.T) {
+			template := strings.Repeat("{{doc.props.value}}", 8192)
+			config := map[string]any{"template": template}
+			if kind == "setProperties" {
+				config = map[string]any{"properties": []any{map[string]string{"name": "expanded", "value": template, "scope": "document"}}}
+			}
+			raw, err := json.Marshal(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := `{"schema":"nurtuo.flow/v1","id":"example","name":"Example","revision":1,"steps":[
+			  {"id":"start","kind":"start","config":{"type":"manual"}},
+			  {"id":"expand","kind":"` + kind + `","config":` + string(raw) + `},
+			  {"id":"done","kind":"returnDocuments","config":{}}
+			],"edges":{"start:default":"expand","expand:default":"done"}}`
+			file := writeTemp(t, t.TempDir(), "flow.json", f)
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			code, out, stderr := runFlow(t, nil, file, "--json", "--max-output-bytes", "65536", "--set", "value="+strings.Repeat("x", 4096))
+			runtime.ReadMemStats(&after)
+			if allocated := after.TotalAlloc - before.TotalAlloc; allocated >= 16<<20 {
+				t.Fatalf("allocated %d bytes for a rejected 32 MiB expansion", allocated)
+			}
+			var result struct {
+				Documents []json.RawMessage
+				Error     struct{ Code string }
+			}
+			if err := json.Unmarshal([]byte(stderr), &result); err != nil {
+				t.Fatalf("code=%d stdout=%q stderr=%q: %v", code, out, stderr, err)
+			}
+			if code != exitExec || result.Error.Code != "output_too_large" || out != "" || len(result.Documents) != 0 {
+				t.Fatalf("code=%d stdout=%q stderr=%q", code, out, stderr)
+			}
+		})
+	}
 }
