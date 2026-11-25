@@ -42,6 +42,7 @@ test("restoration and sign-in cannot overlap, and sign-in can retry", async ({ p
   await expect(button).toBeDisabled();
   releaseRestore.resolve();
   await expect(button).toBeEnabled();
+  await expect(page.getByRole("alert")).toContainText("Could not restore your session");
   await page.getByLabel("Email").fill(me.user.email);
   await page.getByLabel("Password").fill("test-password");
   await button.click();
@@ -57,6 +58,17 @@ test("restoration and sign-in cannot overlap, and sign-in can retry", async ({ p
   await workspace.selectOption("two");
   await expect(workspace).toHaveValue("two");
   expect(loginCount).toBe(2);
+});
+
+test("a session without workspaces can still log out", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("nurtuo.cp.session", "1"));
+  await page.route("**/v1/auth/me", (route) => route.fulfill({ json: { ...me, workspaces: [] } }));
+  await page.route("**/v1/auth/logout", (route) => route.fulfill({ status: 204 }));
+  await page.goto("/");
+  await expect(page.getByText("No workspaces available")).toBeVisible();
+  await expect(page.getByLabel("Workspace")).toHaveCount(0);
+  await page.getByRole("button", { name: "Log out" }).click();
+  await expect(page.getByRole("button", { name: "Sign in" })).toBeEnabled();
 });
 
 test("reload restores CSRF and logout retains the session until revocation succeeds", async ({ page }) => {

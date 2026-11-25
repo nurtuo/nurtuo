@@ -29,6 +29,7 @@ export function App() {
 
   const cp = useMemo(() => new ControlPlane(), []);
   const [restoring, setRestoring] = useState(() => Boolean(localStorage.getItem(SESSION_HINT)));
+  const [restoreError, setRestoreError] = useState<string | null>(null);
   const signingIn = useRef(false);
   const restore = useRef<ReturnType<ControlPlane["me"]> | null>(null);
   const [session, setSession] = useState<Session | null>(null);
@@ -55,7 +56,7 @@ export function App() {
     restore.current.then((me) => {
       if (active) me ? enter(me) : leave();
     }, () => {
-      // A failed probe leaves sign-in available and preserves the reload hint.
+      if (active) setRestoreError("Could not restore your session. Try signing in again.");
     }).finally(() => { if (active) setRestoring(false); });
     return () => { active = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -64,6 +65,7 @@ export function App() {
   const onLogin = async (email: string, password: string): Promise<string | null> => {
     if (restoring || signingIn.current) return null;
     signingIn.current = true;
+    setRestoreError(null);
     try {
       const me = await cp.login(email, password);
       if (!me) return "Sign-in failed";
@@ -137,6 +139,7 @@ export function App() {
         <span className="sep" />
         <LoginBar session={session} workspaceId={workspaceId} restoring={restoring} onLogin={onLogin} onLogout={onLogout}
           onWorkspace={changeWorkspace} />
+        {restoreError && <span className="err" role="alert">{restoreError}</span>}
         <input ref={fileRef} type="file" accept="application/json,.json" hidden
           onChange={(e) => { const f = e.target.files?.[0]; if (f) void onLoad(f); e.target.value = ""; }} />
         {loadError && <span className="err">{loadError}</span>}
