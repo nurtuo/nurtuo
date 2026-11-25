@@ -280,11 +280,15 @@ Three phases (D13), each shippable on its own. Component names exist today unles
    tightened on Unix. On Windows, see D11.
 2. `localBootstrapper.Bootstrap` creates or loads `<secrets>/bundle-signing.key` with a *new*
    `loadOrGenSigningKey(path)`:
+   - On Unix, require a real secrets directory owned by the effective user with mode `0700`
+     and a regular signing key owned by that user with mode `0600`. Windows uses the
+     standalone private DACL and ownership checks.
    - If the file exists, read it and `bundle.DecodePrivateKey`. A corrupt file fails bootstrap
      with "bundle-signing.key is invalid; restore it from backup or delete it to generate a new
      key". It is never silently regenerated, because silent regeneration would be a rotation (D3).
-   - If the file is missing, `bundle.GenerateKey`, then write `bundle.EncodePrivateKey` with
-     `O_CREATE|O_EXCL`, mode `0600`.
+   - If the file is missing, write and sync a private temporary seed in the same directory.
+     Publish it atomically without replacing a concurrent winner, then use the winning key.
+     Publication works on volumes without hard-link support.
    - `Credentials` gains `BundleSigningKeyFile` (path) and `BundlePublicKey` (hex,
      `bundle.EncodePublicKey`). The key bytes are never logged.
 3. `controlPlaneEnv` appends `NURTUO_BUNDLE_SIGNING_KEY_FILE=<path>` (D5).
@@ -422,8 +426,8 @@ and `service install` will default to `trusted_keys`. #61 does not change `Signe
 - **Authorisation.** `FetchArtifact` uses the mTLS identity (`peerKey`, as `connect` does) and
   serves only digests in that runtime's current desired state. Unknown and foreign digests get
   the same `NOT_FOUND`. A compromised runtime cannot download another runtime's flows.
-- **Key handling.** `bundle-signing.key` lives in `secrets/` (`0700`), file mode `0600`, created
-  with `O_EXCL`, never logged; only the key id is logged. It is never committed, and tests derive
+- **Key handling.** `bundle-signing.key` lives in `secrets/` (`0700`), file mode `0600`, published
+  atomically with create-once semantics, never logged; only the key id is logged. It is never committed, and tests derive
   keys in-process. The control plane reads it from a path, not from the env value itself, so the
   key does not appear in `/proc/<pid>/environ` or `ps e`. No rotation (D3). Replacing the key
   makes existing cached bundles fail verification; they are refetched.
@@ -496,7 +500,9 @@ Exit: `nurtuo standalone` deploys reach `running` with no manual step; key and d
 12. `controlPlaneEnv` plus `standaloneRuntimeConfig`. Verified by an extended
     `TestControlPlaneEnvWiresGatewayAndAuth` and a new `TestStandaloneRuntimeConfig`.
 13. Flip `TestStandaloneE2EHandshakeAndDeploy` to expect `running` with a real flow and the
-    archive cached in `bundles/`, and add a restart leg (same key, same digest, cache hit).
+    archive cached in `bundles/`. With PostgreSQL, create a failed deployment with signing
+    disabled, then upgrade and verify the same deployment reaches `running` without a new
+    deploy POST. Restart again and check the same key, digest and untouched cache file.
     Remove `TODO(#64)`. Update `operations.md` (standalone limitation removed, data-dir table)
     and the release note. Verify locally with
     `cd core/runtime && go test -race ./cmd/nurtuo -run TestStandaloneE2E` and
