@@ -10,10 +10,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	httpconnector "github.com/nurtuo/nurtuo/connectors/http"
+	connectorv1 "github.com/nurtuo/nurtuo/sdk/go/gen/nurtuo/connector/v1"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 func TestPinnedDialUsesOnlyExactVettedDestination(t *testing.T) {
@@ -100,5 +104,54 @@ func TestPinnedHTTPDialsVettedIPAndKeepsHost(t *testing.T) {
 	}
 	if got := arrived.Load(); got != 2 {
 		t.Errorf("got %d requests; want one GET and one redirect response", got)
+	}
+}
+
+func TestPinnedPostgresTestDoesNotConnectToUnvettedPeer(t *testing.T) {
+	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }()
+	port := listener.Addr().(*net.TCPAddr).Port
+	plan, err := json.Marshal(dialPlan{Postgres: map[string]string{
+		net.JoinHostPort("vetted.test", strconv.Itoa(port)): "192.0.2.10",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NURTUO_TEST_RUN_DIAL_PLAN", string(plan))
+	registry, err := pinnedConnectors()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := registry.New("postgres")
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings, err := structpb.NewStruct(map[string]any{
+		"host": "127.0.0.1", "port": port, "database": "db", "user": "user",
+		"password": "fixture-password", "sslMode": "disable", "connectTimeoutSeconds": 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := c.Test(t.Context(), &connectorv1.TestRequest{
+		Connection: &connectorv1.ConnectionConfig{Settings: settings},
+	})
+	if err != nil || result.GetOk() || result.GetDiagnostic() != errUnpinnedDial.Error() {
+		t.Errorf("expected dial policy refusal, got %v, %v", result, err)
+	}
+	if err := listener.SetDeadline(time.Now().Add(50 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := listener.AcceptTCP()
+	if err == nil {
+		_ = conn.Close()
+		t.Fatal("unvetted peer received a connection")
+	}
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		t.Fatal(err)
 	}
 }

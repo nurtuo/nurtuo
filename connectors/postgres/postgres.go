@@ -100,18 +100,9 @@ func (c *Connector) pool(ctx context.Context, cc *connectorv1.ConnectionConfig) 
 	key := cfg.key()
 	e, ok := c.pools[key]
 	if !ok {
-		pc, err := cfg.poolConfig()
+		p, err := c.openPool(ctx, cfg)
 		if err != nil {
 			return nil, cfg, nil, err
-		}
-		if c.ConfigurePool != nil {
-			if err := c.ConfigurePool(pc); err != nil {
-				return nil, cfg, nil, errors.New(redact(err.Error(), cfg.Password))
-			}
-		}
-		p, err := pgxpool.NewWithConfig(ctx, pc)
-		if err != nil {
-			return nil, cfg, nil, errors.New(redact(err.Error(), cfg.Password))
 		}
 		e = &poolEntry{pool: p}
 		c.pools[key] = e
@@ -153,11 +144,16 @@ func (c *Connector) evictLocked(keep string) {
 	}
 }
 
-// ephemeralPool opens an uncached pool (used by Test); the caller must Close it.
-func ephemeralPool(ctx context.Context, cfg *Config) (*pgxpool.Pool, error) {
+// openPool applies the host policy before either Test or Execute can connect.
+func (c *Connector) openPool(ctx context.Context, cfg *Config) (*pgxpool.Pool, error) {
 	pc, err := cfg.poolConfig()
 	if err != nil {
 		return nil, err
+	}
+	if c.ConfigurePool != nil {
+		if err := c.ConfigurePool(pc); err != nil {
+			return nil, errors.New(redact(err.Error(), cfg.Password))
+		}
 	}
 	p, err := pgxpool.NewWithConfig(ctx, pc)
 	if err != nil {
@@ -240,7 +236,7 @@ func (c *Connector) Test(ctx context.Context, req *connectorv1.TestRequest) (*co
 	}
 	tctx, cancel := context.WithTimeout(ctx, time.Duration(cfg.ConnectTimeoutS)*time.Second)
 	defer cancel()
-	p, err := ephemeralPool(tctx, cfg)
+	p, err := c.openPool(tctx, cfg)
 	if err != nil {
 		return &connectorv1.TestResponse{Ok: false, Diagnostic: redact(err.Error(), cfg.Password)}, nil
 	}
