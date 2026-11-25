@@ -85,6 +85,7 @@ func New(o Options) (*Backend, error) {
 		DontListen: true,
 		JetStream:  true,
 		StoreDir:   dir,
+		SyncAlways: o.StoreDir != "",
 		NoLog:      true,
 		NoSigs:     true,
 	})
