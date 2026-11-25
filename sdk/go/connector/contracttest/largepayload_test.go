@@ -17,6 +17,8 @@ import (
 type sink struct {
 	connector.Connector
 	buffer bool
+	// failFirst sends a FAILURE result before the final SUCCESS for the same document.
+	failFirst bool
 }
 
 func (s sink) Execute(st connectorv1.ConnectorService_ExecuteServer) error {
@@ -38,6 +40,13 @@ func (s sink) Execute(st connectorv1.ConnectorService_ExecuteServer) error {
 		}
 	}
 	_ = held
+	if s.failFirst {
+		if err := st.Send(&connectorv1.ExecuteResponse{Msg: &connectorv1.ExecuteResponse_Result{
+			Result: &connectorv1.DocumentResult{DocumentId: id, Status: connectorv1.DocumentStatus_DOCUMENT_STATUS_FAILURE},
+		}}); err != nil {
+			return err
+		}
+	}
 	return st.Send(&connectorv1.ExecuteResponse{Msg: &connectorv1.ExecuteResponse_Result{
 		Result: &connectorv1.DocumentResult{DocumentId: id, Status: connectorv1.DocumentStatus_DOCUMENT_STATUS_SUCCESS},
 	}})
@@ -66,5 +75,13 @@ func TestLargePayloadMeasuresHeapGrowth(t *testing.T) {
 				t.Errorf("growth %d bytes, limit %d: over limit = %v, want %v", growth, c.MaxHeapGrowth, got, tc.overLimit)
 			}
 		})
+	}
+}
+
+func TestLargePayloadRejectsDuplicateResults(t *testing.T) {
+	o := &Options{Timeout: 30 * time.Second, New: func(testing.TB) connector.Connector { return sink{failFirst: true} }}
+	c := LargePayloadCase{}.withDefaults()
+	if _, _, err := streamLargePayload(t, o, c); err == nil {
+		t.Fatal("FAILURE followed by SUCCESS for one document was accepted, want an error")
 	}
 }

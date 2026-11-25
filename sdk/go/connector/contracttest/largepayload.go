@@ -4,6 +4,7 @@ package contracttest
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"runtime"
 	"sync"
@@ -190,7 +191,10 @@ func streamLargePayload(t *testing.T, o *Options, c LargePayloadCase) (*connecto
 		return nil, 0, err
 	}
 
-	var result *connectorv1.DocumentResult
+	var (
+		result  *connectorv1.DocumentResult
+		results int
+	)
 	for {
 		resp, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
@@ -201,6 +205,11 @@ func streamLargePayload(t *testing.T, o *Options, c LargePayloadCase) (*connecto
 			return nil, 0, err
 		}
 		if r := resp.GetResult(); r != nil && r.GetDocumentId() == largeDocID {
+			results++
+			if results > 1 {
+				finish()
+				return nil, 0, fmt.Errorf("more than one DocumentResult for the large document (second: %v %s)", r.GetStatus(), r.GetMessage())
+			}
 			result = r
 		}
 	}
