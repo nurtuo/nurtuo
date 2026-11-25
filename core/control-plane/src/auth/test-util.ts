@@ -12,6 +12,7 @@ import { testRunEndpoints } from "../testrun/routes.js";
 import { TestRunner, type TestRunDeps } from "../testrun/runner.js";
 import { RunLimiter } from "../testrun/semaphore.js";
 import { generateApiToken } from "./crypto.js";
+import type { InstanceConfig } from "./instance.js";
 import { createAuthHook, type AuthHookOptions } from "./middleware.js";
 import { MemoryAuthRepository } from "./memory-repository.js";
 import { ROLE_PERMISSIONS, type Permission, type Role } from "./permissions.js";
@@ -20,6 +21,8 @@ import { AuthService, SESSION_COOKIE, type AuthServiceOptions } from "./service.
 export const PASSWORD = "correct horse battery staple";
 export interface CallOpts { body?: unknown; headers?: Record<string, string>; query?: Record<string, string>; token?: string; cookie?: string; csrf?: string; ws?: string; ip?: string }
 export const j = (r: ApiResponse) => r.body as any;
+/** Instance config with these emails as instance admins (mode "admins"); pass to setup({ service: { instance } }). */
+export const adminsConfig = (...emails: string[]): InstanceConfig => ({ admins: new Set(emails.map((e) => e.trim().toLowerCase())), workspaceCreate: "admins" });
 
 /** Absolute path of the fake nurtuo binary (a Node script; tests run from dist, the script stays in src). */
 export const FAKE_NURTUO = fileURLToPath(new URL("../../src/testrun/testdata/fake-nurtuo.mjs", import.meta.url));
