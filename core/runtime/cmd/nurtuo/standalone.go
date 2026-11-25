@@ -160,7 +160,7 @@ func runStandalone(args []string) int {
 		return 2
 	}
 	dirs := NewDataDirs(*dataDir)
-	if err := dirs.Ensure(); err != nil {
+	if err := ensureDataDirs(dirs, os.Stderr); err != nil {
 		fmt.Fprintln(os.Stderr, "standalone:", err)
 		return 1
 	}

@@ -17,6 +17,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/nurtuo/nurtuo/core/runtime/internal/secrets"
 )
 
 // standaloneRuntimeID is the runtime id of the local runtime of a standalone install. It is sent
@@ -53,7 +55,9 @@ func NewLocalBootstrapper() Bootstrapper { return localBootstrapper{now: time.No
 
 func (b localBootstrapper) Bootstrap(dirs DataDirs) (*Credentials, error) {
 	s := dirs.Secrets
-	if err := os.MkdirAll(s, 0o700); err != nil {
+	// Every bootstrap file is written and read below a verified private directory, so new files
+	// inherit its private DACL on Windows.
+	if _, err := secrets.EnsurePrivateDir(s); err != nil {
 		return nil, err
 	}
 	c := &Credentials{
