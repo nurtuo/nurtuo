@@ -96,6 +96,12 @@ they occur: confirm Rebex's file path for the manual smoke test (Tests), confirm
 the `Secure` cookie on `127.0.0.1` (Gaps #10), and a structured `connection`/`stop` field and a
 `--max-output-bytes` flag in the CLI as later additive follow-ups (Gaps #7, Improvement opportunities).
 
+### D11 follow-up ([#94](https://github.com/nurtuo/nurtuo/issues/94))
+
+Test Run adds HTTP GET and PostgreSQL QUERY. Both use workspace connections, credential
+binding and egress checks at the actual dial. The employee example chains HTTP, PostgreSQL
+and Map.
+
 ## Scope
 
 In scope:
@@ -611,6 +617,12 @@ prerequisite. PR #50 (the `nurtuo flow run` spec) is already on `main`.
 - WHEN `POST .../connections/host-key-scan` is called while the concurrency limit is reached THEN 429.
 
 ## Tests
+
+- HTTP and PostgreSQL connection editor tests cover write-only credentials, HTTP authentication
+  changes and explicit PostgreSQL password removal.
+- The connector step editor binds HTTP GET and PostgreSQL QUERY, removes the previous object type,
+  and preserves editing for unbound legacy steps and workspaces with no connections.
+- Part 3 runs HTTP GET and PostgreSQL QUERY end to end against local fixtures.
 
 Tests ship in the same PR as the code of each phase. Names are proposed; none exist yet.
 Integration and e2e tests create their own fixtures (temp dirs, generated keys, containers, random
