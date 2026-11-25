@@ -198,7 +198,7 @@ func TestQueueMessagesSurviveRuntimeRestart(t *testing.T) {
 	defer cancel()
 	cfg := baseCfg()
 	cfg.StateDir, cfg.BundleDir = t.TempDir(), t.TempDir()
-	const queueName = "jobs.eu"
+	queueName := strings.Repeat("jobs.eu.", 24) + "orders"
 	bundle := `{"flows":[` + flowJSON("jobs", `{"type":"queue","queue":"`+queueName+`"}`) + `]}`
 	bundle = strings.Replace(bundle, `"edges":{"s:default":"r"}`, `"edges":{"s:default":"m","m:default":"r"}`, 1)
 	bundle = strings.Replace(bundle, `{"id":"r"`, `{"id":"m","kind":"message","config":{"template":"seen"}},{"id":"r"`, 1)

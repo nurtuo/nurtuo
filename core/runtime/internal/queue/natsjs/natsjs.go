@@ -12,6 +12,8 @@ package natsjs
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/base32"
 	"errors"
 	"fmt"
@@ -127,7 +129,13 @@ func (b *Backend) cleanup() {
 	}
 }
 
+const maxTokenLen = server.JSMaxNameLen - len("Q__DLQ")
+const identityKey = "nurtuo.identity"
+
 func token(name string) string {
+	if len(name) > maxTokenLen {
+		return hashedToken(name)
+	}
 	// Preserve existing lowercase literal names. Reserve "~" for encoded
 	// names and uppercase "_DLQ" for the dead-letter namespace.
 	if name != "" && !strings.ContainsFunc(name, func(r rune) bool {
@@ -135,8 +143,25 @@ func token(name string) string {
 	}) {
 		return name
 	}
-	return "~" + strings.ToLower(base32.HexEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(name)))
+	encoding := base32.HexEncoding.WithPadding(base32.NoPadding)
+	if 1+encoding.EncodedLen(len(name)) > maxTokenLen {
+		return hashedToken(name)
+	}
+	return "~" + strings.ToLower(encoding.EncodeToString([]byte(name)))
 }
+func hashedToken(name string) string {
+	return fmt.Sprintf("~~%x", sha256.Sum256([]byte(name)))
+}
+
+// Use an independent fingerprint to detect collisions, including after restart.
+// Its size is bounded independently of the original name.
+func identity(name, id string) map[string]string {
+	if !strings.HasPrefix(id, "~~") {
+		return nil
+	}
+	return map[string]string{identityKey: fmt.Sprintf("%x", sha512.Sum512([]byte(name)))}
+}
+
 func streamName(name string) string { return "Q_" + token(name) }
 func dlqStream(name string) string  { return "Q_" + token(name) + "_DLQ" }
 func subject(name string) string    { return "nq." + token(name) }
@@ -161,7 +186,11 @@ func maxDeliveries(d queue.QueueDef) int {
 
 // Ensure creates or updates the queue's streams.
 func (b *Backend) Ensure(_ context.Context, def queue.QueueDef) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	metadata := identity(def.Name, token(def.Name))
 	cfg := &nats.StreamConfig{
+		Metadata: metadata,
 		Name:     streamName(def.Name),
 		Subjects: []string{subject(def.Name)},
 		Storage:  nats.FileStorage,
@@ -186,6 +215,7 @@ func (b *Backend) Ensure(_ context.Context, def queue.QueueDef) error {
 		cfg.Duplicates = 2 * time.Minute
 	}
 	dcfg := &nats.StreamConfig{
+		Metadata: metadata,
 		Name:     dlqStream(def.Name),
 		Subjects: []string{dlqSubject(def.Name)},
 		Storage:  nats.FileStorage,
@@ -193,7 +223,10 @@ func (b *Backend) Ensure(_ context.Context, def queue.QueueDef) error {
 		MaxBytes: -1,
 	}
 	for _, c := range []*nats.StreamConfig{cfg, dcfg} {
-		if _, err := b.js.StreamInfo(c.Name); err == nil {
+		if info, err := b.js.StreamInfo(c.Name); err == nil {
+			if info.Config.Metadata[identityKey] != metadata[identityKey] {
+				return fmt.Errorf("natsjs: stream identity mismatch for %s", c.Name)
+			}
 			// Retention is immutable in JetStream; the other fields can be updated.
 			if _, err := b.js.UpdateStream(c); err != nil && !strings.Contains(err.Error(), "retention") {
 				return fmt.Errorf("natsjs: update stream: %w", err)
@@ -206,15 +239,28 @@ func (b *Backend) Ensure(_ context.Context, def queue.QueueDef) error {
 			return err
 		}
 	}
-	b.mu.Lock()
 	b.defs[def.Name] = def
-	b.mu.Unlock()
 	return nil
 }
 
 // Remove deletes the queue and its dead letter stream.
 func (b *Backend) Remove(_ context.Context, name string) error {
 	b.mu.Lock()
+	defer b.mu.Unlock()
+	if metadata := identity(name, token(name)); metadata != nil {
+		for _, stream := range []string{streamName(name), dlqStream(name)} {
+			info, err := b.js.StreamInfo(stream)
+			if errors.Is(err, nats.ErrStreamNotFound) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if info.Config.Metadata[identityKey] != metadata[identityKey] {
+				return fmt.Errorf("natsjs: stream identity mismatch for %s", stream)
+			}
+		}
+	}
 	for s := range b.subs {
 		if s.name == name {
 			s.stop()
@@ -222,7 +268,6 @@ func (b *Backend) Remove(_ context.Context, name string) error {
 		}
 	}
 	delete(b.defs, name)
-	b.mu.Unlock()
 	for _, s := range []string{streamName(name), dlqStream(name)} {
 		if err := b.js.DeleteStream(s); err != nil && !errors.Is(err, nats.ErrStreamNotFound) {
 			return err
@@ -289,7 +334,7 @@ func (b *Backend) Subscribe(_ context.Context, name string, opts queue.SubOpts, 
 	if durable == "" {
 		durable = "default"
 	}
-	s := &subscription{b: b, name: name, def: def, durable: token(durable), conc: conc, h: h}
+	s := &subscription{b: b, name: name, def: def, durable: token(durable), durableIdentity: identity(durable, token(durable)), conc: conc, h: h}
 	if err := s.attach(); err != nil {
 		return nil, err
 	}
@@ -321,12 +366,13 @@ func (c *orderedConsumer) dispatch(m *nats.Msg, b *Backend) {
 }
 
 type subscription struct {
-	b       *Backend
-	name    string
-	def     queue.QueueDef
-	durable string
-	conc    int
-	h       queue.Handler
+	b               *Backend
+	name            string
+	def             queue.QueueDef
+	durable         string
+	durableIdentity map[string]string
+	conc            int
+	h               queue.Handler
 
 	sub     *nats.Subscription // guarded by b.mu
 	closed  bool               // guarded by b.mu
@@ -346,6 +392,9 @@ func (s *subscription) attach() error {
 	if s.def.Ordering == queue.OrderingPerKey {
 		for other := range s.b.subs {
 			if other.name == s.name && other.durable == s.durable && other.ordered != nil {
+				if other.durableIdentity[identityKey] != s.durableIdentity[identityKey] {
+					return fmt.Errorf("natsjs: consumer identity mismatch for %s", s.durable)
+				}
 				s.sub, s.ordered = other.sub, other.ordered
 				s.b.deliveryMu.Lock()
 				s.ordered.members = append(s.ordered.members, s)
@@ -360,10 +409,12 @@ func (s *subscription) attach() error {
 	switch {
 	case errors.Is(err, nats.ErrConsumerNotFound):
 		info, err = s.b.js.AddConsumer(stream, &nats.ConsumerConfig{
-			Durable: s.durable, DeliverSubject: nats.NewInbox(), DeliverGroup: s.durable,
+			Metadata: s.durableIdentity, Durable: s.durable, DeliverSubject: nats.NewInbox(), DeliverGroup: s.durable,
 			FilterSubject: subject(s.name), AckPolicy: nats.AckExplicitPolicy,
 			AckWait: s.b.ackWait, MaxDeliver: maxDeliveries(s.def), MaxAckPending: s.conc,
 		})
+	case err == nil && info.Config.Metadata[identityKey] != s.durableIdentity[identityKey]:
+		return fmt.Errorf("natsjs: consumer identity mismatch for %s", s.durable)
 	case err == nil && info.Config.DeliverGroup == "":
 		// Upgrade the durable in place to preserve pending messages and ack state.
 		cfg := info.Config
