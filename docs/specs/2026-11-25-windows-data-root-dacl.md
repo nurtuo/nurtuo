@@ -119,11 +119,31 @@ Each phase is one PR (or a stack merged in order), cites this spec, and lands it
 
 ## Compatibility
 
-This applies to Windows standalone installs, including upgrades. Behaviour change: other local users lose read access to the data root and to logs; log readers must use a D2 principal. No breaking change to an API, proto or flag, so no breaking-change gate. Unix unchanged.
+This applies to Windows standalone installs, including upgrades. No API, proto or flag changes, so no breaking-change gate. Unix unchanged. Behaviour changes on Windows, by upgrade case:
+
+- *All installs.* Other local users lose access to the data root, including `logs\` and `runtime\`. Log readers must use a D2 principal (Design step 4).
+- *Default (managed) root.* The first start repairs a too-open tree and prints each tightened path. A foreign owner, a reparse point, a multiply-linked file or a deny ACE stops startup with the path and an `icacls` or `takeown` hint; the operator fixes it and restarts.
+- *Operator root (`NURTUO_DATA_DIR`).* Check-only (D4). A too-open tree stops startup with per-path `icacls` guidance; nothing is changed.
+- *Postgres artifacts.* A runtime tree or cached archive that does not match the committed digest table is replaced from a verified download (Design step 6). An offline host with no verified archive fails startup.
+- *Existing cluster (Design step 7).* A cluster outside the supported standalone state stops startup before any Postgres executable runs. Examples: a parameter outside the allow-list (also tuning ones such as `work_mem`), a `pg_hba.conf` record that `initdb` would not write, or a `standby.signal`, `recovery.signal` or `backup_label` file. A cluster that only the standalone ever touched passes. Recovery: (1) back up `postgres\data`; (2) review the file, line and setting named in the error; (3) remove that setting, record or file, or restore `postgres\data` from a backup you trust; (4) restart, and the gate runs again. Nurtuo never edits the cluster. `docs/operations.md` (phase 4) carries these steps.
 
 ## Security
 
 Private DACLs restrict future access under D2. The Postgres integrity gate covers runtime files and cached archives that predate hardening, and the cluster gate (Design step 7) admits only an allow-listed standalone state, so cluster configuration or recovery files cannot load code, run commands, replicate from another server or open local authentication. Earlier disclosure or tampering with database contents requires separate operator assessment. Preflight fails closed on unsafe paths or ACLs that the selected mode cannot accept or repair. As in the parent spec, path-based use after verification requires protection against replacement through the parent. If an untrusted principal can replace a validated object, hold it and the relevant path components stable with Windows handles during validation and use, or fail closed. Repair stays inside the managed root: it writes only preflight-recorded, re-verified, single-linked objects through their own handles with a non-propagating call (Repair containment).
+
+## Acceptance criteria
+
+- WHEN `nurtuo standalone` has started once on Windows with the default root THEN a second non-admin local user gets `ERROR_ACCESS_DENIED` reading `logs\`, `postgres\data` or `runtime\`, and creating or replacing files in `postgres\runtime` or `postgres\cache` (R1).
+- WHEN those objects are inspected THEN every owner is a D2 principal, every allow ACE names a D2 principal, the root and each repaired or created layout directory has the protected private DACL, and every directory has `OI|CI` D2 grants.
+- WHEN a managed root is too open THEN startup repairs it under Repair containment, prints each tightened path and starts. A second start reports no tightened path.
+- WHEN an operator root is too open, or any root has a foreign owner, a reparse point, a multiply-linked file, an object on another volume or a deny ACE THEN startup exits 1 before any write, naming the path and the fix; ACLs and entries are byte-identical afterwards.
+- WHEN an object is replaced, linked or added between preflight and repair THEN no object outside the preflight record is written, no outside file's DACL changes, and startup stops naming the path.
+- WHEN the data root is repaired THEN `secrets\` and its contents are changed only by `secrets.EnsurePrivateDir`, with #57 behaviour (D6).
+- WHEN the runtime or Postgres creates a file or directory after startup, also one level further down, THEN it carries only inherited D2 ACEs and the second account is denied.
+- WHEN a cached archive or runtime tree does not match the committed digest table THEN no unverified binary runs, on first start or on retry.
+- WHEN an existing `postgres\data` is outside the supported standalone state THEN startup fails before any Postgres executable runs, on first start and on retry, naming the file and setting; WHEN the cluster is a stock standalone cluster THEN it restarts, also after an unclean stop.
+- WHEN the same code runs on Linux or macOS THEN behaviour and tests are unchanged.
+- WHEN #78 is to be closed THEN gates R1-R3 are recorded as passed on a real Windows host.
 
 ## Testing
 
