@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import { request } from "node:http";
 import { createServer, type AddressInfo } from "node:net";
 import { test, type TestContext } from "node:test";
 import { FAKE_NURTUO, flowOf, j, setup, sftpConn } from "../auth/test-util.js";
+import { createHttpServer } from "../api.js";
 import { RunLimiter } from "./semaphore.js";
 
 test("host-key scan checks egress, shares the run limit and persists nothing", async () => {
@@ -50,6 +52,38 @@ test("host-key scan denies API tokens and sessions without CSRF before lookup", 
   assert.equal(lookup.mock.callCount(), 0);
   assert.equal((await w.call("POST", endpoint, { cookie: session.cookie, csrf: session.csrf, body })).status, 200);
   assert.equal(lookup.mock.callCount(), 1);
+});
+
+test("host-key scan body cap: cap is accepted, cap+1 is rejected before lookup or dial", async (t) => {
+  const lookup = t.mock.fn(async () => ["8.8.8.8"]);
+  const w = setup({ testRun: { bin: FAKE_NURTUO, lookup } });
+  const { ws } = await w.owner("scan-cap@x.io", "ws-scan-cap");
+  const session = await w.login("scan-cap@x.io");
+  const server = createHttpServer(w.repo, { auth: { handle: w.handle } });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const url = new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}/v1/workspaces/${ws.id}/connections/host-key-scan`);
+  const headers = { cookie: `__Host-nurtuo_session=${session.cookie}`, "x-nurtuo-csrf": session.csrf, "content-type": "application/json" };
+  const cap = 6 * 253 + 512;
+  const json = JSON.stringify({ host: "sftp.example", port: 22 });
+  const send = (body: string, declaredLength: boolean) => new Promise<number | undefined>((resolve, reject) => {
+    const req = request(url, {
+      method: "POST",
+      headers: { ...headers, ...(declaredLength ? { "content-length": Buffer.byteLength(body) } : { "transfer-encoding": "chunked" }) },
+    }, (res) => { res.resume(); resolve(res.statusCode); });
+    req.on("error", reject);
+    req.end(body);
+  });
+  for (const declaredLength of [true, false]) {
+    const before = lookup.mock.callCount();
+    const atCap = json.padEnd(cap);
+    assert.equal(Buffer.byteLength(atCap), cap);
+    assert.equal(await send(atCap, declaredLength), 200);
+    assert.equal(lookup.mock.callCount(), before + 1);
+    assert.equal(await send(json.padEnd(cap + 1), declaredLength), 413);
+    assert.equal(lookup.mock.callCount(), before + 1);
+  }
 });
 
 async function dialTarget(t: TestContext, host: string, port = 0) {
