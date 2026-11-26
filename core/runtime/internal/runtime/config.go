@@ -29,11 +29,15 @@ type Config struct {
 	ServerName      string `yaml:"server_name,omitempty" json:"server_name,omitempty"` // TLS SNI override
 	LogLevel        string `yaml:"log_level,omitempty" json:"log_level,omitempty"`
 	BundleDir       string `yaml:"bundle_dir,omitempty" json:"bundle_dir,omitempty"` // <digest>.json bundles; empty = placeholder deployer
+	// StateDir is the runtime's private state directory: embedded JetStream data in jetstream/ and
+	// the applied revision in revision. Optional: when unset, queues are in-memory and the revision
+	// is lost on restart (startup warning). Standalone and `service install` always set it.
+	StateDir string `yaml:"state_dir,omitempty" json:"state_dir,omitempty"`
+	// HTTPAddr is the listen address of HTTP-trigger listeners; default "127.0.0.1:0" (random port).
+	HTTPAddr string `yaml:"http_addr,omitempty" json:"http_addr,omitempty"`
 	// TrustedKeys are hex Ed25519 public keys. When set, bundle_dir holds signed <sha256>.bundle
 	// archives, which are digest-checked and signature-verified before use; plain .json bundles
 	// are then NOT accepted.
-	// HTTPAddr is the listen address of HTTP-trigger listeners; default "127.0.0.1:0" (random port).
-	HTTPAddr    string   `yaml:"http_addr,omitempty" json:"http_addr,omitempty"`
 	TrustedKeys []string `yaml:"trusted_keys,omitempty" json:"trusted_keys,omitempty"`
 	// Secrets selects where `secret://name` references in bundle connections are resolved:
 	// {provider: env|dir|encrypted-file, path: ..., key_file: ...}. Default: env (NURTUO_SECRET_<NAME>).
@@ -60,7 +64,7 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
 	dir := filepath.Dir(path)
-	for _, p := range []*string{&c.CertFile, &c.KeyFile, &c.CAFile, &c.Secrets.Path, &c.Secrets.KeyFile} {
+	for _, p := range []*string{&c.CertFile, &c.KeyFile, &c.CAFile, &c.StateDir, &c.Secrets.Path, &c.Secrets.KeyFile} {
 		if *p != "" && !filepath.IsAbs(*p) {
 			*p = filepath.Join(dir, *p)
 		}

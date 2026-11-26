@@ -4,18 +4,39 @@
 // Auth is mandatory. Required: NURTUO_AUTH_SECRET (>=32 bytes; with DATABASE_URL it must be stable
 // across restarts, without it a random per-process secret is used and sessions die on restart).
 // First run: set NURTUO_BOOTSTRAP_EMAIL + NURTUO_BOOTSTRAP_PASSWORD to create the first owner.
+// Workspace creation: NURTUO_INSTANCE_ADMINS (comma-separated emails) plus NURTUO_BOOTSTRAP_EMAIL are
+// instance admins; NURTUO_ALLOW_WORKSPACE_CREATE=admins (default) or any. See docs/auth.md.
 // Escape hatch for local development only: NURTUO_INSECURE_NO_AUTH=1 serves every route unauthenticated.
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createHttpServer, type HandlerOptions } from "./api.js";
-import { AuthService, MemoryAuthRepository, PgAuthRepository, createAuthHook, type AuthRepository } from "./auth/index.js";
+import { AuthService, InstanceConfigError, MemoryAuthRepository, PgAuthRepository, createAuthHook, parseInstanceConfig, type AuthRepository, type InstanceConfig } from "./auth/index.js";
+import { MemoryConnectionRepository, type ConnectionRepository } from "./connections/repository.js";
+import { PgConnectionRepository } from "./connections/pg-repository.js";
+import { ConnectionCoordinator } from "./connections/coordinator.js";
+import { connectionEndpoints } from "./connections/routes.js";
+import { MemorySecretStore } from "./connections/secrets.js";
 import { MemoryRepository } from "./memory-repository.js";
 import { PgRepository, migrate, type Db } from "./pg-repository.js";
 import type { Repository } from "./repository.js";
 
 const insecure = process.env.NURTUO_INSECURE_NO_AUTH === "1";
+
+// Instance config is parsed before any database work; without auth POST /v1/workspaces is unreachable.
+let instance: InstanceConfig | undefined;
+if (!insecure) {
+  try { instance = parseInstanceConfig(process.env); }
+  catch (e) { if (e instanceof InstanceConfigError) { console.error(e.message); process.exit(1); } throw e; }
+  if (instance.workspaceCreate === "any") console.warn("NURTUO_ALLOW_WORKSPACE_CREATE=any: every session user can create a workspace and becomes its owner; control-plane data is not partitioned by workspace yet (#55)");
+  else if (instance.admins.size === 0) console.warn("no instance admins configured (NURTUO_INSTANCE_ADMINS, NURTUO_BOOTSTRAP_EMAIL): POST /v1/workspaces is denied for everyone");
+  else console.log(`instance admins: ${instance.admins.size} configured`);
+}
+
 let repo: Repository = new MemoryRepository();
 let authRepo: AuthRepository = new MemoryAuthRepository();
+let connections: ConnectionRepository = new MemoryConnectionRepository();
+const secrets = new MemorySecretStore();
+const coordinator = new ConnectionCoordinator(); // in-memory only in this slice: values are lost on restart
 if (process.env.DATABASE_URL) {
   const mod = "pg"; // resolved at runtime so the package is optional for tests
   const pg = (await import(mod)) as { default: { Pool: new (o: { connectionString: string }) => Db } };
@@ -23,6 +44,7 @@ if (process.env.DATABASE_URL) {
   await migrate(pool, fileURLToPath(new URL("../migrations", import.meta.url)));
   repo = new PgRepository(pool);
   authRepo = new PgAuthRepository(pool);
+  connections = new PgConnectionRepository(pool);
 }
 
 let opts: HandlerOptions;
@@ -37,12 +59,26 @@ if (insecure) {
     console.warn("NURTUO_AUTH_SECRET not set: using a random per-process secret (sessions are lost on restart).");
   }
   if (secret.length < 32) { console.error("NURTUO_AUTH_SECRET must be at least 32 bytes."); process.exit(1); }
-  const service = new AuthService(authRepo, { secret });
+  const service = new AuthService(authRepo, { secret, instance });
   if (process.env.NURTUO_BOOTSTRAP_EMAIL && process.env.NURTUO_BOOTSTRAP_PASSWORD) {
     await service.bootstrap(process.env.NURTUO_BOOTSTRAP_EMAIL, process.env.NURTUO_BOOTSTRAP_PASSWORD);
     console.log(`bootstrap owner ensured: ${process.env.NURTUO_BOOTSTRAP_EMAIL}`);
   }
-  opts = { auth: createAuthHook({ service, trustProxy: process.env.NURTUO_TRUST_PROXY === "1", onAuditError: (e) => console.error("audit write failed", e) }) };
+  opts = {
+    auth: createAuthHook({
+      service, trustProxy: process.env.NURTUO_TRUST_PROXY === "1", onAuditError: (e) => console.error("audit write failed", e),
+      extraEndpoints: { ...connectionEndpoints({ connections, secrets, coordinator, trustProxy: process.env.NURTUO_TRUST_PROXY === "1", proxyConfigured: process.env.NURTUO_TRUST_PROXY !== undefined }) },
+      serializeWorkspaceDelete: (id, remove) => coordinator.withWorkspace(id, async () => {
+        const result = await remove();
+        if (result.status < 300) {
+          await connections.purge(id);
+          await secrets.purge(id);
+          coordinator.pending.delete(id);
+        }
+        return result;
+      }),
+    }),
+  };
 }
 const port = Number(process.env.PORT ?? 8080);
 createHttpServer(repo, opts).listen(port, () => console.log(`nurtuo-control-plane listening on :${port}`));

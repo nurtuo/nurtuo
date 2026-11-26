@@ -8,6 +8,7 @@ export { AuthService, RateLimited, SESSION_COOKIE, type AuthServiceOptions } fro
 export { createAuthHook, hashJson, type AuthHook, type AuthHookOptions } from "./middleware.js";
 export { POLICIES, authorize, matchPolicy, type RoutePolicy } from "./policy.js";
 export { permissionsIn } from "./authz.js";
+export { DEFAULT_INSTANCE_CONFIG, INSTANCE_PERMISSIONS, InstanceConfigError, instancePermissionsFor, parseInstanceConfig, type InstanceConfig, type InstancePermission, type WorkspaceCreateMode } from "./instance.js";
 export { OidcClient, type OidcConfig, type OidcProvider } from "./oidc.js";
 export type { OidcSetup } from "./endpoints.js";
 export type { SamlProvider, ScimBackend } from "./enterprise-stubs.js";

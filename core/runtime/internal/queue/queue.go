@@ -77,6 +77,8 @@ type SubOpts struct {
 
 // Subscription is an open push subscription.
 type Subscription interface {
+	// Pause suspends local delivery even if it returns an error confirming
+	// the detach with the broker. Resume can reattach after either result.
 	Pause() error
 	Resume() error
 	Close() error

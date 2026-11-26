@@ -13,6 +13,7 @@ import (
 	"github.com/nurtuo/nurtuo/core/runtime/internal/engine/docs"
 	"github.com/nurtuo/nurtuo/core/runtime/internal/queue"
 	"github.com/nurtuo/nurtuo/core/runtime/internal/queue/memory"
+	"github.com/nurtuo/nurtuo/core/runtime/internal/queue/natsjs"
 	"github.com/nurtuo/nurtuo/sdk/go/flow"
 )
 
@@ -83,5 +84,185 @@ func TestFromStartQueueAckNack(t *testing.T) {
 	}
 	if s := l.Status(); s.Failed != 1 || s.Received != 2 {
 		t.Fatalf("status = %+v, want 1 failed of 2 received", s)
+	}
+}
+
+func TestPersistentQueueListenerPausePreservesDelivery(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	const ackWait = 50 * time.Millisecond
+	const queueName = "orders"
+	b, err := natsjs.New(natsjs.Options{StoreDir: t.TempDir(), AckWait: ackWait})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := b.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	if err := b.Ensure(ctx, queue.QueueDef{Name: queueName, MaxDeliveries: 2}); err != nil {
+		t.Fatal(err)
+	}
+	l, err := FromStart(ctx, flow.StartConfig{Type: "queue", Queue: queueName}, FactoryDeps{Queues: b})
+	if err != nil {
+		t.Fatal(err)
+	}
+	delivered := make(chan string, 1)
+	if err := l.Start(ctx, func(_ context.Context, in *docs.Set) (*engine.Result, error) {
+		defer func() { _ = in.Close() }()
+		select {
+		case delivered <- in.Docs()[0].ID:
+		default:
+		}
+		return nil, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := l.Stop(ctx); err != nil {
+			t.Error(err)
+		}
+	}()
+
+	if err := l.Pause(); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Publish(ctx, queueName, queue.Message{ID: "held", Data: []byte("x")}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case id := <-delivered:
+		t.Fatalf("message %q reached the handler while paused", id)
+	case <-time.After(6 * ackWait):
+	}
+	st, err := b.Stats(ctx, queueName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Depth != 1 || st.DeadLetterDepth != 0 {
+		t.Fatalf("paused queue stats = %+v, want one queued message and no dead letters", st)
+	}
+	if err := l.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case id := <-delivered:
+		if id != "held" {
+			t.Fatalf("delivered %q, want held", id)
+		}
+	case <-ctx.Done():
+		t.Fatal("resume did not deliver the queued message")
+	}
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		st, err = b.Stats(ctx, queueName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.Depth == 0 {
+			break
+		}
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			t.Fatal("resumed delivery was not acknowledged")
+		}
+	}
+	select {
+	case <-time.After(6 * ackWait):
+	case <-ctx.Done():
+		t.Fatal("timed out waiting past the ACK retry window")
+	}
+	st, err = b.Stats(ctx, queueName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Depth != 0 || st.Redeliveries != 0 || st.DeadLetterDepth != 0 {
+		t.Fatalf("resumed queue stats = %+v, want no pending deliveries, redeliveries, or dead letters", st)
+	}
+	if got := l.Status().Received; got != 1 {
+		t.Fatalf("received %d deliveries, want one", got)
+	}
+}
+
+type pauseConfirmationBackend struct {
+	queue.QueueBackend
+	err error
+}
+
+func (b pauseConfirmationBackend) Subscribe(ctx context.Context, name string, opts queue.SubOpts, h queue.Handler) (queue.Subscription, error) {
+	sub, err := b.QueueBackend.Subscribe(ctx, name, opts, h)
+	if err != nil {
+		return nil, err
+	}
+	return pauseConfirmationSubscription{sub, b.err}, nil
+}
+
+type pauseConfirmationSubscription struct {
+	queue.Subscription
+	err error
+}
+
+func (s pauseConfirmationSubscription) Pause() error {
+	if err := s.Subscription.Pause(); err != nil {
+		return err
+	}
+	// Simulate a broker confirmation error after the local detach.
+	return s.err
+}
+
+func TestPersistentQueueListenerResumeAfterFailedPause(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	b, err := natsjs.New(natsjs.Options{StoreDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = b.Close() }()
+
+	const queueName = "orders"
+	if err := b.Ensure(ctx, queue.QueueDef{Name: queueName}); err != nil {
+		t.Fatal(err)
+	}
+	confirmationErr := errors.New("pause confirmation failed")
+	backend := pauseConfirmationBackend{QueueBackend: b, err: confirmationErr}
+	l, err := FromStart(ctx, flow.StartConfig{Type: "queue", Queue: queueName}, FactoryDeps{Queues: backend})
+	if err != nil {
+		t.Fatal(err)
+	}
+	delivered := make(chan string, 1)
+	if err := l.Start(ctx, func(_ context.Context, in *docs.Set) (*engine.Result, error) {
+		defer func() { _ = in.Close() }()
+		delivered <- in.Docs()[0].ID
+		return nil, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Stop(ctx) }()
+
+	if err := l.Pause(); !errors.Is(err, confirmationErr) {
+		t.Fatalf("Pause() = %v, want %v", err, confirmationErr)
+	}
+	if state := l.Status().State; state != StatePaused {
+		t.Fatalf("state after failed pause = %s, want paused", state)
+	}
+	if err := b.Publish(ctx, queueName, queue.Message{ID: "held", Data: []byte("x")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	if state := l.Status().State; state != StateRunning {
+		t.Fatalf("state after resume = %s, want running", state)
+	}
+	select {
+	case id := <-delivered:
+		if id != "held" {
+			t.Fatalf("delivered %q, want held", id)
+		}
+	case <-ctx.Done():
+		t.Fatal("resume did not reattach the subscription")
 	}
 }

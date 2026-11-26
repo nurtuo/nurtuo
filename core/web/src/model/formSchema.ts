@@ -13,6 +13,8 @@ export interface Field {
   description?: string;
   min?: number;
   max?: number;
+  /** Secret input: rendered as type=password, never pre-filled. */
+  writeOnly?: boolean;
 }
 
 export function fieldsOf(schema: Schema): Field[] {
@@ -33,6 +35,7 @@ export function fieldsOf(schema: Schema): Field[] {
       ...(typeof p["description"] === "string" ? { description: p["description"] } : {}),
       ...(typeof p["minimum"] === "number" ? { min: p["minimum"] } : {}),
       ...(typeof p["maximum"] === "number" ? { max: p["maximum"] } : {}),
+      ...(p["writeOnly"] === true ? { writeOnly: true } : {}),
     };
   });
 }
