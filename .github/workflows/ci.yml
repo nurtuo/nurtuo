@@ -131,6 +131,21 @@ jobs:
         with: { node-version: 24, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm turbo run lint typecheck build test
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: core/runtime/go.mod
+          cache-dependency-path: |
+            core/runtime/go.sum
+            sdk/go/go.sum
+            connectors/go.sum
+      - name: Run host-key socket tests with the real runtime
+        shell: bash
+        run: |
+          CGO_ENABLED=0 go build -o "$RUNNER_TEMP/nurtuo" ./core/runtime/cmd/nurtuo
+          NURTUO_FLOW_RUN_BIN="$RUNNER_TEMP/nurtuo" node --test --test-isolation=none --test-reporter=tap \
+            --test-name-pattern='^real ' core/control-plane/dist/testrun/hostkey.test.js | tee "$RUNNER_TEMP/hostkey.tap"
+          grep -Fx '# fail 0' "$RUNNER_TEMP/hostkey.tap"
+          grep -Fx '# skipped 0' "$RUNNER_TEMP/hostkey.tap"
       - name: docs (generated flow reference, example flows, links)
         run: |
           node scripts/gen-flow-reference.mjs --validate --check

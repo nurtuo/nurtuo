@@ -183,7 +183,8 @@ export function createHttpServer(repo: Repository, opts: HandlerOptions): Server
     const action = matchPolicy(rq.method ?? "GET", url.pathname)?.policy.action;
     const jsonEnvelope = 512;
     const connectionSettings = 6 * (253 + 255 + 4096) + jsonEnvelope;
-    const maxBytes = action === "connection.put" ? 6 * 4 * 64 * 1024 + connectionSettings
+    const maxBytes = action === "connection.host_key_scan" ? 6 * 253 + jsonEnvelope
+      : action === "connection.put" ? 6 * 4 * 64 * 1024 + connectionSettings
       : Infinity;
     const tooLarge = () => { rs.writeHead(413, { "content-type": "application/json", connection: "close" }).end(JSON.stringify({ error: { code: "payload_too_large", message: `request body larger than ${maxBytes} bytes` } })); };
     if (Number(rq.headers["content-length"] ?? 0) > maxBytes) { tooLarge(); return; }

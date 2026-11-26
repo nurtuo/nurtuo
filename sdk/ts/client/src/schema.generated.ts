@@ -420,7 +420,7 @@ export interface paths {
         /** @description Workspaces the session user belongs to. Session users only. */
         get: operations["listWorkspaces"];
         put?: never;
-        /** @description Creates a workspace; the caller becomes its owner. Session users only. */
+        /** @description Creates a workspace. Requires the instance-level permission `instance:workspace_create` (instance admins, see `NURTUO_INSTANCE_ADMINS` and `NURTUO_ALLOW_WORKSPACE_CREATE`). The caller becomes its owner. Session users only. */
         post: operations["createWorkspace"];
         delete?: never;
         options?: never;
@@ -600,6 +600,30 @@ export interface paths {
         post?: never;
         /** @description EXPERIMENTAL. */
         delete: operations["deleteConnection"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{ws}/connections/host-key-scan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * @description EXPERIMENTAL. Fetches the negotiated SSH host key without authenticating to the SFTP server
+         *     or persisting the result. Requires a user session with the workspace `connection:write`
+         *     permission. Cookie sessions must send `X-Nurtuo-Csrf`.
+         */
+        post: operations["scanConnectionHostKey"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -2093,6 +2117,49 @@ export interface operations {
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["Error"];
+        };
+    };
+    scanConnectionHostKey: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace id or slug */
+                ws: components["parameters"]["Ws"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    host: string;
+                    /** @default 22 */
+                    port?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Negotiated host key first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        keys: {
+                            type: string;
+                            fingerprintSha256: string;
+                        }[];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["Error"];
+            413: components["responses"]["PayloadTooLarge"];
+            429: components["responses"]["Error"];
+            503: components["responses"]["Error"];
         };
     };
 }

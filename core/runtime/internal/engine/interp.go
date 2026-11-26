@@ -34,17 +34,22 @@ const DefaultMaxDepth = 16
 // paths sequentially over copies of the set. Returned documents are collected in execution order
 // (port order: decision true before false, branch path 1..n, route ids in declared order).
 type Engine struct {
-	Registry *Registry
-	Resolver FlowResolver // optional; required for ProcessCall
-	Eval     Evaluator    // defaults to BasicEvaluator; see CELEvaluator
-	Spool    *docs.Spool  // defaults to an in-memory-first spool in os temp
-	MaxDepth int
+	Registry             *Registry
+	Resolver             FlowResolver // optional; required for ProcessCall
+	Eval                 Evaluator    // defaults to BasicEvaluator; see CELEvaluator
+	Spool                *docs.Spool  // defaults to an in-memory-first spool in os temp
+	MaxDepth             int
+	MaxReturnedDocuments int   // zero is unlimited
+	MaxReturnedBytes     int64 // decoded payload bytes; zero is unlimited
 }
 
 // New returns an Engine with built-in Message/SetProperties/Map runners (BasicEvaluator; set Eval to &CELEvaluator{} for full CEL).
 func New() *Engine {
 	return &Engine{Registry: NewRegistry(), Eval: BasicEvaluator{}, Spool: docs.NewSpool(docs.SpoolConfig{}), MaxDepth: DefaultMaxDepth}
 }
+
+// ErrReturnLimit means the configured return document or byte budget was exceeded.
+var ErrReturnLimit = errors.New("engine: return limit exceeded")
 
 // StopInfo is set when execution ended at a Stop step.
 type StopInfo struct {
@@ -105,16 +110,17 @@ func (e *Engine) run(ctx context.Context, f *flow.Flow, in *docs.Set, proc *Proc
 type frame struct{ failed *docs.Set }
 
 type exec struct {
-	e      *Engine
-	f      *flow.Flow
-	proc   *Process
-	depth  int
-	steps  map[string]flow.Step
-	ret    *docs.Set
-	failed *docs.Set
-	stop   *StopInfo
-	frames []*frame
-	trace  []StepTrace
+	e             *Engine
+	f             *flow.Flow
+	proc          *Process
+	depth         int
+	steps         map[string]flow.Step
+	ret           *docs.Set
+	failed        *docs.Set
+	stop          *StopInfo
+	frames        []*frame
+	trace         []StepTrace
+	returnedBytes int64
 }
 
 type portSet struct {
@@ -168,6 +174,28 @@ func (x *exec) next(step flow.Step, port string) (string, error) {
 	return to, nil
 }
 
+func (x *exec) collectReturned(ok *docs.Set) error {
+	if limit := x.e.MaxReturnedDocuments; limit > 0 && ok.Len() > limit-x.ret.Len() {
+		_ = ok.Close()
+		return ErrReturnLimit
+	}
+	if limit := x.e.MaxReturnedBytes; limit > 0 {
+		for _, d := range ok.Docs() {
+			if p := d.Payload(); p != nil {
+				if p.Size() > limit-x.returnedBytes {
+					_ = ok.Close()
+					return ErrReturnLimit
+				}
+				x.returnedBytes += p.Size()
+			}
+		}
+	}
+	for _, d := range ok.Docs() {
+		x.ret.Add(d)
+	}
+	return nil
+}
+
 // walk runs the set through step id and on, following default ports iteratively and recursing at
 // splits. It always consumes (releases or hands off) the set.
 func (x *exec) walk(ctx context.Context, id string, set *docs.Set) error {
@@ -202,8 +230,8 @@ func (x *exec) walk(ctx context.Context, id string, set *docs.Set) error {
 			return set.Close()
 		case flow.KindReturnDocuments:
 			ok, f, dr := x.triage(set)
-			for _, d := range ok.Docs() {
-				x.ret.Add(d)
+			if err := x.collectReturned(ok); err != nil {
+				return err
 			}
 			x.trace[ti].Out, x.trace[ti].Failed, x.trace[ti].Dropped = ok.Len(), f, dr
 			return nil
@@ -250,12 +278,15 @@ func (x *exec) runStep(ctx context.Context, step flow.Step, cfg any, set *docs.S
 		x.failAll(set, &docs.Error{Step: step.ID, Code: "no_runner", Message: err.Error(), Cause: err})
 		return set, nil
 	}
-	sc := &StepContext{Flow: x.f, Step: step, Config: cfg, Process: x.proc, Eval: x.e.Eval, Spool: x.e.Spool}
+	sc := &StepContext{Flow: x.f, Step: step, Config: cfg, Process: x.proc, Eval: x.e.Eval, Spool: x.e.Spool, maxConnectorOutputBytes: x.e.MaxReturnedBytes}
 	out, err := sr.Run(ctx, sc, set)
 	if out == nil {
 		out = set
 	}
 	if err != nil {
+		if errors.Is(err, ErrReturnLimit) {
+			return out, err
+		}
 		if ctx.Err() != nil {
 			return out, ctx.Err()
 		}
@@ -264,6 +295,13 @@ func (x *exec) runStep(ctx context.Context, step flow.Step, cfg any, set *docs.S
 			de = &docs.Error{Step: step.ID, Message: err.Error(), Cause: err}
 		}
 		x.failAll(out, de)
+	}
+	if x.e.MaxReturnedBytes > 0 {
+		for _, d := range out.Docs() {
+			if failure := d.Err(); failure != nil && errors.Is(failure, ErrReturnLimit) {
+				return out, ErrReturnLimit
+			}
+		}
 	}
 	return out, nil
 }

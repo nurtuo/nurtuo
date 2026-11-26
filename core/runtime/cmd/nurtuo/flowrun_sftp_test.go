@@ -3,21 +3,29 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/nurtuo/nurtuo/core/runtime/internal/connections"
+	"github.com/nurtuo/nurtuo/core/runtime/internal/connhost"
 	pkgsftp "github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
@@ -35,6 +43,7 @@ type sftpFixture struct {
 	host, port string
 	hostKey    ssh.PublicKey
 	clientKey  string // PEM private key authorized on the server
+	authCalls  *atomic.Int64
 }
 
 func startSFTPFixture(t *testing.T) *sftpFixture {
@@ -43,7 +52,7 @@ func startSFTPFixture(t *testing.T) *sftpFixture {
 }
 
 // startSFTPFixtureWith lets the caller replace handlers of the in-memory server (e.g. to stall reads).
-func startSFTPFixtureWith(t *testing.T, wrap func(*pkgsftp.Handlers)) *sftpFixture {
+func startSFTPFixtureWith(t *testing.T, wrap func(*pkgsftp.Handlers), extraKeys ...ssh.Signer) *sftpFixture {
 	t.Helper()
 	_, hostPriv, _ := ed25519.GenerateKey(rand.Reader)
 	hostSigner, err := ssh.NewSignerFromKey(hostPriv)
@@ -59,7 +68,9 @@ func startSFTPFixtureWith(t *testing.T, wrap func(*pkgsftp.Handlers)) *sftpFixtu
 	if err != nil {
 		t.Fatal(err)
 	}
+	authCalls := new(atomic.Int64)
 	cfg := &ssh.ServerConfig{
+		AuthLogCallback: func(_ ssh.ConnMetadata, _ string, _ error) { authCalls.Add(1) },
 		PasswordCallback: func(c ssh.ConnMetadata, pw []byte) (*ssh.Permissions, error) {
 			if c.User() == sftpTestUser && string(pw) == sftpTestPassword {
 				return nil, nil
@@ -74,6 +85,9 @@ func startSFTPFixtureWith(t *testing.T, wrap func(*pkgsftp.Handlers)) *sftpFixtu
 		},
 	}
 	cfg.AddHostKey(hostSigner)
+	for _, key := range extraKeys {
+		cfg.AddHostKey(key)
+	}
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -93,7 +107,7 @@ func startSFTPFixtureWith(t *testing.T, wrap func(*pkgsftp.Handlers)) *sftpFixtu
 		}
 	}()
 	host, port, _ := net.SplitHostPort(l.Addr().String())
-	fx := &sftpFixture{host: host, port: port, hostKey: hostSigner.PublicKey(), clientKey: string(pem.EncodeToMemory(blk))}
+	fx := &sftpFixture{host: host, port: port, hostKey: hostSigner.PublicKey(), clientKey: string(pem.EncodeToMemory(blk)), authCalls: authCalls}
 	fx.seed(t, "/downloads/version.txt", sftpTestBody)
 	return fx
 }
@@ -102,7 +116,7 @@ func (fx *sftpFixture) seed(t *testing.T, p, content string) {
 	t.Helper()
 	c, err := ssh.Dial("tcp", net.JoinHostPort(fx.host, fx.port), &ssh.ClientConfig{
 		User: sftpTestUser, Auth: []ssh.AuthMethod{ssh.Password(sftpTestPassword)},
-		HostKeyCallback: ssh.FixedHostKey(fx.hostKey),
+		HostKeyCallback: ssh.FixedHostKey(fx.hostKey), HostKeyAlgorithms: []string{fx.hostKey.Type()},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -132,11 +146,17 @@ func serveSFTPConn(nc net.Conn, cfg *ssh.ServerConfig, h pkgsftp.Handlers) {
 		return
 	}
 	go ssh.DiscardRequests(reqs)
+	accepted := false
 	for nch := range chans {
 		if nch.ChannelType() != "session" {
 			_ = nch.Reject(ssh.UnknownChannelType, "no")
 			continue
 		}
+		if accepted {
+			_ = nch.Reject(ssh.ResourceShortage, "one session per connection")
+			continue
+		}
+		accepted = true
 		ch, creqs, err := nch.Accept()
 		if err != nil {
 			return
@@ -299,6 +319,20 @@ func TestFlowRunSFTPHostKeyMismatch(t *testing.T) {
 	code, out, _ = runFlow(t, nil, env.args("--set", "path=/downloads/version.txt")...)
 	if code != 1 || out != "" {
 		t.Fatalf("unknown host: code=%d stdout=%q", code, out)
+	}
+}
+
+func TestFlowRunFingerprintMismatchSendsNoAuth(t *testing.T) {
+	fx := startSFTPFixture(t)
+	env := newSFTPEnv(t, fx, "password", "hostKeyPolicy", `"fingerprint"`, "hostKeyFingerprint", `"SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"`)
+	before := fx.authCalls.Load()
+	args := []string{env.flow, "--connection", env.conn, "--secrets-dir", env.secretsDir, "--set", "path=/downloads/version.txt"}
+	code, out, stderr := runFlow(t, nil, args...)
+	if code != exitExec || out != "" || !strings.Contains(stderr, "host key mismatch") {
+		t.Fatalf("fingerprint mismatch: exit %d, stdout bytes %d, stderr %s", code, len(out), stderr)
+	}
+	if after := fx.authCalls.Load(); after != before {
+		t.Fatalf("fingerprint mismatch attempted %d SSH authentication requests", after-before)
 	}
 }
 
@@ -487,4 +521,330 @@ func TestFlowRunHostKeyPrecedence(t *testing.T) {
 			t.Fatalf("code=%d stdout=%q", code, out)
 		}
 	})
+}
+
+func TestFlowHostKeyScan(t *testing.T) {
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := ssh.NewSignerFromKey(privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fx := startSFTPFixtureWith(t, nil, signer)
+	var expected scannedHostKey
+	client, err := ssh.Dial("tcp", net.JoinHostPort(fx.host, fx.port), &ssh.ClientConfig{
+		User: sftpTestUser, Auth: []ssh.AuthMethod{ssh.Password(sftpTestPassword)},
+		HostKeyCallback: func(_ string, _ net.Addr, key ssh.PublicKey) error {
+			expected = scannedHostKey{Type: key.Type(), Fingerprint: ssh.FingerprintSHA256(key)}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = client.Close()
+
+	var out, stderr bytes.Buffer
+	if code := flowMain([]string{"host-key", fx.host, "--port", fx.port, "--json"}, &out, &stderr); code != 0 {
+		t.Fatalf("exit %d: %s", code, &stderr)
+	}
+	var result struct{ Keys []scannedHostKey }
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Keys) != 1 || result.Keys[0] != expected {
+		t.Fatalf("scanned %+v, want %+v", result.Keys, expected)
+	}
+}
+
+const syntheticSize = 128 << 20
+const syntheticEntries = 400_000
+
+type largeSFTPReader struct {
+	inner pkgsftp.FileReader
+	read  atomic.Int64
+}
+
+func (r *largeSFTPReader) Fileread(req *pkgsftp.Request) (io.ReaderAt, error) {
+	if req.Filepath == "/downloads/version.txt" {
+		return budgetReaderAt{read: &r.read}, nil
+	}
+	return r.inner.Fileread(req)
+}
+
+type budgetReaderAt struct{ read *atomic.Int64 }
+
+func (r budgetReaderAt) ReadAt(p []byte, offset int64) (int, error) {
+	if offset >= syntheticSize {
+		return 0, io.EOF
+	}
+	n := min(int64(len(p)), syntheticSize-offset)
+	clear(p[:n])
+	r.read.Add(n)
+	if n < int64(len(p)) {
+		return int(n), io.EOF
+	}
+	return int(n), nil
+}
+
+type largeSFTPDir struct {
+	pkgsftp.FileLister
+	entries atomic.Int64
+}
+
+func (l *largeSFTPDir) Filelist(req *pkgsftp.Request) (pkgsftp.ListerAt, error) {
+	if req.Method == "List" && req.Filepath == "/downloads" {
+		return budgetLister{entries: &l.entries}, nil
+	}
+	return l.FileLister.Filelist(req)
+}
+
+type budgetLister struct{ entries *atomic.Int64 }
+
+func (l budgetLister) ListAt(out []os.FileInfo, offset int64) (int, error) {
+	if offset >= syntheticEntries {
+		return 0, io.EOF
+	}
+	n := min(int64(len(out)), syntheticEntries-offset)
+	for i := range n {
+		out[i] = budgetFileInfo{name: strconv.FormatInt(offset+i, 10) + strings.Repeat("x", 224)}
+	}
+	l.entries.Add(n)
+	if n < int64(len(out)) {
+		return int(n), io.EOF
+	}
+	return int(n), nil
+}
+
+type budgetFileInfo struct{ name string }
+
+func (f budgetFileInfo) Name() string       { return f.name }
+func (f budgetFileInfo) Size() int64        { return 12345 }
+func (f budgetFileInfo) Mode() os.FileMode  { return 0o644 }
+func (f budgetFileInfo) ModTime() time.Time { return time.Unix(0, 0) }
+func (f budgetFileInfo) IsDir() bool        { return false }
+func (f budgetFileInfo) Sys() any           { return nil }
+
+func TestFlowRunSFTPBudgetChild(t *testing.T) {
+	if os.Getenv("NURTUO_SFTP_BUDGET_CHILD") != "1" {
+		return
+	}
+	for i, arg := range os.Args {
+		if arg == "--" {
+			os.Exit(flowRun(os.Args[i+1:], os.Stdout, os.Stderr, connhost.Builtins()))
+		}
+	}
+	t.Fatal("missing child flow arguments")
+}
+
+func TestFlowRunSFTPBoundedQuerySingleSession(t *testing.T) {
+	fx := startSFTPFixture(t)
+	env := newSFTPEnv(t, fx, "password")
+	env.flow = writeTemp(t, t.TempDir(), "query.json", strings.Replace(flowJSON(manualStart, "sftp", "private-sftp"), `"GET"`, `"QUERY"`, 1))
+	code, out, stderr := runFlow(t, nil, env.args("--set", "path=/downloads", "--max-output-bytes", "65536")...)
+	if code != exitOK || !strings.Contains(out, "version.txt") || stderr != "" {
+		t.Fatalf("bounded QUERY: exit %d, stdout %s, stderr %s", code, out, stderr)
+	}
+}
+
+func TestFlowRunSFTPBoundedQueryTruncatesLargeDirectory(t *testing.T) {
+	listing := &largeSFTPDir{}
+	fx := startSFTPFixtureWith(t, func(h *pkgsftp.Handlers) {
+		listing.FileLister = h.FileList
+		h.FileList = listing
+	})
+	env := newSFTPEnv(t, fx, "password", "maxListEntries", "3")
+	env.flow = writeTemp(t, t.TempDir(), "query.json", strings.Replace(flowJSON(manualStart, "sftp", "private-sftp"), `"GET"`, `"QUERY"`, 1))
+	code, out, stderr := runFlow(t, nil, env.args("--set", "path=/downloads", "--max-output-bytes", "4096")...)
+	if code != exitOK || stderr != "" {
+		t.Fatalf("truncated QUERY: exit %d, stdout %s, stderr %s", code, out, stderr)
+	}
+	var entries []struct{ Name string }
+	if err := json.Unmarshal([]byte(out), &entries); err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("expected three entries, got %d", len(entries))
+	}
+	for i, entry := range entries {
+		if want := strconv.Itoa(i) + strings.Repeat("x", 224); entry.Name != want {
+			t.Fatalf("entry %d: got %q, want %q", i, entry.Name, want)
+		}
+	}
+	if served := listing.entries.Load(); served < 4 || served > 100 {
+		t.Fatalf("server produced %d entries, expected only one directory page", served)
+	}
+}
+
+func TestFlowRunSFTPOutputLimit(t *testing.T) {
+	const budget = 2 << 20
+	for _, op := range []string{"GET", "QUERY"} {
+		t.Run(op, func(t *testing.T) {
+			reader, listing := &largeSFTPReader{}, &largeSFTPDir{}
+			fx := startSFTPFixtureWith(t, func(h *pkgsftp.Handlers) {
+				reader.inner, listing.FileLister = h.FileGet, h.FileList
+				h.FileGet, h.FileList = reader, listing
+			})
+			env := newSFTPEnv(t, fx, "password")
+			target := "/downloads/version.txt"
+			if op == "QUERY" {
+				env.flow = writeTemp(t, t.TempDir(), "query.json", strings.Replace(flowJSON(manualStart, "sftp", "private-sftp"), `"GET"`, `"QUERY"`, 1))
+				target = "/downloads"
+			}
+			spill := t.TempDir()
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			bin, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			args := env.args("--json", "--set", "path="+target, "--max-output-bytes", strconv.Itoa(budget), "--max-documents", "20")
+			cmd := exec.CommandContext(ctx, bin, append([]string{"-test.run=^TestFlowRunSFTPBudgetChild$", "--"}, args...)...)
+			cmd.Env = append(os.Environ(), "NURTUO_SFTP_BUDGET_CHILD=1", "TMPDIR="+spill)
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &stdout, &stderr
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() { done <- cmd.Wait() }()
+			tick := time.NewTicker(time.Millisecond)
+			defer tick.Stop()
+			var peakRSS, peakDisk int64
+			var waitErr error
+		monitor:
+			for {
+				select {
+				case waitErr = <-done:
+					break monitor
+				case <-tick.C:
+					rss, disk := sftpBudgetUsage(cmd.Process.Pid, spill)
+					peakRSS, peakDisk = max(peakRSS, rss), max(peakDisk, disk)
+				}
+			}
+			var exit *exec.ExitError
+			if !errors.As(waitErr, &exit) || exit.ExitCode() != exitExec || stdout.Len() != 0 || !strings.Contains(stderr.String(), "output_too_large") {
+				t.Fatalf("expected atomic overflow, got %v, stdout bytes %d, stderr %s", waitErr, stdout.Len(), stderr.String())
+			}
+			if peakRSS > 96<<20 || peakDisk > budget {
+				t.Fatalf("high-water exceeded: RSS %d spill %d", peakRSS, peakDisk)
+			}
+			if entries, err := os.ReadDir(spill); err != nil || len(entries) != 0 {
+				t.Fatalf("child left spill files: %v, %v", entries, err)
+			}
+			if op == "GET" && (reader.read.Load() <= budget || reader.read.Load() > budget+(128<<10)) {
+				t.Fatalf("GET served %d bytes, expected to stop at the budget", reader.read.Load())
+			}
+			if op == "QUERY" && (listing.entries.Load() == 0 || listing.entries.Load() > syntheticEntries/4) {
+				t.Fatalf("QUERY served %d entries, expected to stop well before the full listing", listing.entries.Load())
+			}
+		})
+	}
+}
+
+func sftpBudgetUsage(pid int, dir string) (rss, disk int64) {
+	if status, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid)); err == nil {
+		for line := range strings.SplitSeq(string(status), "\n") {
+			if strings.HasPrefix(line, "VmHWM:") {
+				_, _ = fmt.Sscanf(line, "VmHWM: %d kB", &rss)
+				rss *= 1024
+			}
+		}
+	}
+	entries, _ := os.ReadDir(dir)
+	for _, entry := range entries {
+		if info, err := entry.Info(); err == nil {
+			disk += info.Size()
+		}
+	}
+	return rss, disk
+}
+
+func TestFlowHostKeyScanSendsNoAuth(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := ssh.NewSignerFromKey(privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := make(chan string, 1)
+	cfg := &ssh.ServerConfig{
+		PasswordCallback: func(_ ssh.ConnMetadata, _ []byte) (*ssh.Permissions, error) {
+			return nil, errors.New("denied")
+		},
+		AuthLogCallback: func(_ ssh.ConnMetadata, method string, _ error) {
+			select {
+			case auth <- method:
+			default:
+			}
+		}}
+	cfg.AddHostKey(signer)
+	done := make(chan error, 1)
+	go func() {
+		conn, err := l.Accept()
+		if err == nil {
+			defer func() { _ = conn.Close() }()
+			_, _, _, err = ssh.NewServerConn(conn, cfg)
+		}
+		done <- err
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if key, err := scanHostKey(ctx, l.Addr().String()); err != nil || key.Fingerprint != ssh.FingerprintSHA256(signer.PublicKey()) {
+		t.Fatalf("scan got %+v, error %v", key, err)
+	}
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("SSH handshake unexpectedly completed")
+		}
+	case <-ctx.Done():
+		t.Fatal("scan did not close the SSH socket")
+	}
+	select {
+	case method := <-auth:
+		t.Fatalf("scan attempted %s authentication", method)
+	default:
+	}
+}
+
+func TestFlowHostKeyScanClosesSilentPeerOnDeadline(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+	done := make(chan error, 1)
+	go func() {
+		conn, err := l.Accept()
+		if err == nil {
+			defer func() { _ = conn.Close() }()
+			if err = conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err == nil {
+				_, err = io.Copy(io.Discard, conn)
+			}
+		}
+		done <- err
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	if _, err := scanHostKey(ctx, l.Addr().String()); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("scan error = %v, want deadline exceeded", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("waiting for EOF: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("silent peer socket stayed open")
+	}
 }

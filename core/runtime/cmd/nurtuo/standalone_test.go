@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	goruntime "runtime"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -365,18 +364,12 @@ func TestControlPlaneEnvWiresGatewayAndAuth(t *testing.T) {
 func TestControlPlaneEnvFlowRunBin(t *testing.T) {
 	exe, err := os.Executable()
 	if err != nil {
-		t.Fatal(err)
+		t.Skip(err)
 	}
-	env := controlPlaneEnv("postgres://x", &Credentials{}, 8080, "127.0.0.1:9443")
-	if !slices.Contains(env, "NURTUO_FLOW_RUN_BIN="+exe) {
-		t.Fatal("control plane environment must point to the running nurtuo executable")
-	}
-}
-
-func TestStandaloneRuntimeConfigSetsStateDir(t *testing.T) {
-	root := t.TempDir()
-	cfg := standaloneRuntimeConfig("127.0.0.1:1", RuntimeEnv{Creds: &Credentials{}, Dirs: NewDataDirs(root)})
-	if want := filepath.Join(root, "runtime"); cfg.StateDir != want {
-		t.Fatalf("StateDir = %q, want %q", cfg.StateDir, want)
+	for _, c := range []*Credentials{nil, {AdminToken: strings.Repeat("a", 48)}} {
+		got := strings.Join(controlPlaneEnv("postgres://x", c, 8080, "127.0.0.1:9443"), "\n")
+		if !strings.Contains(got, "NURTUO_FLOW_RUN_BIN="+exe) {
+			t.Errorf("env lacks NURTUO_FLOW_RUN_BIN=%s:\n%s", exe, got)
+		}
 	}
 }

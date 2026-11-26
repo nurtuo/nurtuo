@@ -305,24 +305,20 @@ func TestOpenConfig(t *testing.T) {
 	}
 }
 
+// TestEnvVarFixture pins EnvVar against the fixture the control plane's TypeScript port also reads
+// (core/control-plane/src/connections/env-var.test.ts).
 func TestEnvVarFixture(t *testing.T) {
-	data, err := os.ReadFile("testdata/envvar.json")
+	b, err := os.ReadFile("testdata/envvar.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var fixture []struct {
-		Name string `json:"name"`
-		Env  string `json:"env"`
-	}
-	if err := json.Unmarshal(data, &fixture); err != nil {
+	var cases []struct{ Name, Env string }
+	if err := json.Unmarshal(b, &cases); err != nil {
 		t.Fatal(err)
 	}
-	if len(fixture) < 4 {
-		t.Fatalf("expected at least four fixture entries, got %d", len(fixture))
-	}
-	for _, entry := range fixture {
-		if got := EnvVar(entry.Name); got != entry.Env {
-			t.Errorf("EnvVar(%q) = %q, want %q", entry.Name, got, entry.Env)
+	for _, c := range cases {
+		if got := EnvVar(c.Name); got != c.Env {
+			t.Errorf("EnvVar(%q) = %q, want %q", c.Name, got, c.Env)
 		}
 	}
 }

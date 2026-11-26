@@ -22,16 +22,36 @@ export function ConnectionsPanel({ api, workspaceId, items, onChanged, onClose }
   const [values, setValues] = useState<Record<string, string>>({ port: "22" });
   const [hostKey, setHostKey] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [scanned, setScanned] = useState<{ host: string; port: string; fingerprint: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const existing = items.find((c) => c.id === id);
 
   const edit = (c: ConnectionItem) => {
+    setScanned(null);
     setId(c.id);
     const v: Record<string, string> = {};
     for (const f of FIELDS) if (!f.writeOnly && c.settings[f.name] !== undefined) v[f.name] = String(c.settings[f.name]);
     setValues(v); // the password field stays empty: values are never readable
     setHostKey(String(c.settings["hostKeyFingerprint"] ?? c.settings["knownHosts"] ?? ""));
     setError(null);
+  };
+
+  const fetchHostKey = async () => {
+    setError(null);
+    setScanned(null);
+    setBusy(true);
+    const host = values.host ?? "";
+    const port = values.port || "22";
+    try {
+      const { keys } = await api.scanHostKey(workspaceId, host, Number(port));
+      const key = keys[0];
+      if (!key) throw new Error("The server did not present a host key.");
+      setScanned({ host, port, fingerprint: key.fingerprintSha256 });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const save = async () => {
@@ -108,6 +128,16 @@ export function ConnectionsPanel({ api, workspaceId, items, onChanged, onClose }
           <legend>Host key</legend>
           <textarea aria-label="Host key" rows={3} value={hostKey} onChange={(e) => setHostKey(e.target.value)}
             placeholder="SHA256:… or a known_hosts entry" />
+          <button disabled={busy || !values.host} onClick={() => void fetchHostKey()}>Fetch host key</button>
+          {scanned && scanned.host === values.host && scanned.port === (values.port || "22") && (
+            <div>
+              <code>{scanned.fingerprint}</code>
+              <button disabled={busy} onClick={() => {
+                setHostKey(scanned.fingerprint);
+                setScanned(null);
+              }}>Trust this key</button>
+            </div>
+          )}
           <small>Compare with the fingerprint published by the server's administrator. There is no option to skip verification.</small>
         </fieldset>
         {error && <p className="err" role="alert">{error}</p>}

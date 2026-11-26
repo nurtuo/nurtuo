@@ -100,6 +100,7 @@ export const POLICIES: readonly RoutePolicy[] = [
   P("GET", "/v1/workspaces/:ws/audit", wsPerm("audit:read", "audit", "audit.query")),
 
   // ---- canvas Run: connections, write-only secrets, test runs (docs/specs/2026-11-23-canvas-run.md) ----
+  P("POST", "/v1/workspaces/:ws/connections/host-key-scan", wsPerm("connection:write", "connection", "connection.host_key_scan", { userOnly: true })),
   P("GET", "/v1/workspaces/:ws/connections", wsPerm("connection:read", "connection", "connection.list")),
   P("GET", "/v1/workspaces/:ws/connections/:id", wsPerm("connection:read", "connection", "connection.get")),
   P("PUT", "/v1/workspaces/:ws/connections/:id", wsPerm("connection:write", "connection", "connection.put")),

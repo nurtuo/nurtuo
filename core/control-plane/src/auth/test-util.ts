@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Test harness (not imported by production code): a fully wired handler with in-memory repos and a movable clock.
 import { randomBytes } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { createHandler, type ApiResponse } from "../api.js";
 import { MemoryConnectionRepository } from "../connections/repository.js";
 import { ConnectionCoordinator } from "../connections/coordinator.js";
 import { connectionEndpoints } from "../connections/routes.js";
 import { MemorySecretStore } from "../connections/secrets.js";
 import { MemoryRepository } from "../memory-repository.js";
+import { testRunEndpoints } from "../testrun/routes.js";
+import { TestRunner, type TestRunDeps } from "../testrun/runner.js";
+import { RunLimiter } from "../testrun/semaphore.js";
 import { generateApiToken } from "./crypto.js";
 import type { InstanceConfig } from "./instance.js";
 import { createAuthHook, type AuthHookOptions } from "./middleware.js";
@@ -20,13 +24,25 @@ export const j = (r: ApiResponse) => r.body as any;
 /** Instance config with these emails as instance admins (mode "admins"); pass to setup({ service: { instance } }). */
 export const adminsConfig = (...emails: string[]): InstanceConfig => ({ admins: new Set(emails.map((e) => e.trim().toLowerCase())), workspaceCreate: "admins" });
 
+/** Absolute path of the fake nurtuo binary (a Node script; tests run from dist, the script stays in src). */
+export const FAKE_NURTUO = fileURLToPath(new URL("../../src/testrun/testdata/fake-nurtuo.mjs", import.meta.url));
 /** An SFTP connection body that passes validation. */
 export const sftpConn = (over: Record<string, unknown> = {}) => ({
   connector: "sftp",
   credentials: { password: "pw-value-123" },
   settings: { host: "sftp.example.com", port: 22, user: "u", hostKeyPolicy: "fingerprint", hostKeyFingerprint: "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", ...over },
 });
-export function setup(over: { service?: Partial<AuthServiceOptions>; hook?: Partial<AuthHookOptions> } = {}) {
+export const flowOf = (conn = "c1", op = "GET", connector = "sftp") => ({
+  schema: "nurtuo.flow/v1", id: "t", name: "t", revision: 1,
+  steps: [
+    { id: "start-1", kind: "start", config: { type: "manual" } },
+    { id: "connector-1", kind: "connector", config: { connector, operation: op, connection: conn } },
+    { id: "returndocuments-1", kind: "returnDocuments", config: {} },
+  ],
+  edges: { "start-1:default": "connector-1", "connector-1:default": "returndocuments-1" },
+});
+
+export function setup(over: { service?: Partial<AuthServiceOptions>; hook?: Partial<AuthHookOptions>; testRun?: Partial<TestRunDeps> } = {}) {
   const repo = new MemoryRepository();
   const authRepo = new MemoryAuthRepository();
   const clock = { t: Date.parse("2026-01-01T00:00:00Z") };
@@ -34,9 +50,11 @@ export function setup(over: { service?: Partial<AuthServiceOptions>; hook?: Part
   const connections = new MemoryConnectionRepository();
   const secrets = new MemorySecretStore();
   const coordinator = new ConnectionCoordinator();
+  const limiter = new RunLimiter();
+  const runner = new TestRunner({ connections, secrets, coordinator, limiter, ...over.testRun });
   const hook = createAuthHook({
     service,
-    extraEndpoints: { ...connectionEndpoints({ connections, secrets, coordinator, trustProxy: over.hook?.trustProxy }) },
+    extraEndpoints: { ...connectionEndpoints({ connections, secrets, coordinator, trustProxy: over.hook?.trustProxy }), ...testRunEndpoints(runner) },
     serializeWorkspaceDelete: (id, remove) => coordinator.withWorkspace(id, async () => {
         const result = await remove();
         if (result.status < 300) {
@@ -82,5 +100,5 @@ export function setup(over: { service?: Partial<AuthServiceOptions>; hook?: Part
     const cookie = /__Host-nurtuo_session=([^;]+)/.exec(String((r.headers?.["set-cookie"] as string[] | undefined)?.[0] ?? ""))?.[1];
     return { r, cookie: cookie!, csrf: j(r)?.csrfToken as string };
   }
-  return { repo, authRepo, service, handle, call, connections, secrets, clock, owner, member, mint, login };
+  return { repo, authRepo, service, handle, call, connections, secrets, limiter, runner, clock, owner, member, mint, login };
 }

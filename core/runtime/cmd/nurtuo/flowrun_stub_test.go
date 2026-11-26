@@ -46,7 +46,10 @@ func (s *stubConnector) Browse(context.Context, *connectorv1.BrowseRequest) (*co
 	return nil, connector.ErrNotImplemented
 }
 
-func (s *stubConnector) Test(context.Context, *connectorv1.TestRequest) (*connectorv1.TestResponse, error) {
+func (s *stubConnector) Test(_ context.Context, req *connectorv1.TestRequest) (*connectorv1.TestResponse, error) {
+	if m, _ := req.GetConnection().GetSettings().AsMap()["mode"].(string); m == "testfail" {
+		return &connectorv1.TestResponse{Ok: false, Diagnostic: "ssh connect: host key mismatch"}, nil
+	}
 	return &connectorv1.TestResponse{Ok: true}, nil
 }
 

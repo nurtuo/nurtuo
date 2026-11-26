@@ -18,6 +18,9 @@ import { connectionEndpoints } from "./connections/routes.js";
 import { MemorySecretStore } from "./connections/secrets.js";
 import { loadSigningKey, type SigningKey } from "./bundle.js";
 import { MemoryRepository } from "./memory-repository.js";
+import { testRunEndpoints } from "./testrun/routes.js";
+import { TestRunner } from "./testrun/runner.js";
+import { RunLimiter } from "./testrun/semaphore.js";
 import { PgRepository, migrate, type Db } from "./pg-repository.js";
 import type { Repository } from "./repository.js";
 
@@ -77,10 +80,11 @@ if (insecure) {
     await service.bootstrap(process.env.NURTUO_BOOTSTRAP_EMAIL, process.env.NURTUO_BOOTSTRAP_PASSWORD);
     console.log(`bootstrap owner ensured: ${process.env.NURTUO_BOOTSTRAP_EMAIL}`);
   }
+  const runner = new TestRunner({ connections, secrets, coordinator, limiter: new RunLimiter(), bin: process.env.NURTUO_FLOW_RUN_BIN, allowPrivate: process.env.NURTUO_TEST_RUN_ALLOW_PRIVATE === "1" });
   opts = {
     auth: createAuthHook({
       service, trustProxy: process.env.NURTUO_TRUST_PROXY === "1", onAuditError: (e) => console.error("audit write failed", e),
-      extraEndpoints: { ...connectionEndpoints({ connections, secrets, coordinator, trustProxy: process.env.NURTUO_TRUST_PROXY === "1", proxyConfigured: process.env.NURTUO_TRUST_PROXY !== undefined }) },
+      extraEndpoints: { ...connectionEndpoints({ connections, secrets, coordinator, trustProxy: process.env.NURTUO_TRUST_PROXY === "1", proxyConfigured: process.env.NURTUO_TRUST_PROXY !== undefined }), ...testRunEndpoints(runner) },
       serializeWorkspaceDelete: (id, remove) => coordinator.withWorkspace(id, async () => {
         const result = await remove();
         if (result.status < 300) {
