@@ -36,7 +36,7 @@ failed-authentication rate) with evidence; and D4 and D14 are clarifications, no
 | Pull requests | this spec (approved by Łukasz 2026-11-24, not yet merged). Affects [PR #90](https://github.com/nurtuo/nurtuo/pull/90) (canvas Run implementation, head `aa02133`), now split into #99 (merged) and #100-#102 (see Phase P90) |
 | Owner direction | "Spoko zrób tak jak jest na boomi" (Łukasz, 2026-11-24 19:52, see "Owner requirement"); answered by the Boomi alignment council (see "Boomi alignment") |
 | Owner approval | D1-D14 approved by Łukasz on 2026-11-24: the Boomi direction and every recommendation other than the three open questions earlier that day; Q-threshold, Q-D7 and Q-labels at 21:06 Europe/Warsaw (see "Owner requirement", "Open questions (closed)") |
-| Reviews it answers | Astra delta review of `53e26c5` https://github.com/nurtuo/nurtuo/pull/92#issuecomment-7171233823 (see "Fourth review"), Astra review of `e8d24f3` https://github.com/nurtuo/nurtuo/pull/92#issuecomment-7171018980 (see "Third review"), Codex review https://github.com/nurtuo/nurtuo/pull/90#issuecomment-7134020883, Astra review https://github.com/nurtuo/nurtuo/pull/90#issuecomment-7134187185, owner decision https://github.com/nurtuo/nurtuo/pull/90#issuecomment-7134459612, cross-provider reviews of this spec https://github.com/nurtuo/nurtuo/pull/92#issuecomment-7140661227 and https://github.com/nurtuo/nurtuo/pull/92#issuecomment-7142837972 |
+| Reviews it answers | Astra reviews of `8aa4bf8` https://github.com/nurtuo/nurtuo/pull/92#issuecomment-7171586707 and `93adf93` https://github.com/nurtuo/nurtuo/pull/92#issuecomment-7171742890 (see "Fifth review"), Astra delta review of `53e26c5` https://github.com/nurtuo/nurtuo/pull/92#issuecomment-7171233823 (see "Fourth review"), Astra review of `e8d24f3` https://github.com/nurtuo/nurtuo/pull/92#issuecomment-7171018980 (see "Third review"), Codex review https://github.com/nurtuo/nurtuo/pull/90#issuecomment-7134020883, Astra review https://github.com/nurtuo/nurtuo/pull/90#issuecomment-7134187185, owner decision https://github.com/nurtuo/nurtuo/pull/90#issuecomment-7134459612, cross-provider reviews of this spec https://github.com/nurtuo/nurtuo/pull/92#issuecomment-7140661227 and https://github.com/nurtuo/nurtuo/pull/92#issuecomment-7142837972 |
 | Amends | [canvas Run](2026-11-23-canvas-run.md): D2 scope, D4 (`known_hosts` paste), D11 egress (check at the actual dial), Phase 2 body limit, D3/D6 secret workflow, Gaps #3, #7, #9, #19; [backward compatibility contract](2026-11-22-backward-compatibility-contract.md): classification row for the D4 surface (D4; the `nurtuo flow` row is already on `main`) |
 | ADRs | [ADR 0010](../adr/0010-connections-and-secrets.md) (connections and secrets), [ADR 0009](../adr/0009-outbound-only-runtime-gateway.md) (gateway), [ADR 0005](../adr/0005-set-at-a-time-engine-with-per-document-status.md) (engine) |
 | Related specs | [backward compatibility contract](2026-11-22-backward-compatibility-contract.md), [auth rate limiting and lockout](2026-11-22-auth-rate-limiting-and-lockout.md), [bundle artifact delivery](2026-11-22-bundle-artifact-delivery.md), [HTTP listener routing](2026-11-22-http-listener-routing.md) |
@@ -1207,6 +1207,29 @@ alternative was already allowed by "Isolation").
 | 1 (blocker) | worker heap limits do not cap upload or PostgreSQL driver buffers (external memory) | "Memory budget": reservation split into heap `h`, external `x` and overhead `o`; pre-allocation gate checks every payload-sized external allocation (driver write and read buffers, `k_ext`) before it is made, conversions sliced to one window, credit-based transfer window, worker import allowlist; child process with an OS memory limit if a path cannot be gated; parent failure headroom `R_fail`; T24 exercises external exhaustion in both directions; T29; Gaps #13 |
 | 2 (major) | chunked uploads grow the reservation after the worker starts, but heap limits are fixed at construction | "Chunked upload": bounded spooling before admission; above the threshold the body is spooled to disk under an instance spool budget (stepped reservations, tighten-only D4 dimension, same exclusive and 503 rules as memory), and the worker is constructed once, after the last byte, from the final wire length; T30 tests several growth steps against the same body with `Content-Length`; Failure modes; Gaps #14 |
 
+### Fifth review (Astra, heads `8aa4bf8` and `93adf93`)
+
+Reviewer: GPT-6.2 Astra (OpenAI). Two consecutive reviews are answered together: head `8aa4bf8`,
+https://github.com/nurtuo/nurtuo/pull/92#issuecomment-7171586707 (1 blocker, 2 majors, 1 minor,
+1 nit), and head `93adf93`, https://github.com/nurtuo/nurtuo/pull/92#issuecomment-7171742890 (1
+blocker, 2 majors, 1 nit; its spool-ownership major and its nit repeat the earlier ones). Claude
+Opus's answer changes design detail and tests only. D1-D14 are unchanged: D2 still has no default
+ceiling, D4's spool budget stays tighten-only, and D14 still uses worker isolation with request-only
+failure above capacity.
+
+| Item | Finding | Change in this spec |
+|---|---|---|
+| 1 (blocker, `8aa4bf8`) | the worker's content query runs on its own connection, so it does not share the parent's `REPEATABLE READ` sizing snapshot | "Revision list": the parent owns sizing and exports its snapshot (`pg_export_snapshot()`); the worker imports it (`SET TRANSACTION SNAPSHOT`) before any content query; the parent keeps its transaction open until the import is acknowledged, bounded by the wait deadline; a failed import fails before headers with no content query; the `number` cutoff stays as a second guard; T11; Gaps #15 |
+| 2 (blocker, `93adf93`) | readback sizing measures `content::text` only, but whole rows are fetched and serialized | "Projected row size": `rowBytes` adds the escaped `id`, `component_id`, `digest` and a measured per-row constant `c_row`; `total`, `largest`, `count` and the cutoff come from one query in the sizing snapshot and drive the pool or worker choice, `k × total` and the read gate; `MemoryRepository` keeps the same value; T24 with many minimal revisions; acceptance criterion |
+| 3 (major, `8aa4bf8`) | a 500 cannot be promised after a streamed 200 has started | "When the status is sent": uploads answer only after commit; isolated readbacks send the 200 and `main`'s `Content-Length` only after all rows are loaded and the length is counted; the post-header abort rule applies from L1a on; Isolation, Exclusive admission, `R_fail`, Streaming, Failure modes, acceptance; new T31 |
+| 4 (major, `8aa4bf8` and `93adf93`) | startup cleanup in a shared temp directory can delete another live process's spool | "Spool ownership": private `0700` directory per process, files unlinked right after open (no name, freed on crash), lease and stale-age sweep of other processes' directories only; Security; T30 with a second instance started mid-upload and a killed process next to a live one; Gaps #14 |
+| 5 (major, `93adf93`) | a doubled spool step can exceed the remaining budget, and an exact boundary needs EOF first | "Chunked upload": step target capped at `S_spool`, partial grants of free capacity, exclusive use only when the upload must wait, a one-chunk EOF probe at every boundary; startup rejects a spool budget below the threshold; T30 boundary cases (at the threshold, between growth steps, exactly at `S_spool`, one byte above) |
+| 6 (minor, `8aa4bf8`) | T30 compares worker heap limits with the whole reservation | T30 asserts identical reservations (`h`, `x`, `o`) in both transfer modes, and `resourceLimits` equal to `h` only |
+| 7 (nit, both) | risk 11 appended to row 13 | risk table split and ordered 1-15 |
+
+Also aligned during the adversarial re-read: the transfer window is charged to `E_parent` only, not
+also to `x`.
+
 ## Boomi alignment
 
 Outcome of the Boomi alignment council (see Council). Sources are public Boomi docs that the experts
@@ -1427,3 +1450,8 @@ it is decided and the phase exit it blocks. A phase cannot exit while its questi
   (major): chunked uploads above the threshold are spooled to disk under an instance spool budget
   before admission, so the worker is constructed once with limits for the final length; T30 tests
   several growth steps in both transfer modes. D1-D14 unchanged; status stays approved.
+- 2026-11-26: Claude Opus's spec-only edit answering the Astra reviews of `8aa4bf8` and `93adf93`
+  (see "Fifth review"), after merging `main` `5a55cf0`: the large-list snapshot is exported to the
+  worker, readbacks are sized by full projected rows, a streamed readback that fails after headers
+  is aborted (T31), spool grants are clamped and probed for EOF at boundaries, and spool files are
+  private to their process. D1-D14 unchanged; status stays approved.
