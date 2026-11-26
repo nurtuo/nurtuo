@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { PgAuthRepository } from "../auth/pg-repository.js";
-import { migrate } from "../pg-repository.js";
+import { migrate, type Db } from "../pg-repository.js";
 import { PgConnectionRepository } from "./pg-repository.js";
 import { openTestSchema } from "../pg-test-schema.js";
 
@@ -42,4 +42,26 @@ test("postgres connection repository: migration 0300, workspace-keyed queries, c
     assert.equal((await pool.query("SELECT count(*)::int AS n FROM connections WHERE workspace_id=$1", [wa.id])).rows[0].n, 0);
     await auth.deleteWorkspace(wb.id);
   } finally { await close(); }
+});
+
+test("rollback failure preserves the original transaction error", async () => {
+  const original = new Error("connection lost during write");
+  let released = false;
+  const db: Db = {
+    query: async () => { throw new Error("unexpected pool query"); },
+    connect: async () => ({
+      query: async (sql) => {
+        if (sql === "BEGIN") return { rows: [], rowCount: null };
+        if (sql === "ROLLBACK") throw new Error("connection lost during rollback");
+        throw original;
+      },
+      release: () => { released = true; },
+    }),
+  };
+  const repo = new PgConnectionRepository(db);
+  await assert.rejects(
+    repo.put("w", { id: "c", connector: "sftp", settings: {} }, async () => {}),
+    (error) => error === original,
+  );
+  assert.equal(released, true);
 });

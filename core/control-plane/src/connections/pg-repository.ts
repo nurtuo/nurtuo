@@ -22,7 +22,9 @@ export class PgConnectionRepository implements ConnectionRepository {
       await tx.query("COMMIT");
       return result;
     } catch (error) {
-      await tx.query("ROLLBACK");
+      await tx.query("ROLLBACK").catch(() => {
+        // Preserve the write or audit error if the transaction connection failed.
+      });
       throw error;
     } finally {
       tx.release();
