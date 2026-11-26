@@ -355,27 +355,49 @@ stated physical bound**, reserved before allocation:
   authorization and **before the first body byte is read**. While waiting the socket is paused.
 - **Chunked upload (bounded spooling before admission).** Worker `resourceLimits` are fixed when
   the worker is constructed, so a worker is never started before the body size is known. Without
-  `Content-Length`, bytes are read into the small-request pool up to the in-memory threshold; a
-  body that ends there is a small request. At the threshold the parent writes the buffered prefix
-  to a **spool file** and releases the prefix from the pool, then keeps writing the body to the
-  file without holding it in memory (one socket chunk at a time, charged to `E_parent`). Disk is
-  charged to an instance-wide **spool budget** in steps (the step doubles, starting at the
-  threshold), each reserved before more bytes are read; the socket is paused while waiting. When
-  the body ends, its exact wire length is known, and the operation takes the same worker
-  reservation as a fixed-length upload of that length (exclusive admission if above `W`); only
-  then is its worker constructed, once, with limits from that reservation, and it reads the spool
-  through the transfer window. The spool budget follows the memory rules: it is never a reason to
-  reject a request for its own size; a body larger than the whole budget waits for exclusive use
-  of it and, if it physically needs more, fails alone with 500 `resource_exhausted`; a step that
-  cannot be reserved before the wait deadline because other spools hold the budget gets 503 as
-  below. Spool files live under the process temp directory (`os.tmpdir()`, no new setting), are
+  `Content-Length`, bytes are read into the small-request pool up to the in-memory threshold. A
+  body that ends at or below the threshold (see the EOF probe below) is a small request. Past
+  the threshold the parent writes the buffered prefix to a **spool file** and releases the prefix
+  from the pool. It then keeps writing the body to the file without holding it in memory, one
+  socket chunk at a time, charged to `E_parent`. Disk is charged to an instance-wide **spool
+  budget** `S_spool`, reserved before more bytes are read. The socket is paused while a
+  reservation is pending:
+  - *Step target.* An upload that holds `held` bytes of spool and needs more asks for
+    `target = min(2 × held, S_spool)`. Its first request is `min(2 × threshold, S_spool)`, which
+    covers the prefix. A target is never above the budget, so a doubled step cannot ask for more
+    than exists.
+  - *Clamp to free capacity.* If only part of `target − held` is free, the upload takes what is
+    free now (a partial grant) and goes on reading. A body that fits in the free space therefore
+    never waits. The upload waits for the rest only when its bytes reach what it holds and more
+    bytes remain.
+  - *Exclusive use.* When the target is the whole of `S_spool` and other spools hold part of it,
+    the upload waits for exclusive use. New spool reservations queue behind it, as for memory.
+  - *Bounded EOF probe.* At every boundary (the in-memory threshold, and `held` before another
+    grant) the reader does not ask for more until it knows that more bytes exist. It reads at most
+    one more socket chunk into the socket-chunk allowance of `E_parent` that it already holds.
+    - If the body ends there (`end` with no data), the length is final and nothing more is
+      reserved. So a body exactly at the threshold stays a small request, and a body exactly at
+      `S_spool` succeeds.
+    - If data arrives, the chunk stays in that allowance, with the socket paused, until the next
+      grant.
+  - *Above capacity.* An upload that holds the whole of `S_spool` and whose probe returns data
+    physically needs more than the budget. It fails alone with 500 `resource_exhausted` and
+    `Connection: close`, and its spool is released.
+  - *Wait deadline.* A grant that cannot be made before the wait deadline because other spools
+    hold the budget gets 503, as below.
+  The spool budget follows the memory rules: it is never a reason to reject a request for its own
+  size. When the body ends, its exact wire length is known. The operation then takes the same
+  worker reservation as a fixed-length upload of that length (exclusive admission if above `W`).
+  Only then is its worker constructed, once, with limits from that reservation, and it reads the
+  spool through the transfer window. Spool files live under the process temp directory (`os.tmpdir()`, no new setting), are
   created `0600` with an unguessable name, and are unlinked on completion, abort, worker failure
   and at startup; `ENOSPC` fails that request only (500 `resource_exhausted`). Only classes that
   can produce a large operation (`document`, `control`) spool; `preauth`, `secret-bearing`,
   `scan` and `interactive-run` bodies are below their ceilings and are never spooled. The spool
   budget (placeholder 4 GiB, benchmark-gated) is a D4 dimension outside groups (a)-(c), so
-  operators may only tighten it; startup validates it against the free space of the temp
-  directory, and the load-test gate requires it to fit `S_main`.
+  operators may only tighten it. Startup validates it against the free space of the temp
+  directory and rejects a value below the in-memory threshold, because the prefix must fit. The
+  load-test gate requires it to fit `S_main`.
 - **Projected row size (readback sizing).** Every readback is sized by the **full projected row**,
   not by content alone. The repositories return whole revision rows (`SELECT *`: `id`,
   `component_id`, `number`, `digest`, `content`, `created_at`), and the response serializes all of
@@ -904,7 +926,9 @@ per-row reservation, backpressure, abort on mid-stream failure.
   from its reserved headroom, and RSS stays within `M_proc`.
 - WHEN a chunked upload crosses the in-memory threshold THEN it is spooled to disk under the spool
   budget, its worker is constructed only after the last byte with limits for the final length,
-  and it gets the same result and digest as the same body sent with `Content-Length`.
+  and it gets the same result and digest as the same body sent with `Content-Length`; no spool
+  grant exceeds the free budget, and a body exactly at the threshold or exactly at the spool
+  budget succeeds.
 - WHEN an existing client posts and fetches a revision above 1 MiB (fixed length and chunked, both
   digest modes, memory and PostgreSQL) THEN it gets 201 / 200 with full content and the same digest
   as on `main`.
@@ -994,7 +1018,7 @@ messages; a file check alone does not satisfy these tests.
 | T27 | unmatched method/path, auth enabled: anonymous -> 401 `unauthenticated` with `WWW-Authenticate`, invalid credentials -> 401, valid principal -> 403 `no_policy`; auth disabled: 404 / 405; each with an empty body and with a malformed JSON body (no 400), 0 body bytes read | `api.test.ts` | L1a, both auth modes |
 | T28 | SAML (`GET` login and metadata, `POST` ACS) and SCIM (each method) with and without a body: response identical to `main` (501 from `notImplemented`), 0 body bytes read; OIDC login and callback: query only, callback audit kept; per-peer 429 applies to all three, the failed-authentication bucket to none of the stubs | `api.test.ts`, `auth/oidc.test.ts` | L1a, tested separately |
 | T29 | worker isolation unit tests: the worker entry module's import allowlist is fixed (a new import fails the test); the gate refuses before the query when `k_ext × bytes` exceeds `x` for write and read, with an injected PostgreSQL client that records issued queries; digest and response encoding never allocate a `Buffer` larger than one window (instrumented `Buffer.alloc`/`TextEncoder`), including a code point split at a slice boundary; at most one window in flight under credit flow; `R_fail` is not available to reservations | `limits/worker.test.ts` (new) | L1a |
-| T30 | one revision (high-expansion JSON, several times the threshold) uploaded **chunked** across several spool growth steps, with slow trickle and with large chunks, and **fixed length**: both give 201 and the same digest as on `main`, in both repositories; for the chunked upload no worker exists before the last byte, exactly one worker is constructed and its `resourceLimits` equal the reservation for the final wire length (same as the fixed-length upload); each spool step is reserved before more bytes are read (socket paused while waiting); readback returns the same content; spool held by other uploads until the wait deadline -> 503 with `Retry-After`; body above the whole spool budget waits for exclusive use; mid-upload disconnect, worker failure, injected `ENOSPC` and restart each leave no spool file and return the spool and memory reservations to zero; spool files are `0600` | `api.test.ts`, `pg-*.test.ts`, `limits/spool.test.ts` (new) | L1a; Pg tests need a database |
+| T30 | one revision (high-expansion JSON, several times the threshold) uploaded **chunked** across several spool growth steps, with slow trickle and with large chunks, and **fixed length**: both give 201 and the same digest as on `main`, in both repositories; for the chunked upload no worker exists before the last byte, exactly one worker is constructed and its `resourceLimits` equal the reservation for the final wire length (same as the fixed-length upload); each spool step is reserved before more bytes are read (socket paused while waiting); readback returns the same content; spool held by other uploads until the wait deadline -> 503 with `Retry-After`; body above the whole spool budget waits for exclusive use; **boundaries**: a body exactly at the in-memory threshold stays a small request (no spool file, no worker) and threshold + 1 byte is spooled; a body between growth boundaries (for example 3 × threshold) succeeds, with the final spool grant clamped to `S_spool` and the worker reservation taken from the final wire length, not from the grant; with other spools holding part of the budget, a body that fits in the free space succeeds through a partial grant without waiting; a body exactly at `S_spool` succeeds (EOF probe, nothing reserved above the budget); `S_spool` + 1 byte fails alone with 500 `resource_exhausted` after exclusive use; the spool reservation high-water never exceeds `S_spool` and the probe never holds more than one socket chunk; mid-upload disconnect, worker failure, injected `ENOSPC` and restart each leave no spool file and return the spool and memory reservations to zero; spool files are `0600` | `api.test.ts`, `pg-*.test.ts`, `limits/spool.test.ts` (new) | L1a; Pg tests need a database |
 | T31 | post-header abort for isolated readbacks (single row and list, both repositories): an injected worker failure before headers (while loading rows, and in the counting pass) gives 500 `resource_exhausted`; an injected failure after the first chunk is written gives an incomplete response (socket closed before `Content-Length` bytes; the client reports a truncated body, never a 200 with a complete body); in both cases the worker, the parent connection and every memory reservation are released exactly once and the next request succeeds; a successful isolated readback sends `Content-Length` equal to the bytes written and byte-identical to `main` | `api.test.ts`, `pg-*.test.ts`, `limits/worker.test.ts` | L1a; Pg tests need a database |
 
 ## Gaps and risks
