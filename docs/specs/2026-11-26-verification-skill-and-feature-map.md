@@ -12,13 +12,15 @@ Add a project-local agent skill, `verify-nurtuo`, that launches an isolated Nurt
 | | |
 |---|---|
 | Pull requests | this PR (spec only) |
+| Issues | none assigned |
+| User docs | internal reviewer skill |
 | ADRs | none (see Open questions Q1, Q2) |
 | Code (planned) | `.agents/skills/verify-nurtuo/` (copied to `.claude/skills/` and `.cursor/skills/`), `core/web/e2e-live/` |
 | Method | pstack `create-verification-skill` (`SKILL.md` and `references/feature-map-example/`) |
 
 ## Problem and goals
 
-Today nothing drives a live backend. All four Playwright specs in `core/web/e2e/` run against a bare Vite server and fake the control plane with `page.route`. `cli/src/e2e.test.ts` uses `startFakeControlPlane`. `TestStandaloneE2EHandshakeAndDeploy` (`core/runtime/cmd/nurtuo/standalone_e2e_test.go`) is the only full-stack test, and it has no UI or CLI. A reviewer therefore cannot see that a change works for a user.
+The missing proof is a live canvas-to-control-plane session. Two existing browser specs intercept control-plane calls and two exercise client-side canvas paths. The export journey also runs a real runtime against pinned SFTP in CI. CLI e2e uses a fake control plane, and the standalone handshake/deploy test covers the backend (with a database substitute available) without the browser or CLI.
 
 - Goals: one documented way for an agent to launch an isolated stack, decide whether it can be driven, run a feature journey on each surface, capture proof and tear the stack down. Also a feature map that Recenzent can match to a PR's changed paths.
 - Non-goals: replacing unit, e2e or interop tests; a new required CI check; changing any product behavior, CLI flag, API or config key; production or remote environments.
@@ -28,9 +30,9 @@ Today nothing drives a live backend. All four Playwright specs in `core/web/e2e/
 | Surface | Entry | Harness |
 |---|---|---|
 | Canvas (`core/web`) | single page `/`, Vite dev server, proxies `/v1` to `NURTUO_CP_URL` (`core/web/vite.config.ts`) | Playwright (chromium), reusing `@nurtuo/web` Playwright install |
-| `nurtuoctl` (`cli/`, bin `dist/index.js`) | `--server`/`--token`, `NURTUO_SERVER`/`NURTUO_TOKEN`, `NURTUO_CONFIG`; `--json`; exit codes 0/1/2/3/4 | PTY transcript via `script(1)`, plus plain pipes for `--json` assertions |
+| `nurtuoctl` (`cli/`, bin `dist/index.js`) | `--server`/`--token`, `NURTUO_SERVER`/`NURTUO_TOKEN`, `NURTUO_CONFIG`; `--json`; exit codes 0/1/2/3/4 | plain pipes with separate streams and exit status |
 | Control-plane API (`core/control-plane/openapi.yaml`) | HTTP on `PORT` (standalone `--port`) | `curl` with a cookie jar and `X-Nurtuo-Csrf`, or a Bearer `nrt_...` token |
-| Runtime (`nurtuo`, `core/runtime/cmd/nurtuo`) | `nurtuo standalone`, `nurtuo flow run`, `nurtuo version` | PTY transcript; observed through the API (`/v1/runtimes`, deployment status) |
+| Runtime (`nurtuo`, `core/runtime/cmd/nurtuo`) | `nurtuo standalone`, `nurtuo flow run`, `nurtuo version` | plain pipes; observed through the API (`/v1/runtimes`, deployment status) |
 
 MCP (`core/mcp`, `nurtuo-mcp --transport http`) is a later surface (phase 4).
 
@@ -40,37 +42,31 @@ MCP (`core/mcp`, `nurtuo-mcp --transport http`) is a later surface (phase 4).
 
 `make dev` cannot be used as is: it starts only the canvas through turbo (only `core/web` has a `dev` script), and `nurtuo standalone` with the default data dir (`~/.local/share/nurtuo`) and port 8080. Standalone also needs `core/control-plane/dist/main.js`, which exists only after a build. The skill ships `launch.sh`, which:
 
-1. Runs `make bootstrap` once when `node_modules` is missing, then builds what the journeys need: `pnpm --filter @nurtuo/control-plane... --filter @nurtuo/cli... --filter @nurtuo/web... build` and `CGO_ENABLED=0 go build -o $RUN/bin/nurtuo ./core/runtime/cmd/nurtuo`.
-2. Creates `RUN=${NURTUO_VERIFY_ROOT:-${TMPDIR:-/tmp}/nurtuo-verify}/<run-id>` with `data/`, `logs/`, `evidence/`, and `state.env`. `state.env` holds the run id, PIDs, ports, git HEAD and the dirty flag.
-3. Picks free loopback ports for the control plane, the gateway and the canvas. It starts `nurtuo standalone --data-dir $RUN/data --port $CP --gateway-addr 127.0.0.1:$GW` in its own process group, then `vite --port $WEB --strictPort` with `NURTUO_CP_URL=http://127.0.0.1:$CP`. Embedded Postgres already uses a free port.
-4. Is ready only when the stack is usable, not merely when a process answers. Standalone's own check (`GET /` < 500) is not enough. Ready requires that `POST /v1/auth/login` as `admin@nurtuo.local` (password in `$RUN/data/secrets/admin-token`) succeeds, that `GET /v1/runtimes` lists runtime `standalone` with `status: online`, and that `GET http://127.0.0.1:$WEB/v1/auth/me` returns 200 through the proxy. The script then writes a per-run `NURTUO_CONFIG` that `nurtuoctl login --token-stdin` fills with a token minted by `POST /v1/workspaces/default/tokens`.
-
-Seed: standalone's bootstrap workspace `default`, owner `admin@nurtuo.local` and runtime `standalone`. Fixtures come from `examples/flows/*.flow.json` and `examples/connections/sftp.connection.json`. Auth stays on. `NURTUO_INSECURE_NO_AUTH=1` is never used, because the journeys must prove the real auth path.
-
-Isolation: everything a run owns sits under `$RUN` and its ports. Two runs can work side by side. The skill refuses to drive any URL or PID that is not in the current `state.env`.
+1. On Linux create a unique owner-only `$RUN` under `NURTUO_VERIFY_ROOT` (default `$TMPDIR/nurtuo-verify`, with /tmp as fallback). Use umask 077. Pin the harness and product commit SHAs independently. For each product run create a detached clean worktree at `$RUN/src`, install with the frozen lockfile, build the control-plane, CLI and web package closures there and build the Go executable into `$RUN/bin`. Use that worktree's CLI, Vite root and absolute `--control-plane-entry "$RUN/src/core/control-plane/dist/main.js"`. Stage harness journeys from the same pinned revision for both products, with private fixture copies, dependencies and output directories.
+2. Build and drive from an allowlisted environment with a private HOME, tool paths and explicitly selected build caches. Construct each child's settings from validated run state. Drop inherited Nurtuo variables, proxy, curl, Node and browser overrides, including `NURTUO_INSECURE_NO_AUTH`, `NURTUO_TRUST_PROXY` (even empty), workspace/admin overrides, server, data dir and token. Disable curl startup files and redirects. Drivers accept structured supported operations, fixed relative API routes and validated operands. Reject caller-supplied global flags (including equals forms, aliases and config, credential or destination overrides), absolute or authority-relative URLs and unexpected arguments before any request. Browser requests stay on recorded origins.
+3. Gate startup on a product revision with verified explicit loopback binding (Q8). Today's standalone drops the host from `--gateway-addr` when configuring the child and both Node listeners omit the host. Until the prerequisite lands, skip live runs before spawning standalone. Supply numeric loopback addresses to both supported listeners, start standalone with its private data directory and start Vite from `core/web` with `--host 127.0.0.1 --port $WEB --strictPort` and run-local `NURTUO_CP_URL`. Allocate distinct ports and fail on a bind race. Before sending credentials inspect all actual CP, gateway, DB and web listeners with `ss -ltnp`; require loopback-only addresses and the ownership checks below. Stop on a wildcard, unexpected owner or unverifiable listener.
+4. Journal run id, canonical paths, SHAs, ports, supervisor PID/start time and PGID for each dedicated group atomically as resources are acquired. Record CP child identity and the detached postmaster identity from `$RUN/data/postgres/data/postmaster.pid`, including Linux process start times. Parse state as data. Recover partial acquisitions only after checking ownership against the private run directory.
+5. Require anonymous `GET /v1/auth/me` to return 401 directly and via Vite. Authenticate as `admin@nurtuo.local` using the private bootstrap password in `data/secrets/admin-token`. Require authenticated proxied `/v1/auth/me` to return 200 and `/v1/runtimes` to list standalone online. Use the setup session and CSRF header to mint a named workspace token with run-bounded `expiresInSeconds`. Grant only scopes used by selected operations (component:read for doctor, component:write for push, runtime:read and deployment:read/create for deploy, spelled `deployment:read` and `deployment:create`). Local tooling needs no token. Record its id privately. The harness itself runs `nurtuoctl login --server "$RECORDED_CP_URL" --token-stdin` through a private pipe with `NURTUO_CONFIG=$RUN/private/cli.json`. Validate the stored destination before each CLI drive.
 
 ### Doctor
 
-`doctor.sh <run-id>` is read-only apart from one session login. It checks that every PID in `state.env` is alive and owns its port (`ss -ltnp`), that git HEAD and the dirty flag still match launch, that `GET /v1/auth/me` with the run's session returns 200, that `standalone` is `online`, that the canvas serves `/` and proxies `/v1/auth/me`, and that `nurtuoctl component list --json` exits 0. It prints one line per check and exits non-zero on the first failure.
+Doctor reuses the private setup session for read-only checks. Validate the scrubbed child environment, clean product and harness identities, and supervisor start times. Resolve socket PIDs to the live descendants in their recorded groups (Node owns the CP and gateway, a Vite child may own web). Match Postgres separately by PID, start time and exact data directory. Require the original CP child throughout each journey, checking again before accepting evidence. A supervised restart loses in-memory connection secrets and invalidates the run even if health recovers. Repeat the launch address, session/proxy and runtime checks, serve canvas /, and require CLI component list --json to exit 0. Report the failed stage and stop on failure.
 
 ### Drive
 
-- Canvas: journeys live in `core/web/e2e-live/*.spec.ts`. They use their own `playwright.config.ts` with `baseURL` from `NURTUO_VERIFY_WEB_URL`, no `webServer` and no `page.route`. Selectors follow the existing specs: roles and accessible names (`Sign in`, `Workspace`, `Connections`, `Save connection`, `Configure <stepId>`, `Diagnostics`). React Flow nodes keep `.react-flow__node[data-id=...]`, because the repo has no `data-testid`. Run them with `pnpm --filter @nurtuo/web exec playwright test -c e2e-live/playwright.config.ts --output $RUN/evidence/<feature>/pw`.
-- CLI: `verify.sh cli <run-id> -- nurtuoctl ...` runs the command under `script -qec` with the run's `NURTUO_CONFIG`. It records the command, the transcript, stdout, stderr and the exit code.
-- API: `verify.sh api <run-id> <METHOD> <path> [body]` sends the run's session cookie and CSRF header and records the request and the response status and body.
+- Canvas journeys in `core/web/e2e-live/` use Chromium, a dedicated Playwright config and tsconfig, the recorded Vite base URL, existing accessible names and React Flow node ids. Start the browser from the scrubbed environment. Drive the real UI without route mocks. Give F1 its own browser session so logout leaves the setup session available.
+- CLI and runtime commands execute once on plain pipes. Preserve separate stdout, stderr and exit status subject to the evidence rules. Login stdin is private. Never replay a mutation for a transcript.
+- API steps use a private cookie jar plus CSRF header or a scoped bearer. Confirm mutations from a second read-only view where available. Report unmet prerequisites as skipped.
 
 ### Evidence and proof standards
 
-Evidence lives in `$RUN/evidence/<feature-id>/`, outside `data/`, and cleanup keeps it. Each artifact records the feature id, the entry point, git HEAD and a timestamp. The admin password, session cookies, tokens and connection secrets are redacted before writing.
+Keep jars, CLI config, logs and browser profile in private disposable storage. Disable Playwright tracing, video, automatic screenshots, request dumps and failure attachments throughout live runs. Use an allowlist per step. Login, token operations and connection writes record only operation name, status and approved assertions. Never serialize raw headers, bodies, argv or streams. Other steps may retain selected safe fields from separate streams, safe ARIA text and masked screenshots only of approved post-action views after sensitive fields disappear. Exclude generic runner reports and stacks that echo inputs.
 
-- Drive the real user path: no internal setters, test-only endpoints, mocks or `NURTUO_INSECURE_NO_AUTH`.
-- Capture the action and the resulting state. For the canvas that means a Playwright trace, an ARIA snapshot and a screenshot. For the CLI it means the transcript and the exit code.
-- Confirm every mutation from a second, read-only view: CLI after UI, API after CLI.
-- Report an unreachable entry point as skipped, with the command and the unmet precondition. Never report it as verified through another path.
+Stage artifacts privately. On both success and failure check every candidate's type and fields, reject archives (including trace zips), and scan textual content for actual run secrets and canaries, including the admin/signing password, session, CSRF, API and SFTP credentials. Test image masking with a visible canary and reject unapproved images. Publish only passing artifacts to `$RUN/evidence/<feature-id>/` with feature, entry, SHAs, timestamp and assertion. On scan failure discard the batch and report only a safe failure stage.
 
 ### Cleanup
 
-`cleanup.sh <run-id>` kills only the process groups recorded in `state.env` (never by name), removes containers labelled with the run id, deletes `data/`, `bin/` and `logs/` except copies under `evidence/`, and checks that the ports are free. A cleanup that deletes `evidence/` fails the skill's own proof.
+While the original CP is healthy revoke the setup token by id with the setup session and verify denial of its bearer. Send SIGINT to the revalidated standalone group and wait for graceful shutdown. Postgres starts its own session. If still running, verify start time and exact run data path, then use `$RUN/data/postgres/runtime/bin/pg_ctl stop -m fast -D "$RUN/data/postgres/data"`. Escalate only against individually revalidated survivors. Recheck identity, group membership and run paths before signaling, including Vite. Refuse ambiguous or recycled IDs. Recover an unjournaled postmaster from its private pidfile only with corroborating process and directory evidence. Remove only containers with the recorded id and run label, remove the registered worktree, delete private material, and verify owned listeners are gone. Keep sanitized evidence. Surface incomplete cleanup and preserve private recovery state for retry.
 
 ### Feature map (seed)
 
@@ -78,63 +74,78 @@ Evidence lives in `$RUN/evidence/<feature-id>/`, outside `data/`, and cleanup ke
 
 | ID | Feature | Entry points | End-to-end proof |
 |---|---|---|---|
-| F1 | Sign in and session | canvas `Email`/`Password`/`Sign in`, `Workspace` select, `Log out`; `POST /v1/auth/login`, `GET /v1/auth/me` | the `Workspace` select shows `default`; a reload restores the session; after `Log out`, `/v1/auth/me` returns 401 and a mutating call without `X-Nurtuo-Csrf` is rejected |
+| F1 | Sign in and session | canvas `Email`/`Password`/`Sign in`, `Workspace` select, `Log out`; `POST /v1/auth/login`, `GET /v1/auth/me` | the `Workspace` select shows `default`; a reload restores the session; while authenticated send a valid component creation without `X-Nurtuo-Csrf`, require 403 with `error.code == "csrf"` and verify the component is absent; then click `Log out` and require 401 from `/v1/auth/me` when replaying that session’s former cookie |
 | F2 | Edit, validate and save a flow on the canvas | palette drag, connect, `Configure <stepId>`, Undo/Redo, `Diagnostics (N errors, M warnings)`, `Save flow`, `Load JSON` | diagnostics name the broken step; the saved file passes `nurtuoctl validate --json` (`valid: true`); `Load JSON` of the saved file gives the same nodes and edges |
 | F3 | Local flow tooling | `nurtuoctl validate`, `fmt --check`, `diff --exit-code`, `init -t http-get` | exit codes and `--json` diagnostics on a valid and a broken copy of `examples/flows/get-employee.flow.json` |
 | F4 | Push and pull revisions | `nurtuoctl flow push --create`, `component revisions`, `flow pull`; `POST /v1/components/{id}/revisions` | revision number and `sha256:` digest listed by the CLI and by `GET /v1/components/{id}/revisions`; the pulled file equals the canonical pushed file |
 | F5 | Workspace SFTP connections | canvas `Connections` dialog (`Connection id`, `Host key`, `Save connection`, `Delete`); `PUT/GET/DELETE /v1/workspaces/default/connections/{id}` | after save, `GET` returns the settings and `secrets: {password: "set"}`, never the value; after `Delete`, `GET` returns 404 |
-| F6 | Deploy to the standalone runtime | `nurtuoctl deploy <c> --runtime standalone --wait`, `deploy status`; `POST /v1/deployments` | status and `GET /v1/runtimes/standalone/desired-state` show the revision. Today the runtime reports `error` ("no bundle_dir configured", `docs/operations.md`) and the deployment never reaches `running`; that needs #64 phase 4 ([#109](https://github.com/nurtuo/nurtuo/pull/109)) |
+| F6 | Deploy to the standalone runtime | `nurtuoctl deploy <c> --runtime standalone --wait`, `deploy status`; `POST /v1/deployments` | match the deployment ID and intended revision against status and runtime desired state. For the bundle-less fixture require terminal API status `failed`, message prefix `no bundle_dir configured` and CLI exit 1. Timeout fails separately. Add a `running` / exit 0 assertion only for a fixture supplying an executable bundle after [#109](https://github.com/nurtuo/nurtuo/pull/109) |
 | F7 | Run a flow locally | `nurtuo flow run <flow> --connection <file> --json`; canvas export, as in `core/web/e2e/flow-run-export.spec.ts` | the output equals a known file served by a run-labelled `atmoz/sftp` container at the digest pinned in `.github/workflows/ci.yml`, with the host key checked through `known_hosts` |
 
-Later candidates: MCP `validate`/`apply_ops`/`deploy`, and canvas Run when the [canvas Run spec](2026-11-23-canvas-run.md) lands.
+F2, F3 and the F7 export half need no control plane. For F7 reuse the CI fixture, generate private conn.json with the actual mapped loopback port, verified host key and a run-generated password passed via `NURTUO_SECRET_SFTP_PASSWORD`. Label the container `nurtuo-verify=<run-id>` and record its id. F5 loses secret values if the CP restarts.
 
 ### How Recenzent uses it
 
-1. Map the PR's changed paths to features with the README table (for example `core/web/src/ui/ConnectionsPanel.tsx` maps to F5, `cli/src/**` to F3, F4 and F6).
-2. Launch the PR head, run doctor, drive the matched features and run cleanup. Doctor failing on the PR head while passing on `main` is itself a finding.
-3. A failed journey is rerun on `main`. If it fails only on the PR, it is a blocker (regression) or a major (new feature not working). If it fails on both, it is reported as pre-existing and does not block.
-4. The review comment lists each feature id with its result (verified, failed or skipped with a reason) and the evidence paths. Recenzent posts text summaries only, redacted, and no secrets.
-5. A PR that adds or changes a user-facing feature without a matching map entry gets a minor finding, and the map is updated through `maintain-verification-skill`.
+Route by the changed operation within a file. The index records an assertion or a reason for deferral/exclusion for each shipped command, route and surface. Shared paths select candidate journeys only.
+
+| Changed behavior | Journey or disposition |
+|---|---|
+| CP auth and canvas session | F1 local sign-in, restoration, CSRF and logout. Defer OIDC/SAML pending IdP fixtures. |
+| Canvas editing, diagnostics, import/export | F2 and F7 export. Defer canvas Run pending its [spec](2026-11-23-canvas-run.md). |
+| CLI flowtools and SDK schema/canonicalization | F3 local diagnostics and F4 revision round trip where affected |
+| CLI flow push/pull, CP revisions | F4. Defer standalone component get/create/delete and CLI completion until dedicated assertions exist. |
+| CP connections and canvas ConnectionsPanel | F5 save, masked read and delete |
+| Gateway, bundle, runtime desired state, CLI deploy/status | F6 terminal outcome. Defer CLI runtime list and CLI logout until their own output/state is checked. CLI login is exercised in setup. |
+| Runtime flow execution, SFTP connector and canvas export | F7 known-file result. Other connectors/SDK operations need named fixtures before claiming coverage. |
+| Workspace membership/authorization, workspace management, token list and audit | Deferred pending multi-user and audit assertions. Token creation/login and revocation/denial covered in setup/teardown only. |
+| Runtime run --config, secret and validate-key | Deferred pending config, keystore and key fixtures. Host service installation excluded from this local stack. |
+| MCP inventory, reads, validate/apply_ops and deploy | Deferred beyond F7 until a transport/client and permission fixtures exist. Deploy requires explicit opt-in and an isolated target. |
+
+For a mapped assertion run doctor, drive, recheck health and clean up. Retry a failure on a fresh healthy head run, then use the identical harness and assertion on a separate clean worktree pinned to the recorded main SHA. Keep independent builds and fixtures. Classify unavailable infrastructure, an unhealthy run or intermittent results as skipped/inconclusive with stage and reason. A repeatable head failure with a passing supported base is a regression. Only matching assertion and failure cause on a supported base establish a pre-existing failure. If the base lacks the product operation, record unsupported-on-base and judge the new feature against its stated acceptance criteria. A missing base harness is immaterial. Report verified/failed/skipped by feature and flag a missing map entry as minor. Severity policy awaits Q6.
 
 ## Contracts
 
-None changed. All new files are internal: the skill, its helpers and `core/web/e2e-live/`. Env vars that only the skill reads (`NURTUO_VERIFY_ROOT`, `NURTUO_VERIFY_WEB_URL`) are internal.
+The skill reads internal run settings. Product listener configuration requires separate approval and delivery under Q8.
 
 ## Security
 
-The stack binds only to loopback. Each run has its own data dir and secrets, so the developer's `~/.local/share/nurtuo` is never touched. Real auth is always on. Evidence redaction covers the admin password, cookies, `nrt_` tokens, CSRF tokens and connection secrets. The SFTP password is generated per run, as in CI.
+Run live journeys only on Linux with inspectable process and socket ownership. The current wildcard listeners make the existing product ineligible for local live launch. Apply the pre-credential gate, private environment and evidence allowlists above to every path, including failure reporting.
 
 ## Testing
 
-| Test | What it covers | How to run | Notes |
-|---|---|---|---|
-| skill self-proof | launch, doctor, F1, cleanup, then evidence still present | `launch.sh` / `doctor.sh` / F1 journey / `cleanup.sh` | output attached to each implementation PR |
-| `scripts/check-agent-skills-sync.sh` | `.claude/skills` and `.cursor/skills` equal `.agents/skills` | as is | already in CI |
-| `shellcheck` on helpers | script errors | in the `licenses`/lint job | new step |
-| optional `verify-smoke` job | the self-proof on Linux CI | non-required job | Q5 |
+- PR1 self-proof exercises launch, doctor, F1 and idempotent cleanup. Inject conflicting dummy server/token, insecure auth and proxy settings and attempted CLI overrides, including login destination. Assert a second local receiver gets zero requests and anonymous access still fails.
+- Exercise wildcard rejection before login, interrupted partial startup, orphaned Postgres, CP restart, stale/reused identity and repeated cleanup while a sibling run remains healthy. Check retained evidence on successful and deliberately failing secret-bearing steps, including a forbidden trace fixture containing a compressed canary. Verify safe evidence survives teardown and private material is removed.
+- Add the currently local skill-sync checker to CI in PR1, shellcheck helpers, check shell SPDX explicitly (boundaries omits shell) and typecheck live specs with their own config.
+- Extend optional Linux web-e2e (Q5), reuse its pinned SFTP and Chromium setup including OS deps, enforce a bounded job timeout and run cleanup on failure/cancellation with runner teardown as fallback. Include runtime, web, CP, CLI, skill/live spec, shared SDK, dependency and workflow paths. Measure cold/warm elapsed time and runner-minutes including independent base install/build and rerun before setting the budget.
 
 ## Gaps and risks
 
-| # | Scenario (concrete) | Severity | Area | Mitigation / follow-up |
-|---|---|---|---|---|
-| 1 | The first `nurtuo standalone` downloads embedded Postgres binaries; an offline sandbox times out at launch | medium | launch | doctor reports it as a failed precondition; cache dir under `NURTUO_VERIFY_ROOT` reused across runs |
-| 2 | F6 can never reach `running` until #109 merges, so Recenzent might mark every deploy PR as failing | medium | F6 | Gotcha records the expected outcome; until #109 the journey asserts a non-`running` status with the `no bundle_dir configured` message, then `running` |
-| 3 | The canvas has no `data-testid`; a CSS refactor of `.react-flow__node` breaks F2 journeys without a behavior change | low | F2 | prefer roles; flag the selectors in Gotchas; adding test ids is a separate small fix |
-| 4 | A run killed mid-way leaves Postgres and ports bound | low | cleanup | `cleanup.sh` works from `state.env` alone and is safe to run twice |
+- Offline Postgres provisioning (medium). Its cache is fixed at `data/postgres/cache`. Seed a private copy before launch from a version/OS/architecture-keyed archive cache under the verification root. After successful startup atomically publish completed cache entries. Cache those entries in CI. An offline cache miss is a skipped precondition.
+- Interrupted shutdown (medium). Exercise the detached database and identity-checked recovery paths above. A stale PID alone never authorizes a signal.
+- CSS selector drift (low). Prefer roles and document React Flow node selectors in F2.
 
 ## Phased plan
 
-1. PR1: `.agents/skills/verify-nurtuo/SKILL.md`, `launch.sh`, `doctor.sh`, `verify.sh`, `cleanup.sh`, `features/README.md`, F1 (`sign-in.md` plus `core/web/e2e-live/sign-in.spec.ts`) proven once, the skill copies, and the self-proof output in the PR. The spec moves to `in progress`.
-2. PR2: F3 and F4 (CLI and API only).
-3. PR3: F2 and F5 (canvas).
-4. PR4: F6 and F7 (container and runtime), then MCP. The spec moves to `implemented/`.
+1. After approval and the listener prerequisite, PR1 delivers the skill source and mirrors, launch/doctor/drive/cleanup, indexed dispositions, F1 and self-proof. Move status to in progress.
+2. PR2 adds F3 and F4.
+3. PR3 adds F2 and F5.
+4. PR4 adds F6 and F7. Move to implemented after proof. MCP needs a subsequent scoped phase.
+
+## Improvement opportunities
+
+Add successful bundle deployment and MCP coverage when their prerequisites exist.
 
 ## Open questions (for Łukasz)
 
-- Q1, skill location: `AGENTS.md` makes `.agents/skills/` the source and `.cursor/skills/` a byte-identical copy, so a skill only in `.cursor/skills/verify-nurtuo/` fails `check-agent-skills-sync.sh`. Recommendation: source in `.agents/skills/verify-nurtuo/`, copied by `--fix`, and update `AGENTS.md` (Skills table) and `NOTICE.md` (which today says every directory is imported from mattpocock/skills).
-- Q2, license: `.agents/skills/` holds MIT third-party code, and the license map in `AGENTS.md` does not cover this directory. Recommendation: Apache-2.0 with SPDX headers on the skill and helpers (it imports nothing from `core/`), listed as first-party in `NOTICE.md`. `core/web/e2e-live/` stays AGPL like the rest of `core/web`.
-- Q3, the first proven feature in PR1: Recommendation: F1 sign-in. It is the smallest journey that crosses the canvas, the proxy, the control plane, Postgres and real auth, and it replaces the mocked `session.spec.ts` path with a live one.
-- Q4, the CLI harness: `node-pty` would be a new dependency, which needs your approval. Recommendation: `script(1)` from util-linux, with no new dependency. `nurtuoctl` is non-interactive apart from `login --token-stdin`.
-- Q5, CI: Recommendation: add a non-required `verify-smoke` job that runs the self-proof on PRs touching `.agents/skills/verify-nurtuo/**` or `core/web/e2e-live/**`. Adding a job needs no owner approval, but the extra 5-10 minutes of CI time is your call.
-- Q6, Recenzent severity: Recommendation: as in "How Recenzent uses it" step 3 (regression = blocker, new feature not working = major, pre-existing = report only). Live verification is required for PRs that touch a mapped path and optional for docs-only PRs.
-- Q7, where evidence goes for the review: Recommendation: keep artifacts local in `$RUN/evidence/` and post only the redacted text summary in the review comment. No uploads to GitHub or other external services for now.
+| Decision | Recommendation |
+|---|---|
+| Q1. Where should the skill live? | Author in `.agents/skills/verify-nurtuo/`, sync both Claude and Cursor mirrors and update AGENTS.md and NOTICE for first-party provenance. |
+| Q2. Which license? | Accept inherited MIT under the nearest LICENSE for the skill and helpers. Keep live tests under core’s AGPL. Choosing Apache-2.0 instead needs a local LICENSE and licensing documentation, with owner review before merge. |
+| Q3. Which first journey? | Start with F1, including authenticated CSRF rejection and revoked-session replay. |
+| Q4. How should the CLI run? | Use plain pipes once per command for separate streams and exit status. |
+| Q5. Where should smoke run? | Extend optional web-e2e across product and harness paths. Measure cold, warm and baseline costs before setting a budget. |
+| Q6. Should live findings affect merging? | Approve an explicit amendment to the review rules for mapped behavior. Grade a reproducible healthy-head regression as blocker, a demonstrated new-feature acceptance failure as major and a matching baseline failure as informational. Infrastructure and flakes are inconclusive. |
+| Q7. Who can inspect evidence and for how long? | Keep sanitized local evidence seven days, then prune it. CI emits only a safe assertion summary, SHAs, feature, exit status and stage before teardown. Exclude live artifacts from upload. |
+| Q8. How should listeners be confined? | Approve a separate product spec/PR for explicit loopback hosts on both servers. Gate live launch on that capability and verify actual sockets before login. |
+| Q9. How should head and main be compared? | Pay for separate clean worktrees/builds and one pinned harness. Record unsupported base features separately and judge them on head against explicit acceptance criteria. |
+| Q10. What may survive a secret-bearing step? | Keep only allowlisted assertion fields and approved masked post-action views. Disable raw traces and test evidence with real values and canaries on success and failure. |
