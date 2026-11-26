@@ -389,15 +389,41 @@ stated physical bound**, reserved before allocation:
   size. When the body ends, its exact wire length is known. The operation then takes the same
   worker reservation as a fixed-length upload of that length (exclusive admission if above `W`).
   Only then is its worker constructed, once, with limits from that reservation, and it reads the
-  spool through the transfer window. Spool files live under the process temp directory (`os.tmpdir()`, no new setting), are
-  created `0600` with an unguessable name, and are unlinked on completion, abort, worker failure
-  and at startup; `ENOSPC` fails that request only (500 `resource_exhausted`). Only classes that
-  can produce a large operation (`document`, `control`) spool; `preauth`, `secret-bearing`,
+  spool through the transfer window. `ENOSPC` fails that request only (500 `resource_exhausted`).
+  Only classes that can produce a large operation (`document`, `control`) spool; `preauth`, `secret-bearing`,
   `scan` and `interactive-run` bodies are below their ceilings and are never spooled. The spool
   budget (placeholder 4 GiB, benchmark-gated) is a D4 dimension outside groups (a)-(c), so
   operators may only tighten it. Startup validates it against the free space of the temp
   directory and rejects a value below the in-memory threshold, because the prefix must fit. The
   load-test gate requires it to fit `S_main`.
+- **Spool ownership (instance-private, liveness-aware).** Several control-plane processes can
+  share one temp directory, for example a restarting process next to its successor or two
+  instances on one host. So no process may delete a file it does not own:
+  - *Private directory.* At startup each process creates its own spool directory,
+    `mkdtemp(join(os.tmpdir(), "nurtuo-spool-"))`, with mode `0700`. This needs no new setting. The
+    process writes spool files only there. It never opens, lists or unlinks files in another
+    process's directory.
+  - *Unlinked at open.* A spool file is created with `O_CREAT | O_EXCL`, mode `0600` and an
+    unguessable name. It is **unlinked right after it is opened, before the first body byte is
+    written**. From then on the process uses only the open descriptor: it writes the body, then
+    reads it back through the transfer window. A live spool file therefore has no name that
+    another process could delete. A crash leaves no content behind, because the kernel frees the
+    blocks when the descriptor closes. Closing the descriptor on completion, abort, disconnect,
+    deadline and worker failure frees the space, and the spool reservation is released exactly
+    once.
+  - *Lease.* To tell abandoned directories from live ones, the owner touches a `lease` file in its
+    directory every 10 s (code value).
+  - *Sweep.* A sweep at startup and every minute removes only other `nurtuo-spool-*` directories
+    whose lease is older than the stale age. The stale age is 10 min (code value), longer than the
+    300 s `requestTimeout` plus the wait deadline. A directory with a fresh lease is never
+    removed. Because live files are already unlinked, a wrong removal could take only names,
+    never the bytes of a live upload. A process that finds its own directory missing recreates it
+    before it opens the next spool file.
+  - *No unlink of open files.* On platforms where an open file cannot be unlinked (Windows), the
+    file keeps its name inside the private directory until it is closed, and the lease rule alone
+    protects it.
+  - *Shared disk.* Startup checks the spool budget against free space, but processes that share
+    a disk can still oversubscribe it. `ENOSPC` then fails only the request that hit it (Gaps #14).
 - **Projected row size (readback sizing).** Every readback is sized by the **full projected row**,
   not by content alone. The repositories return whole revision rows (`SELECT *`: `id`,
   `component_id`, `number`, `digest`, `content`, `created_at`), and the response serializes all of
@@ -821,8 +847,12 @@ code; that is a public contract change and is covered by Łukasz's approval of D
   or loopback). Login has no such server-side check today; adding one is out of scope.
 - SSRF: canvas D11 applies at the actual dial, for retries and both address families (D12);
   `known_hosts` execution fails closed.
-- Large-body staging, if L2 adds it later, holds customer content and needs private access, bounded
-  retention and cleanup after crashes. Isolation workers (D14) never write content to disk.
+- L1a's chunked-upload spool holds component content on disk: a per-process `0700` directory,
+  `0600` files unlinked right after open (no name, freed by the kernel on crash), the spool budget,
+  and a lease-based sweep that never touches a live process's directory ("Spool ownership").
+  Large-body staging, if L2 adds it later, needs the same private access, bounded retention and
+  cleanup after crashes. Isolation workers (D14) never write content to disk; the parent writes
+  the spool.
 - Stronger than Boomi: credential binding with 409 on rebind and the zero-authentication test (S1),
   secret permissions, session, CSRF and trusted TLS (S2), server-assigned credential slots (S5),
   mandatory host-key verification (S3), and vetted-address pinning on every dial, credential-free
@@ -925,7 +955,8 @@ per-row reservation, backpressure, abort on mid-stream failure.
   request fails with 500 before the allocation (no content query issued), the parent sends the 500
   from its reserved headroom, and RSS stays within `M_proc`.
 - WHEN a chunked upload crosses the in-memory threshold THEN it is spooled to disk under the spool
-  budget, its worker is constructed only after the last byte with limits for the final length,
+  budget in a private per-process spool directory, its worker is constructed only after the last
+  byte with limits for the final length,
   and it gets the same result and digest as the same body sent with `Content-Length`; no spool
   grant exceeds the free budget, and a body exactly at the threshold or exactly at the spool
   budget succeeds.
@@ -1018,7 +1049,7 @@ messages; a file check alone does not satisfy these tests.
 | T27 | unmatched method/path, auth enabled: anonymous -> 401 `unauthenticated` with `WWW-Authenticate`, invalid credentials -> 401, valid principal -> 403 `no_policy`; auth disabled: 404 / 405; each with an empty body and with a malformed JSON body (no 400), 0 body bytes read | `api.test.ts` | L1a, both auth modes |
 | T28 | SAML (`GET` login and metadata, `POST` ACS) and SCIM (each method) with and without a body: response identical to `main` (501 from `notImplemented`), 0 body bytes read; OIDC login and callback: query only, callback audit kept; per-peer 429 applies to all three, the failed-authentication bucket to none of the stubs | `api.test.ts`, `auth/oidc.test.ts` | L1a, tested separately |
 | T29 | worker isolation unit tests: the worker entry module's import allowlist is fixed (a new import fails the test); the gate refuses before the query when `k_ext × bytes` exceeds `x` for write and read, with an injected PostgreSQL client that records issued queries; digest and response encoding never allocate a `Buffer` larger than one window (instrumented `Buffer.alloc`/`TextEncoder`), including a code point split at a slice boundary; at most one window in flight under credit flow; `R_fail` is not available to reservations | `limits/worker.test.ts` (new) | L1a |
-| T30 | one revision (high-expansion JSON, several times the threshold) uploaded **chunked** across several spool growth steps, with slow trickle and with large chunks, and **fixed length**: both give 201 and the same digest as on `main`, in both repositories; for the chunked upload no worker exists before the last byte, exactly one worker is constructed and its `resourceLimits` equal the reservation for the final wire length (same as the fixed-length upload); each spool step is reserved before more bytes are read (socket paused while waiting); readback returns the same content; spool held by other uploads until the wait deadline -> 503 with `Retry-After`; body above the whole spool budget waits for exclusive use; **boundaries**: a body exactly at the in-memory threshold stays a small request (no spool file, no worker) and threshold + 1 byte is spooled; a body between growth boundaries (for example 3 × threshold) succeeds, with the final spool grant clamped to `S_spool` and the worker reservation taken from the final wire length, not from the grant; with other spools holding part of the budget, a body that fits in the free space succeeds through a partial grant without waiting; a body exactly at `S_spool` succeeds (EOF probe, nothing reserved above the budget); `S_spool` + 1 byte fails alone with 500 `resource_exhausted` after exclusive use; the spool reservation high-water never exceeds `S_spool` and the probe never holds more than one socket chunk; mid-upload disconnect, worker failure, injected `ENOSPC` and restart each leave no spool file and return the spool and memory reservations to zero; spool files are `0600` | `api.test.ts`, `pg-*.test.ts`, `limits/spool.test.ts` (new) | L1a; Pg tests need a database |
+| T30 | one revision (high-expansion JSON, several times the threshold) uploaded **chunked** across several spool growth steps, with slow trickle and with large chunks, and **fixed length**: both give 201 and the same digest as on `main`, in both repositories; for the chunked upload no worker exists before the last byte, exactly one worker is constructed and its `resourceLimits` equal the reservation for the final wire length (same as the fixed-length upload); each spool step is reserved before more bytes are read (socket paused while waiting); readback returns the same content; spool held by other uploads until the wait deadline -> 503 with `Retry-After`; body above the whole spool budget waits for exclusive use; **boundaries**: a body exactly at the in-memory threshold stays a small request (no spool file, no worker) and threshold + 1 byte is spooled; a body between growth boundaries (for example 3 × threshold) succeeds, with the final spool grant clamped to `S_spool` and the worker reservation taken from the final wire length, not from the grant; with other spools holding part of the budget, a body that fits in the free space succeeds through a partial grant without waiting; a body exactly at `S_spool` succeeds (EOF probe, nothing reserved above the budget); `S_spool` + 1 byte fails alone with 500 `resource_exhausted` after exclusive use; the spool reservation high-water never exceeds `S_spool` and the probe never holds more than one socket chunk; mid-upload disconnect, worker failure, injected `ENOSPC` and restart each leave no spool file and return the spool and memory reservations to zero; spool directory `0700`, spool files `0600` and without a directory entry after open (directory listing empty during an upload); **spool ownership**: a second instance started mid-upload on the same temp directory leaves the first upload intact (201, same digest), and its startup sweep removes nothing of the live instance; a process killed (`SIGKILL`) mid-upload while a second process completes its own upload: the second upload completes with the same digest, the killed process leaves no spool content, and its directory is removed only after its lease is stale, never while the lease is fresh | `api.test.ts`, `pg-*.test.ts`, `limits/spool.test.ts` (new) | L1a; Pg tests need a database |
 | T31 | post-header abort for isolated readbacks (single row and list, both repositories): an injected worker failure before headers (while loading rows, and in the counting pass) gives 500 `resource_exhausted`; an injected failure after the first chunk is written gives an incomplete response (socket closed before `Content-Length` bytes; the client reports a truncated body, never a 200 with a complete body); in both cases the worker, the parent connection and every memory reservation are released exactly once and the next request succeeds; a successful isolated readback sends `Content-Length` equal to the bytes written and byte-identical to `main` | `api.test.ts`, `pg-*.test.ts`, `limits/worker.test.ts` | L1a; Pg tests need a database |
 
 ## Gaps and risks
@@ -1036,7 +1067,7 @@ messages; a file check alone does not satisfy these tests.
 | 9 | c-ares resolver ignores `/etc/hosts`/search domains, so a host that resolves for the system resolver fails in Run | low | UX | documented; CI uses IP literals with `NURTUO_TEST_RUN_ALLOW_PRIVATE=1` |
 | 10 | Isolation worker transfer (structured clone) doubles memory for large trees | medium | performance | reservation counts it in `k`; child-process alternative chosen by measurement |
 | 13 | A worker allocates external memory (driver, `crypto`, encoding) that its heap limit does not cap, and the shared process is OOM-killed before the parent can answer | high | availability | pre-allocation gate against `x` with `k_ext`, sliced conversions, import allowlist, `R_fail`; T24, T29; child process with an OS memory limit if a path cannot be gated || 11 | A deployment behind a TLS proxy without `NURTUO_TRUST_PROXY=1` cannot save credentials (403 `tls_required`) | low | UX | documented in operations; the error names the setting |
-| 14 | Spooled chunked uploads fill the disk or leave component content on disk | medium | availability, confidentiality | instance spool budget validated at startup against free space, `ENOSPC` fails the request only, files `0600` with unguessable names, unlinked on completion, abort and startup; T30 |
+| 14 | Spooled chunked uploads fill the disk, leave component content on disk, or one process deletes another's spool | medium | availability, confidentiality | instance spool budget validated at startup against free space (processes sharing a disk can still oversubscribe it; `ENOSPC` fails the request only); per-process `0700` spool directory; files `0600` with unguessable names, unlinked right after open so a crash leaves no content; lease-based sweep removes only stale directories of other processes; T30 |
 | 12 | `NURTUO_TRUST_PROXY=1` while the listener is also reachable directly, or behind a proxy that appends client headers: a client forges `X-Forwarded-Proto: https` or its peer key | medium | security | trusted-proxy deployment invariant documented in operations and the error text; rule (a) needs exactly one `https` value; T17. A bind-address setting would let the server enforce part of it, but is a new configuration key (Ask First) and not part of this spec |
 | 15 | A large list holds a parent PostgreSQL connection idle in transaction until the worker imports the exported snapshot; a server `idle_in_transaction_session_timeout` or an exhausted parent pool ends or delays it | low | availability | the hold lasts only until the import is acknowledged and is bounded by the wait deadline; the connection is counted in the parent pool; a failed import fails that request before headers (500) with no content query; T11 |
 
