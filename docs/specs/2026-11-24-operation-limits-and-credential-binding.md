@@ -305,6 +305,19 @@ stated physical bound**, reserved before allocation:
     the response and passes it to the parent through the transfer window; the parent writes to the
     socket and stops the worker's producer while the socket's `writableLength` is at the window
     size. For `MemoryRepository` the copy given to the worker is charged to the worker reservation.
+  - *When the status is sent.* An isolated upload sends its 201 only after the write has
+    committed, so every upload failure comes before headers and gets 500. An isolated readback
+    sends its 200 only after the worker has loaded every row of the response and computed the
+    exact response length in a counting serialization pass. That pass runs in slices of one
+    window and keeps no output. The response then keeps the `Content-Length` framing it has on
+    `main` (`res.end` of one string). Once the 200 has been sent, a 500 can no longer be
+    promised. The **post-header abort rule** applies to every streamed readback from L1a on
+    (single row and list), not only to L1b:
+    - a worker failure after headers (heap limit, gate refusal, serialization error) makes the
+      parent destroy the socket before `Content-Length` bytes have been written;
+    - the client sees an incomplete response, never a complete success;
+    - the failure is logged and counted as `resource_exhausted`, and every reservation is released
+      exactly once.
   - Database results of small reads and the small-request pool are the only bodies the parent
     materializes, and they are bounded by the threshold.
 - **Worker external memory (pre-allocation gate).** Worker `resourceLimits` cap only the V8 heap.
@@ -334,8 +347,9 @@ stated physical bound**, reserved before allocation:
   the **child-process alternative** instead (see "Isolation"), with an OS-enforced memory limit per
   child (cgroup v2 `memory.max` or `RLIMIT_AS`) equal to its reservation, and the same tests.
 - **Parent failure headroom.** The parent reserves a fixed `R_fail` inside `H_parent` and
-  `E_parent` that no reservation can take. Detecting a worker or child failure, sending the 500,
-  closing the socket and releasing the reservation use only `R_fail`, so the promised 500 is sent
+  `E_parent` that no reservation can take. Detecting a worker or child failure, sending the 500
+  (before headers) or aborting the response (after headers, see "When the status is sent"),
+  closing the socket and releasing the reservation use only `R_fail`. So the failure is handled
   even when every reservation is in use.
 - **Fixed-length upload.** With `Content-Length`, the full reservation is taken after
   authorization and **before the first body byte is read**. While waiting the socket is paused.
@@ -419,8 +433,9 @@ stated physical bound**, reserved before allocation:
   budget (D7) exist.
 - **Isolation.** The large-operation work above runs in a worker thread whose `resourceLimits`
   equal its heap share `h` and whose external allocations pass the gate against `x`. A worker heap
-  failure (`ERR_WORKER_OUT_OF_MEMORY`) or a gate refusal ends that worker and that request only (500
-  `resource_exhausted`), never the process or the gateway. On `main` the same request would kill
+  failure (`ERR_WORKER_OUT_OF_MEMORY`) or a gate refusal ends that worker and that request only
+  (500 `resource_exhausted` before headers, or an aborted response after them under the
+  post-header abort rule), never the process or the gateway. On `main` the same request would kill
   the whole process, so no request that succeeds today is lost by this (the load-test gate below
   proves it). A child process is the alternative if measurement shows worker transfer cost is too
   high; L1a chooses by measurement, and the same physical bound and byte locations apply to it.
@@ -445,7 +460,8 @@ stated physical bound**, reserved before allocation:
   needing more than `W`, one exhausting the heap share and one exhausting the external share, in
   both directions), the process is not killed, the gateway's mTLS listener keeps answering
   its heartbeat within its existing timeout, **peak process RSS stays within `M_proc`**, the
-  oversized operations fail alone with 500 `resource_exhausted` while concurrent small requests
+  oversized operations fail alone (500 `resource_exhausted` before headers, or an aborted response
+  after them) while concurrent small requests
   succeed, and all reservations return to zero afterwards.
 
 ### Admission, unread bodies and error precedence (L1a, D3, D14)
@@ -531,8 +547,10 @@ benchmark-gated:
 - **List response.** Writing the existing array one item at a time removes the one large string.
   The full fix is a cursor or bounded iterator with a consistent read snapshot that keeps the `items`
   envelope, order and full content, honors backpressure and closes on disconnect. A failure after
-  headers are sent must abort the stream. A partial list must never complete as a success. Phase
-  L1b covers this; until then L1a's size-first reservation applies.
+  headers are sent must abort the stream. A partial list must never complete as a success. This
+  post-header abort rule already applies to L1a's isolated readbacks, which stream through the
+  transfer window (see "When the status is sent"). Phase L1b adds the iterator; until then L1a's
+  size-first reservation applies.
 - **Webhooks** stay on the runtime listener, which already streams into the spool and HMAC-verifies
   the exact bytes before dispatch (V10).
 
@@ -686,7 +704,8 @@ benchmark-gated:
 | unauthenticated or unauthorized request with a body (including `userOnly`, CSRF and instance-permission denials) | 401/403 as today, with the same audit record, body not read, `Connection: close` |
 | spool write fails (`ENOSPC`) or a spooled body needs more than the whole spool budget | 500 `resource_exhausted` for that request only, spool file removed (D14) |
 | reservation not available before the wait deadline, or ingress queue full | 503 `capacity_unavailable`, `Retry-After` (D14, D7) |
-| isolated worker exceeds its heap, or the pre-allocation gate refuses an external allocation | 500 `resource_exhausted` (sent from `R_fail`), process and gateway unaffected (D14) |
+| isolated worker exceeds its heap, or the pre-allocation gate refuses an external allocation, before response headers | 500 `resource_exhausted` (sent from `R_fail`), process and gateway unaffected (D14) |
+| isolated readback fails after the 200 headers were sent | response aborted: socket destroyed before `Content-Length` bytes, never a complete success; logged as `resource_exhausted`; reservations released; process and gateway unaffected (D14) |
 | run/scan concurrency or dial rate exhausted | 429 `too_many_runs`, `Retry-After` (D2, D7) |
 | failed-authentication rate exceeded | 429 `rate_limited`, `Retry-After` (existing code; new trigger on STABLE routes, D7) |
 | per-peer pre-auth in-flight limit reached | 429 `rate_limited`, `Retry-After`, `Connection: close`, body not read (existing code; new trigger on STABLE routes, D7) |
@@ -875,7 +894,11 @@ per-row reservation, backpressure, abort on mid-stream failure.
   a worker is chosen; a list of many minimal revisions whose content alone fits under the
   threshold but whose full response exceeds it is served by a worker.
 - WHEN an upload or a readback needs more than `W` THEN only that request fails (500
-  `resource_exhausted`), RSS stays within `M_proc` and the gateway keeps answering.
+  `resource_exhausted` before headers; for a readback that fails after its 200 headers, an
+  aborted response that is never a complete success), RSS stays within `M_proc` and the gateway
+  keeps answering.
+- WHEN an isolated readback is streamed THEN its 200 and `Content-Length` are sent only after all
+  rows are loaded and the exact length is counted, and the body equals `main` byte for byte.
 - WHEN a large operation's driver or encoding buffers would exceed its external share `x` THEN the
   request fails with 500 before the allocation (no content query issued), the parent sends the 500
   from its reserved headroom, and RSS stays within `M_proc`.
@@ -965,13 +988,14 @@ messages; a file check alone does not satisfy these tests.
 | T21 | invalid D4 overrides (unknown key, bad unit, negative, zero-as-unlimited, raise of a safety ceiling or of a tighten-only dimension, isolation threshold above the coded maximum, budget sum above `heap_size_limit` minus headroom) fail startup with a clear error; valid finite raises of each group (a) Run, (b) threshold up to the coded maximum, (c) every D7 setting including the failed-authentication bucket are accepted | `limits.test.ts` | L1a |
 | T22 | rebinding: DNS answer changes between preflight and dial; connector retry; A+AAAA with IPv4 and IPv6 listeners; one disallowed answer -> no connection; host-key mismatch -> 0 auth; stored `known_hosts` -> 409, 0 connections; pasted `known_hosts`: one unmarked key -> fingerprint; several keys -> 400; **only `@revoked` entry -> 400, no pin saved**; unmarked key also listed `@revoked` -> 400; **only `@cert-authority` entry -> 400, no pin saved**; `@cert-authority` plus an unmarked key -> 400; unknown marker, unparsable line -> 400; hashed `\|1\|` and `[host]:port` entries match; negated pattern excludes | `runner.test.ts`, `egress.test.ts`, `flowrun_sftp_test.go` | socket level, Run and scan |
 | T23 | large SFTP download and metadata-heavy listing above D2 limits: child RSS and temp-dir high-water bounded, `output_too_large`, no documents, temp dir removed, child reaped | `flowrun_sftp_test.go`, `runner.test.ts` | SFTP |
-| T24 | D14 load tests: `S_main` regression, high-expansion JSON, concurrent large and small reads and writes, slow readers, disconnects, uploads above `S_main`; oversized upload and oversized readback (single row and list) above `W` fail alone with 500 `resource_exhausted`; **external-buffer exhaustion in both directions**: an upload whose PostgreSQL parameter (`k_ext × canonical length`) exceeds `x` and a readback whose largest row exceeds `x` while the heap share still fits, each failing with 500 before the query is issued (statement log shows no `INSERT`/`SELECT` of content), with every reservation in use so the 500 comes from `R_fail`; worker `arrayBuffers` and `external` high-water ≤ `x` for every passing large operation; **many minimal revisions** (for example 200,000 revisions with content `{}`) whose summed `content::text` is far below the threshold but whose full list response exceeds it: in both repositories the projected `total` exceeds the threshold, the list is served by a worker and not from the parent pool, the parent's heap and external high-water stay within the small-request pool, and the measured response size never exceeds `total`; peak process RSS ≤ `M_proc`; parent holds at most one transfer window per large operation; gateway heartbeat answered; reservations return to zero; many peers, rapid scans, stalled uploads, repeated timeouts and disconnects with capacity recovery | `bench/` (new, `make bench`-style job) | L1a release gate |
+| T24 | D14 load tests: `S_main` regression, high-expansion JSON, concurrent large and small reads and writes, slow readers, disconnects, uploads above `S_main`; oversized upload and oversized readback (single row and list) above `W` fail alone with 500 `resource_exhausted` before headers (a readback that fails after its 200 is aborted, see T31); **external-buffer exhaustion in both directions**: an upload whose PostgreSQL parameter (`k_ext × canonical length`) exceeds `x` and a readback whose largest row exceeds `x` while the heap share still fits, each failing with 500 before the query is issued (statement log shows no `INSERT`/`SELECT` of content), with every reservation in use so the 500 comes from `R_fail`; worker `arrayBuffers` and `external` high-water ≤ `x` for every passing large operation; **many minimal revisions** (for example 200,000 revisions with content `{}`) whose summed `content::text` is far below the threshold but whose full list response exceeds it: in both repositories the projected `total` exceeds the threshold, the list is served by a worker and not from the parent pool, the parent's heap and external high-water stay within the small-request pool, and the measured response size never exceeds `total`; peak process RSS ≤ `M_proc`; parent holds at most one transfer window per large operation; gateway heartbeat answered; reservations return to zero; many peers, rapid scans, stalled uploads, repeated timeouts and disconnects with capacity recovery | `bench/` (new, `make bench`-style job) | L1a release gate |
 | T25 | D7 429 on STABLE routes: per-peer in-flight limit exceeded -> 429 `rate_limited` with `Retry-After` and `Connection: close`, body not read, before 401; empty failed-authentication bucket -> 429 before credential verification on a protected route and on login; login throttle/lockout codes unchanged; precedence against unmatched routes (401 or 403 `no_policy`, or 404/405 with auth disabled), 401, 413, 503 and 400; every affected OpenAPI operation declares 429 | `api.test.ts`, `limits.test.ts` | L1a |
 | T26 | pre-body authorization reuses the `main` decision: owner without `instance:workspace_create` -> `POST /v1/workspaces` with a large body gets audited 403 `forbidden` with 0 body bytes read; bearer token -> 403 `forbidden` (`userOnly`), 0 bytes; cookie session without CSRF -> 403 `csrf`, 0 bytes; granted session with CSRF -> 201; workspace and permission denials keep their audit records | `api.test.ts`, `auth/instance.test.ts` | L1a |
 | T27 | unmatched method/path, auth enabled: anonymous -> 401 `unauthenticated` with `WWW-Authenticate`, invalid credentials -> 401, valid principal -> 403 `no_policy`; auth disabled: 404 / 405; each with an empty body and with a malformed JSON body (no 400), 0 body bytes read | `api.test.ts` | L1a, both auth modes |
 | T28 | SAML (`GET` login and metadata, `POST` ACS) and SCIM (each method) with and without a body: response identical to `main` (501 from `notImplemented`), 0 body bytes read; OIDC login and callback: query only, callback audit kept; per-peer 429 applies to all three, the failed-authentication bucket to none of the stubs | `api.test.ts`, `auth/oidc.test.ts` | L1a, tested separately |
 | T29 | worker isolation unit tests: the worker entry module's import allowlist is fixed (a new import fails the test); the gate refuses before the query when `k_ext × bytes` exceeds `x` for write and read, with an injected PostgreSQL client that records issued queries; digest and response encoding never allocate a `Buffer` larger than one window (instrumented `Buffer.alloc`/`TextEncoder`), including a code point split at a slice boundary; at most one window in flight under credit flow; `R_fail` is not available to reservations | `limits/worker.test.ts` (new) | L1a |
 | T30 | one revision (high-expansion JSON, several times the threshold) uploaded **chunked** across several spool growth steps, with slow trickle and with large chunks, and **fixed length**: both give 201 and the same digest as on `main`, in both repositories; for the chunked upload no worker exists before the last byte, exactly one worker is constructed and its `resourceLimits` equal the reservation for the final wire length (same as the fixed-length upload); each spool step is reserved before more bytes are read (socket paused while waiting); readback returns the same content; spool held by other uploads until the wait deadline -> 503 with `Retry-After`; body above the whole spool budget waits for exclusive use; mid-upload disconnect, worker failure, injected `ENOSPC` and restart each leave no spool file and return the spool and memory reservations to zero; spool files are `0600` | `api.test.ts`, `pg-*.test.ts`, `limits/spool.test.ts` (new) | L1a; Pg tests need a database |
+| T31 | post-header abort for isolated readbacks (single row and list, both repositories): an injected worker failure before headers (while loading rows, and in the counting pass) gives 500 `resource_exhausted`; an injected failure after the first chunk is written gives an incomplete response (socket closed before `Content-Length` bytes; the client reports a truncated body, never a 200 with a complete body); in both cases the worker, the parent connection and every memory reservation are released exactly once and the next request succeeds; a successful isolated readback sends `Content-Length` equal to the bytes written and byte-identical to `main` | `api.test.ts`, `pg-*.test.ts`, `limits/worker.test.ts` | L1a; Pg tests need a database |
 
 ## Gaps and risks
 
