@@ -15,7 +15,9 @@ import (
 	"github.com/nurtuo/nurtuo/core/runtime/internal/engine/script/wasm"
 	"github.com/nurtuo/nurtuo/core/runtime/internal/gateway"
 	"github.com/nurtuo/nurtuo/core/runtime/internal/listener"
+	"github.com/nurtuo/nurtuo/core/runtime/internal/queue"
 	"github.com/nurtuo/nurtuo/core/runtime/internal/queue/memory"
+	"github.com/nurtuo/nurtuo/core/runtime/internal/queue/natsjs"
 	"github.com/nurtuo/nurtuo/core/runtime/internal/secrets"
 	"github.com/nurtuo/nurtuo/core/runtime/internal/supervisor"
 	"github.com/nurtuo/nurtuo/core/runtime/internal/version"
@@ -76,12 +78,27 @@ func RunWith(ctx context.Context, cfg Config, o Options) error {
 	if log == nil {
 		log = slog.Default()
 	}
+	stateDir := ""
+	if cfg.StateDir != "" {
+		d, err := prepareStateDir(cfg.StateDir)
+		if err != nil {
+			return err
+		}
+		unlock, err := lockStateDir(d)
+		if err != nil {
+			return err
+		}
+		defer unlock()
+		stateDir = d
+	} else {
+		warnNoStateDir(log)
+	}
 	dep := o.Deployer
 	var cmds map[string]supervisor.CommandFunc
 	if dep == nil {
 		if cfg.BundleDir != "" {
-			// Real deployer: engine + listeners. In-memory queues until the embedded NATS
-			// backend is wired into the runtime process.
+			// Real deployer: engine + listeners. Queues are durable (embedded JetStream under
+			// state_dir) or in-memory when state_dir is unset (D2).
 			src := DirBundleSource(cfg.BundleDir)
 			if keys, err := cfg.trustedKeys(); err != nil {
 				return err
@@ -100,7 +117,30 @@ func RunWith(ctx context.Context, cfg Config, o Options) error {
 				defer func() { _ = we.Close(context.Background()) }()
 				eng.Registry.RegisterScriptRunner(engine.NewScriptRunner(we, engine.NewScriptModules()))
 			}
-			ed := NewEngineDeployer(eng, memory.New(), src)
+			var pq *natsjs.Backend
+			var ed *EngineDeployer
+			defer func() {
+				sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if ed != nil {
+					_ = ed.Shutdown(sctx)
+				}
+				if pq != nil {
+					if err := pq.CloseContext(sctx); err != nil {
+						log.Warn("queue backend shutdown", "error", err)
+					}
+				}
+			}()
+			var qb queue.QueueBackend = memory.New()
+			if stateDir != "" {
+				var err error
+				pq, err = openPersistentQueues(stateDir)
+				if err != nil {
+					return err // fail closed, no memory fallback (D3)
+				}
+				qb = pq
+			}
+			ed = NewEngineDeployer(eng, qb, src)
 			res, lg, err := newResolver(cfg, o, log)
 			if err != nil {
 				return err
@@ -115,11 +155,6 @@ func RunWith(ctx context.Context, cfg Config, o Options) error {
 			ed.Deps.HTTPAddr = cfg.HTTPAddr
 			ed.Deps.Secrets = res // listener auth / tls secret:// references
 			cmds = ed.Commands()
-			defer func() {
-				sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				_ = ed.Shutdown(sctx)
-			}()
 			dep = ed
 		} else {
 			log.Warn("bundle_dir is not set; deployments will be reported as error")
@@ -134,7 +169,11 @@ func RunWith(ctx context.Context, cfg Config, o Options) error {
 	if err != nil {
 		return err
 	}
-	h := &supervisor.Handler{S: supervisor.New(dep), Commands: cmds}
+	sup, err := newSupervisor(dep, stateDir)
+	if err != nil {
+		return err
+	}
+	h := &supervisor.Handler{S: sup, Commands: cmds}
 	gc.Handler = h
 	gc.Logger = log
 	log.Info("runtime starting", "runtime_id", cfg.RuntimeID, "control_plane", cfg.ControlPlaneURL)

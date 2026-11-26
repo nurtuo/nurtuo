@@ -9,6 +9,7 @@ import (
 
 	"github.com/nurtuo/nurtuo/core/runtime/internal/engine"
 	"github.com/nurtuo/nurtuo/core/runtime/internal/engine/docs"
+	"github.com/nurtuo/nurtuo/core/runtime/internal/queue"
 	"github.com/nurtuo/nurtuo/sdk/go/flow"
 )
 
@@ -70,6 +71,7 @@ type sourceListener struct {
 	state  State
 	cancel context.CancelFunc
 	done   chan struct{}
+	sub    queue.Subscription
 	gate   chan struct{} // closed while deliveries may proceed
 	recv   int64
 	failed int64
@@ -91,7 +93,6 @@ func (l *sourceListener) Start(ctx context.Context, h Handler) error {
 	l.cancel, l.done = cancel, make(chan struct{})
 	l.gate = make(chan struct{})
 	close(l.gate)
-	l.state = StateRunning
 	done := l.done
 	deliver := func(dctx context.Context, in *docs.Set) error {
 		l.mu.Lock()
@@ -120,8 +121,23 @@ func (l *sourceListener) Start(ctx context.Context, h Handler) error {
 		}
 		return err
 	}
+	if src, ok := l.src.(*QueueSource); ok {
+		sub, err := src.subscribe(cctx, deliver)
+		if err != nil {
+			cancel()
+			return err
+		}
+		l.sub = sub
+	}
+	sub := l.sub
+	l.state = StateRunning
 	go func() {
 		defer close(done)
+		if sub != nil {
+			<-cctx.Done()
+			_ = sub.Close()
+			return
+		}
 		_ = l.src.Consume(cctx, deliver)
 	}()
 	return nil
@@ -135,6 +151,7 @@ func (l *sourceListener) Stop(ctx context.Context) error {
 	}
 	l.state = StateStopped
 	cancel, done := l.cancel, l.done
+	l.sub = nil
 	l.mu.Unlock()
 	cancel()
 	select {
@@ -152,8 +169,12 @@ func (l *sourceListener) Pause() error {
 	case StatePaused:
 		return nil
 	case StateRunning:
-		l.gate = make(chan struct{})
 		l.state = StatePaused
+		if l.sub != nil {
+			// Pause detaches local delivery even if broker confirmation fails.
+			return l.sub.Pause()
+		}
+		l.gate = make(chan struct{})
 		return nil
 	}
 	return ErrState
@@ -166,7 +187,13 @@ func (l *sourceListener) Resume() error {
 	case StateRunning:
 		return nil
 	case StatePaused:
-		close(l.gate)
+		if l.sub != nil {
+			if err := l.sub.Resume(); err != nil {
+				return err
+			}
+		} else {
+			close(l.gate)
+		}
 		l.state = StateRunning
 		return nil
 	}
