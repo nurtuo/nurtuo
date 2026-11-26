@@ -864,6 +864,9 @@ divergences are closed. **Łukasz approved D1-D14 on 2026-11-24.**
 
 ## Cross-provider review
 
+The review records below are kept as history. Since 2026-11-26 the memory-limit material they
+mention (memory budget, spool, readback sizing, T24, T29-T31) is in the memory-limits spec ([PR #114](https://github.com/nurtuo/nurtuo/pull/114)).
+
 Reviewer: Codex (gpt-6.2-sol, OpenAI), https://github.com/nurtuo/nurtuo/pull/92#issuecomment-7140661227,
 on head `a8ad0c1`. Verdict: request changes (2 blockers, 5 majors, 1 nit). This revision is Claude
 Opus's answer; it changes recommendations and design detail, not council outcomes, and approves
@@ -949,6 +952,22 @@ failure above capacity.
 
 Also aligned during the adversarial re-read: the transfer window is charged to `E_parent` only, not
 also to `x`.
+
+### Sixth review (Astra, head `40c27e3`)
+
+Reviewer: GPT-6.2 Astra (OpenAI), https://github.com/nurtuo/nurtuo/pull/92#issuecomment-7186855899,
+on head `40c27e3`. Verdict: request changes (1 blocker, 2 majors). Every finding is about memory-limit
+material, so none is answered in this spec. On Łukasz's decision of 2026-11-26 they moved, unresolved,
+to the open questions of the memory-limits spec ([PR #114](https://github.com/nurtuo/nurtuo/pull/114)):
+
+| Item | Finding | Where it is now |
+|---|---|---|
+| 1 (blocker) | the single-row read gate charges `k_ext × bytes` plus one socket read chunk against `x = k_ext × bytes`, so an isolated GET within the budget fails on an idle instance | memory-limits spec, open question 1 |
+| 2 (major) | the Windows spool fallback keeps file names until close; crash leftovers and a paused live owner swept as stale | memory-limits spec, open question 2 |
+| 3 (major) | a partial first spool grant may not cover the buffered prefix | memory-limits spec, open question 3 |
+
+The review confirms the earlier findings as fixed. It raises no finding on the material that stays in
+this spec.
 
 ## Boomi alignment
 
@@ -1175,3 +1194,9 @@ it is decided and the phase exit it blocks. A phase cannot exit while its questi
   worker, readbacks are sized by full projected rows, a streamed readback that fails after headers
   is aborted (T31), spool grants are clamped and probed for EOF at boundaries, and spool files are
   private to their process. D1-D14 unchanged; status stays approved.
+- 2026-11-26: scope narrowed by Łukasz. Claude Opus moved the memory-limit material (physical memory
+  bound, reservations and isolation, chunked-upload spool and its budget, streamed-readback limits,
+  T24, T29-T31, the memory cases of T11, T16 and T21, Gaps 2, 3, 10 and 13-15) unchanged to
+  `docs/specs/2026-11-26-control-plane-memory-limits.md` (#114, draft) and left pointers here. The D7
+  recovery cases moved from T24 to T25. The Astra review of `40c27e3` is recorded under "Sixth
+  review"; its findings are open questions of the new spec. D1-D14 unchanged; status stays approved.
