@@ -294,3 +294,29 @@ for (const stall of ["workspace lock", "repository"] as const) {
     }
   });
 }
+
+test("cancelled runs leave the workspace queue while the lock is held and a later run proceeds", { timeout: 10000 }, async () => {
+  const coordinator = new ConnectionCoordinator();
+  const limiter = new RunLimiter(1, 1);
+  const { runner } = await world({ coordinator, limiter });
+  let finish!: () => void;
+  const held = new Promise<void>((resolve) => { finish = resolve; });
+  const locked = coordinator.withWorkspace("w1", () => held);
+  try {
+    for (let i = 0; i < 5; i++) {
+      const controller = new AbortController();
+      const run = runner.run("w1", { flow: flowOf(), timeoutMs: 1000 }, controller.signal);
+      const rejected = assert.rejects(run, { name: "AbortError" });
+      while (coordinator.waiting("w1") < 1) await new Promise((r) => setTimeout(r, 1));
+      controller.abort();
+      await rejected;
+      assert.equal(coordinator.waiting("w1"), 0);
+    }
+  } finally {
+    finish();
+    await locked;
+  }
+  const release = limiter.tryAcquire("w1");
+  assert.ok(release);
+  release();
+});

@@ -121,14 +121,14 @@ export class TestRunner {
 
       // 3. connections and secrets of this workspace only
       const ids = [...new Set(uses.map((u) => u.connection))];
-      const { conns, env, secretValues } = await untilAbort(operation, () => this.coordinator.withWorkspace(workspaceId, async () => {
+      const { conns, env, secretValues } = await untilAbort(operation, () => this.coordinator.withWorkspace(workspaceId, async (lease) => {
         operation.throwIfAborted();
         await authorize?.();
         operation.throwIfAborted();
         const conns = [];
         for (const id of ids) {
           operation.throwIfAborted();
-          const reconciled = await this.coordinator.reconcile(d.connections, d.secrets, workspaceId, id);
+          const reconciled = await lease.critical(() => this.coordinator.reconcile(d.connections, d.secrets, workspaceId, id));
           operation.throwIfAborted();
           const c = reconciled ?? await d.connections.get(workspaceId, id);
           operation.throwIfAborted();
@@ -160,7 +160,7 @@ export class TestRunner {
           }
         }
         return { conns, env, secretValues };
-      }));
+      }, operation));
       // 4. egress
       const dialAddresses = [];
       for (const c of conns) dialAddresses.push(await checkEgress(String(c.settings.host ?? ""), {
