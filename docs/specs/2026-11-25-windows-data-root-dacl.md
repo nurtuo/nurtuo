@@ -5,7 +5,7 @@ Status: draft. Date: 2026-11-25.
 
 ## TLDR
 
-`nurtuo standalone` on Windows keeps its data root in `%ProgramData%\Nurtuo`, which inherits read and create access for the local `Users` group. Only `secrets\` is protected today (issue #57). This spec extends the same protected DACL (running account + `SYSTEM` + `BUILTIN\Administrators`) to the whole data root, including `postgres\data`, `postgres\runtime`, `postgres\cache`, `logs\` and the runtime state directory `runtime\`, and moves the ACL helpers out of `internal/secrets`. `secrets\` keeps the #57 policy (D6). It needs owner approval of D1-D6 before any code.
+`nurtuo standalone` on Windows keeps its data root in `%ProgramData%\Nurtuo`, which inherits read and create access for the local `Users` group. Only `secrets\` is protected today (issue #57). This spec extends the same protected DACL (running account + `SYSTEM` + `BUILTIN\Administrators`) to the whole data root, including `postgres\data`, `postgres\runtime`, `postgres\cache`, `logs\` and the runtime state directory `runtime\`, and moves the ACL helpers out of `internal/secrets`. `secrets\` keeps the #57 policy (D6). It stays `draft`, with no code, until the owner answers Q1-Q6 (Open Questions).
 
 ## Status and links
 
@@ -24,9 +24,22 @@ Another local user can (a) read `postgres\data` (users, password hashes, audit r
 - Goals: after `standalone` starts on Windows, the data root and everything below it (except `secrets\`, which stays under #57, D6) is owned by an allowed principal and has a private DACL under D2, protected on managed roots; a too-open tree that Nurtuo manages (see Repair semantics) is repaired at startup, and an operator-owned directory is only checked, with an `icacls` hint; a foreign owner, a reparse point or a multiply-linked file fails closed; an existing Postgres cluster outside the supported standalone state (configuration or recovery files) does not start; embedded Postgres still starts; operators have a documented way to read logs.
 - Non-goals: `secrets\` semantics (unchanged, #57; the data-root walk stops at `secrets\`, see D6); Unix behaviour (unchanged); operator-chosen secrets paths (D9 of the parent spec still applies); encrypting data at rest; Windows service ACLs, including the `state_dir` that `nurtuo service install` configures outside the standalone data root.
 
-## Decisions (owner approval needed)
+## Open Questions
 
-Recommendations are in bold; none is approved yet.
+Blocking. Each question needs Łukasz's answer (comment on #112 or #78); this spec stays `draft`, and no code starts, until all six are answered. Owner choices are recorded here and in the matching decision.
+
+| # | Question | Recommendation | Owner choice |
+|---|---|---|---|
+| Q1 (D1) | Move the private-path helpers to a new `internal/privacl` package, or keep them in `internal/secrets` and export `EnsurePrivateDir`? | move to `internal/privacl` | open |
+| Q2 (D2) | Principals: the running account, `SYSTEM` and `BUILTIN\Administrators` only, as in #57? | yes, no operators group | open |
+| Q3 (D3) | Walk the whole root except `secrets\` on every start, repairing only managed roots? | yes; measure the cost (gap 2) first, before narrowing | open |
+| Q4 (D4) | Treat an existing `NURTUO_DATA_DIR` as check-only unless the root and its `.nurtuo-managed` marker pass the trust checks? | yes | open |
+| Q5 (D5) | Reject drive and share roots, `%ProgramData%` and parents of `%ProgramData%`, `%SystemRoot%` or a profile root? | yes | open |
+| Q6 (D6) | Leave `secrets\` to the #57 policy in both root modes (issue #78 scope), or extend this spec's rules to it? | leave it to #57; follow-up for gap 5 | open |
+
+## Decisions (proposed)
+
+Recommendations are in bold. None is approved; the owner's answer to the matching question in Open Questions decides each one.
 
 - **D1 Shared ACL layer.** **Move the private-path helpers (`EnsurePrivateDir`, `checkPerm`, `judgeDACL`, `mkdirPrivate`, `setPrivateDACL`, `visitTree`, `aclError`) into a new package `core/runtime/internal/privacl`, and let `internal/secrets` call it.** Pure move, no behaviour change, resolves the `TODO(#78)`. Alternative: keep them in `internal/secrets` and export `EnsurePrivateDir` only (smaller diff, but the data root keeps depending on the secrets package).
 - **D2 Principal set.** **Same as D4 of the parent spec: the running account, `SYSTEM`, `BUILTIN\Administrators`.** No extra "operators" group.
