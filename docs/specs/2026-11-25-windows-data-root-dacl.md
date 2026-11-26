@@ -1,11 +1,11 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Spec: Private DACL for the Windows standalone data root, postgres and logs
 
-Status: draft. Date: 2026-11-25.
+Status: approved. Date: 2026-11-25.
 
 ## TLDR
 
-`nurtuo standalone` on Windows keeps its data root in `%ProgramData%\Nurtuo`, which inherits read and create access for the local `Users` group. Only `secrets\` is protected today (issue #57). This spec extends the same protected DACL (running account + `SYSTEM` + `BUILTIN\Administrators`) to the whole data root, including `postgres\data`, `postgres\runtime`, `postgres\cache`, `logs\` and the runtime state directory `runtime\`, and moves the ACL helpers out of `internal/secrets`. `secrets\` keeps the #57 policy (D6). It stays `draft`, with no code, until the owner answers Q1-Q6 (Open Questions).
+`nurtuo standalone` on Windows keeps its data root in `%ProgramData%\Nurtuo`, which inherits read and create access for the local `Users` group. Only `secrets\` is protected today (issue #57). This spec extends the same protected DACL (running account + `SYSTEM` + `BUILTIN\Administrators`) to the whole data root, including `postgres\data`, `postgres\runtime`, `postgres\cache`, `logs\` and the runtime state directory `runtime\`, and moves the ACL helpers out of `internal/secrets`. `secrets\` keeps the #57 policy (D6). The owner approved Q1-Q6 and the strict Postgres allow-list on 2026-11-26 (Open Questions).
 
 ## Status and links
 
@@ -26,20 +26,20 @@ Another local user can (a) read `postgres\data` (users, password hashes, audit r
 
 ## Open Questions
 
-Blocking. Each question needs Łukasz's answer (comment on #112 or #78); this spec stays `draft`, and no code starts, until all six are answered. Owner choices are recorded here and in the matching decision.
+Answered by Łukasz on 2026-11-26 (chat with the coordinator): all recommendations Q1-Q6 accepted as written. Owner choices are recorded here and in the matching decision.
 
 | # | Question | Recommendation | Owner choice |
 |---|---|---|---|
-| Q1 (D1) | Move the private-path helpers to a new `internal/privacl` package, or keep them in `internal/secrets` and export `EnsurePrivateDir`? | move to `internal/privacl` | open |
-| Q2 (D2) | Principals: the running account, `SYSTEM` and `BUILTIN\Administrators` only, as in #57? | yes, no operators group | open |
-| Q3 (D3) | Walk the whole root except `secrets\` on every start, repairing only managed roots? | yes; measure the cost (gap 2) first, before narrowing | open |
-| Q4 (D4) | Treat an existing `NURTUO_DATA_DIR` as check-only unless the root and its `.nurtuo-managed` marker pass the trust checks? | yes | open |
-| Q5 (D5) | Reject drive and share roots, `%ProgramData%` and parents of `%ProgramData%`, `%SystemRoot%` or a profile root? | yes | open |
-| Q6 (D6) | Leave `secrets\` to the #57 policy in both root modes (issue #78 scope), or extend this spec's rules to it? | leave it to #57; follow-up for gap 5 | open |
+| Q1 (D1) | Move the private-path helpers to a new `internal/privacl` package, or keep them in `internal/secrets` and export `EnsurePrivateDir`? | move to `internal/privacl` | accepted 2026-11-26 (as recommended) |
+| Q2 (D2) | Principals: the running account, `SYSTEM` and `BUILTIN\Administrators` only, as in #57? | yes, no operators group | accepted 2026-11-26 (as recommended) |
+| Q3 (D3) | Walk the whole root except `secrets\` on every start, repairing only managed roots? | yes; measure the cost (gap 2) first, before narrowing | accepted 2026-11-26 (as recommended) |
+| Q4 (D4) | Treat an existing `NURTUO_DATA_DIR` as check-only unless the root and its `.nurtuo-managed` marker pass the trust checks? | yes | accepted 2026-11-26 (as recommended) |
+| Q5 (D5) | Reject drive and share roots, `%ProgramData%` and parents of `%ProgramData%`, `%SystemRoot%` or a profile root? | yes | accepted 2026-11-26 (as recommended) |
+| Q6 (D6) | Leave `secrets\` to the #57 policy in both root modes (issue #78 scope), or extend this spec's rules to it? | leave it to #57; follow-up for gap 5 | accepted 2026-11-26 (as recommended) |
 
-## Decisions (proposed)
+## Decisions (approved)
 
-Recommendations are in bold. None is approved; the owner's answer to the matching question in Open Questions decides each one.
+D1-D6 are approved by the owner (2026-11-26) as recommended in the matching question of Open Questions.
 
 - **D1 Shared ACL layer.** **Move the private-path helpers (`EnsurePrivateDir`, `checkPerm`, `judgeDACL`, `mkdirPrivate`, `setPrivateDACL`, `visitTree`, `aclError`) into a new package `core/runtime/internal/privacl`, and let `internal/secrets` call it.** Pure move, no behaviour change, resolves the `TODO(#78)`. Alternative: keep them in `internal/secrets` and export `EnsurePrivateDir` only (smaller diff, but the data root keeps depending on the secrets package).
 - **D2 Principal set.** **Same as D4 of the parent spec: the running account, `SYSTEM`, `BUILTIN\Administrators`.** No extra "operators" group.
@@ -126,7 +126,7 @@ This applies to Windows standalone installs, including upgrades. No API, proto o
 - *Default (managed) root.* The first start repairs a too-open tree and prints each tightened path. A foreign owner, a reparse point, a multiply-linked file or a deny ACE stops startup with the path and an `icacls` or `takeown` hint; the operator fixes it and restarts.
 - *Operator root (`NURTUO_DATA_DIR`).* Check-only (D4). A too-open tree stops startup with per-path `icacls` guidance; nothing is changed.
 - *Postgres artifacts.* A runtime tree or cached archive that does not match the committed digest table is replaced from a verified download (Design step 6). An offline host with no verified archive fails startup.
-- *Existing cluster (Design step 7).* A cluster outside the supported standalone state stops startup before any Postgres executable runs. Examples: a parameter outside the allow-list (also tuning ones such as `work_mem`), a `pg_hba.conf` record that `initdb` would not write, or a `standby.signal`, `recovery.signal` or `backup_label` file. A cluster that only the standalone ever touched passes. Recovery: (1) back up `postgres\data`; (2) review the file, line and setting named in the error; (3) remove that setting, record or file, or restore `postgres\data` from a backup you trust; (4) restart, and the gate runs again. Nurtuo never edits the cluster. `docs/operations.md` (phase 4) carries these steps.
+- *Existing cluster (Design step 7).* A cluster outside the supported standalone state stops startup before any Postgres executable runs. Examples: a parameter outside the allow-list (also tuning ones such as `work_mem`), a `pg_hba.conf` record that `initdb` would not write, or a `standby.signal`, `recovery.signal` or `backup_label` file. The owner approved this strictness on 2026-11-26: an existing cluster with custom tuning such as `work_mem` refuses to start until the setting is removed; a tuning allow-list is a future improvement (below). A cluster that only the standalone ever touched passes. Recovery: (1) back up `postgres\data`; (2) review the file, line and setting named in the error; (3) remove that setting, record or file, or restore `postgres\data` from a backup you trust; (4) restart, and the gate runs again. Nurtuo never edits the cluster. `docs/operations.md` (phase 4) carries these steps.
 
 ## Security
 
@@ -202,4 +202,5 @@ CI cannot prove these, or may skip them on hosted runners (no second account, no
 - 2026-11-25: resolved D4/D9 conflict (operator roots are check-only), added D5 (rejected roots) and the Repair semantics section (owner, deny ACEs, inheritance, managed vs operator root) after review of #112.
 - 2026-11-25: specified marker trust, read-only preflight, D2 log access, Postgres artifact verification and effective-access checks after re-review of #112.
 - 2026-11-26: after Astra review of #112: hard links refused and file identity pinned during repair; cluster gate for an existing `postgres\data`; `secrets\` left to the #57 policy as pending D6; inheritance defined per root mode with new-descendant tests; phases with exit criteria, committed digest table and real-host gates. D1-D6 still await owner approval.
-- 2026-11-26: after the third Astra review of #112: repair writes only re-verified objects by handle without propagation (Repair containment), which also keeps a passing non-protected `secrets\` untouched; every accepted directory needs inheritable D2 grants; the cluster gate is an allow-list that also refuses recovery and standby files and has a stock-cluster restart test; `runtime\` (state dir from main) is in scope; D1-D6 are presented as blocking Open Questions Q1-Q6; Compatibility has upgrade and cluster recovery steps; Acceptance criteria added. Still `draft`: no owner answers yet.
+- 2026-11-26: after the third Astra review of #112: repair writes only re-verified objects by handle without propagation (Repair containment), which also keeps a passing non-protected `secrets\` untouched; every accepted directory needs inheritable D2 grants; the cluster gate is an allow-list that also refuses recovery and standby files and has a stock-cluster restart test; `runtime\` (state dir from main) is in scope; D1-D6 are presented as blocking Open Questions Q1-Q6; Compatibility has upgrade and cluster recovery steps; Acceptance criteria added. Still `draft` at that point.
+- 2026-11-26: owner (Łukasz) accepted Q1-Q6 as recommended (D1-D6 approved) and the strict Postgres allow-list (existing clusters with tuning such as `work_mem` refuse to start; tuning allow-list deferred). Status `approved`.
