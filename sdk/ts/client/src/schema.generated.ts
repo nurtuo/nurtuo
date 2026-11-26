@@ -420,7 +420,7 @@ export interface paths {
         /** @description Workspaces the session user belongs to. Session users only. */
         get: operations["listWorkspaces"];
         put?: never;
-        /** @description Creates a workspace; the caller becomes its owner. Session users only. */
+        /** @description Creates a workspace. Requires the instance-level permission `instance:workspace_create` (instance admins, see `NURTUO_INSTANCE_ADMINS` and `NURTUO_ALLOW_WORKSPACE_CREATE`). The caller becomes its owner. Session users only. */
         post: operations["createWorkspace"];
         delete?: never;
         options?: never;
