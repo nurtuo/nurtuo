@@ -16,9 +16,22 @@ import { PgConnectionRepository } from "./connections/pg-repository.js";
 import { ConnectionCoordinator } from "./connections/coordinator.js";
 import { connectionEndpoints } from "./connections/routes.js";
 import { MemorySecretStore } from "./connections/secrets.js";
+import { loadSigningKey, type SigningKey } from "./bundle.js";
 import { MemoryRepository } from "./memory-repository.js";
 import { PgRepository, migrate, type Db } from "./pg-repository.js";
 import type { Repository } from "./repository.js";
+
+let signingKey: SigningKey | undefined;
+const signingKeyFile = process.env.NURTUO_BUNDLE_SIGNING_KEY_FILE;
+if (signingKeyFile !== undefined) {
+  try {
+    signingKey = loadSigningKey(signingKeyFile);
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : "NURTUO_BUNDLE_SIGNING_KEY_FILE: cannot load signing key");
+    process.exit(1);
+  }
+  console.log(`gateway: bundle signing key loaded (key id ${signingKey.keyId})`);
+}
 
 const insecure = process.env.NURTUO_INSECURE_NO_AUTH === "1";
 
@@ -88,7 +101,7 @@ const { GATEWAY_CERT, GATEWAY_KEY, GATEWAY_CA } = process.env;
 if (GATEWAY_CERT && GATEWAY_KEY && GATEWAY_CA) {
   const { readFileSync } = await import("node:fs");
   const { Gateway, createGatewayServer } = await import("./gateway.js");
-  const gw = new Gateway(repo, { log: (m) => console.log(`gateway: ${m}`) });
+  const gw = new Gateway(repo, { signingKey, deliverArtifacts: false, log: (m) => console.log(`gateway: ${m}`) });
   gw.startOutboxPublisher();
   const gport = Number(process.env.GATEWAY_PORT ?? 8443);
   createGatewayServer(gw, { cert: readFileSync(GATEWAY_CERT), key: readFileSync(GATEWAY_KEY), ca: readFileSync(GATEWAY_CA) })
