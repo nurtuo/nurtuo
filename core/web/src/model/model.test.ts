@@ -162,3 +162,15 @@ describe("catalog and form schema", () => {
     expect(newStep(f, "setProperties").id).toBe("setproperties-1");
   });
 });
+
+describe("exported flow carries no secret", () => {
+  it("serializeFlow of a connector step has only the connection id", () => {
+    const f: Flow = {
+      ...emptyFlow(),
+      steps: [{ id: "connector-1", kind: "connector", config: { connector: "sftp", operation: "GET", connection: "rebex-demo" } }],
+    };
+    const out = serializeFlow(f);
+    expect(JSON.parse(out).steps[0].config).toEqual({ connector: "sftp", operation: "GET", connection: "rebex-demo" });
+    expect(out).not.toMatch(/password|secret:/i);
+  });
+});

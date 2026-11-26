@@ -19,7 +19,7 @@ type Handler struct {
 	Report func(*gatewayv1.DeploymentStatus)
 }
 
-func (h *Handler) Revision() uint64 { return h.S.Revision() }
+func (h *Handler) Revision() uint64 { return h.S.liveRevision() }
 
 func (h *Handler) ApplyDesiredState(ctx context.Context, ds *gatewayv1.DesiredState, report func(*gatewayv1.DeploymentStatus)) error {
 	var want []Deployment

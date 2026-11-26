@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Spec: canvas Run (test-run a flow from the canvas against a real connection)
 
-Status: approved. Date: 2026-11-23. Approved by Łukasz on 2026-11-23 18:30 (Europe/Warsaw): decisions D1–D16 accepted as recommended.
+Status: in progress (implementation: [#87](https://github.com/nurtuo/nurtuo/issues/87), see [Implementation Status](#implementation-status)). Date: 2026-11-23. Approved by Łukasz on 2026-11-23 18:30 (Europe/Warsaw): decisions D1–D16 accepted as recommended.
 
 Extends: [canvas-editor](implemented/2026-11-21-canvas-editor.md) (test mode, Epic 10),
 [connections-and-secrets](implemented/2026-11-21-connections-and-secrets.md),
@@ -12,6 +12,10 @@ Related: [workspace-isolation](2026-11-22-workspace-isolation.md) (draft).
 > **Approved.** All blocking questions are resolved: Łukasz accepted D1–D16 exactly as recommended on
 > 2026-11-23 (see [Decisions](#decisions)). Items still open are labelled **non-blocking** where they
 > occur (they are verifications and follow-ups, not product decisions).
+
+The approved operation limits and credential binding decisions in
+[PR #92](https://github.com/nurtuo/nurtuo/pull/92) supersede this spec where they overlap, including
+the original global request body limit and separate credential writes.
 
 ## TLDR
 
@@ -69,7 +73,7 @@ that the recommendation's wording named something that does not exist, the wordi
 | ID | Question | Decision (as recommended, accepted) | Applied as |
 |---|---|---|---|
 | D1 | Sync or async test run? | **Synchronous** `POST .../test-runs` returning the full result, bounded by the D2 timeout; the response carries a `runId` so job + poll can be added later without breaking clients | as decided |
-| D2 | Timeouts and size limits? | **Run timeout 30 s default, client may ask up to 120 s; request body ≤ 1 MiB (413); returned payload ≤ 1 MiB total decoded and ≤ 20 documents (else the run fails with `output_too_large`); 2 concurrent runs per workspace, 4 per instance (429)** | as decided; also bounds the child's spool, see Phase 3 step 7 |
+| D2 | Timeouts and size limits? | **For test-run execution: timeout 30 s default, client may ask up to 120 s; request body ≤ 1 MiB (413); returned payload ≤ 1 MiB total decoded and ≤ 20 documents (else the run fails with `output_too_large`); 2 concurrent runs per workspace, 4 per instance (429)** | as decided; also bounds the child's spool, see Phase 3 step 7 |
 | D3 | Where are secrets stored in M1, and how does the canvas refer to them? | **Workspace-scoped control-plane secret store behind a `SecretStore` interface, in-memory backend only in this slice** (values live in the control-plane process, never on disk, lost on restart; a persistent encrypted backend is a separate spec). The canvas and connections refer to secrets only as `secret://<name>`; the password is never in the flow JSON, the connection JSON, a response, a log or the audit log | as decided |
 | D4 | How is the SFTP host key accepted in the UI? | **TOFU (server scans, user confirms the fingerprint) plus paste of a fingerprint or `known_hosts` content, never an insecure option.** Nothing is stored until the user presses "Trust this key"; the trusted key is saved as `hostKeyPolicy: fingerprint`. `hostKeyPolicy: insecure` is rejected by the API (400) and there is no UI for it. A later mismatch is a hard error, never a re-prompt that overwrites | as decided; the scan reports the key the connector actually negotiates (Phase 5) |
 | D5 | Is run history persisted? | **Not persisted.** The result lives in canvas memory and is cleared on any edit, reload or logout; the server keeps only the audit row (action `test_run.execute`, status, no payload) | as decided |
@@ -89,8 +93,7 @@ that the recommendation's wording named something that does not exist, the wordi
 
 None blocking: Q1–Q16 are answered by D1–D16. Remaining items are non-blocking and are tracked where
 they occur: confirm Rebex's file path for the manual smoke test (Tests), confirm that Chromium keeps
-the `Secure` cookie on `127.0.0.1` (Gaps #10), check existing revision sizes against the 1 MiB body
-limit before Phase 2 ships (Gaps #9), and a structured `connection`/`stop` field and a
+the `Secure` cookie on `127.0.0.1` (Gaps #10), and a structured `connection`/`stop` field and a
 `--max-output-bytes` flag in the CLI as later additive follow-ups (Gaps #7, Improvement opportunities).
 
 ## Scope
@@ -217,10 +220,9 @@ New module `core/control-plane/src/connections/` (D3, D6, D8):
   another secret in the workspace (409 `secret_name_collision`, D12). `envVar(name)` is a TypeScript
   port of Go `secrets.EnvVar` **including** the `NURTUO_SECRET_` prefix, pinned by a shared fixture
   (`a-b`, `a_b`, `A.b`, digits) that is also run against the Go function.
-- Request body limit in `createHttpServer`: 1 MiB, 413 `payload_too_large` before JSON parsing (D2;
-  control-plane gap 2 had suggested 4 MiB, D2 fixes 1 MiB). It applies to every `/v1/` route and is
-  documented in `openapi.yaml`; whether bundles posted as revision `content` can exceed it is a
-  non-blocking check before this phase ships (Gaps #9).
+- Request body limits follow the operation profiles in PR #92. Bounded operations return 413
+  `payload_too_large` before JSON parsing when their limits are exceeded. Test runs have a 1 MiB
+  request limit (D2), and revision uploads retain their existing defaults.
 - Routes are auth-module endpoints so they receive `EndpointCtx.workspace`: `createAuthHook` gains
   an option `extraEndpoints?: Record<string, Endpoint>` merged into the `endpoints` lookup
   (`auth/middleware.ts`), and `main.ts` passes the connection, secret and test-run endpoints. When
@@ -248,7 +250,7 @@ New module `core/control-plane/src/testrun/` (D1, D2, D7, D10, D11, D12):
 
 `TestRunner.run(ws, request, signal)`:
 
-1. Limits: body ≤ 1 MiB (Phase 2), `timeoutMs` in 1000..120000 (default 30000), at most 64 input
+1. Limits: test-run body ≤ 1 MiB, `timeoutMs` in 1000..120000 (default 30000), at most 64 input
    properties, keys `^[A-Za-z_][A-Za-z0-9_.-]{0,63}$`, values ≤ 4 KiB. Concurrency semaphore 2 per
    workspace, 4 per instance -> 429 `too_many_runs` with `retry-after: 5`.
 2. Validate `flow` with `validateFlow` from `@nurtuo/flow-validate` (the same library as the canvas);
@@ -401,9 +403,7 @@ See [Tests](#tests). Changes `.github/workflows/ci.yml` (the `web-e2e` job from 
 
 Each phase is additive. Phase 1 adds JSON fields. Phases 2-5 add routes, a table, permissions and a
 role-seed migration (and the explicit 404 in `route()`); rollback = remove the routes from `main.ts` (data in `connections` is inert);
-the table can be dropped by a later migration. Phase 4 UI is inert without a control plane. No
-existing behaviour changes except the 1 MiB request body limit (Phase 2), which is a single
-constant.
+the table can be dropped by a later migration. Phase 4 UI is inert without a control plane. The limits on the new endpoints roll back with their routes.
 
 ### Alternatives considered
 
@@ -433,7 +433,7 @@ spec) and are labelled so in `docs/cli.md` and `docs/operations.md`.
 | `PUT\|DELETE /v1/workspaces/{ws}/secrets/{name}` | new; PUT body `{ value }`, 204, value never returned; 409 `secret_name_collision` | experimental |
 | `POST /v1/workspaces/{ws}/connections/host-key-scan` | new (Phase 5) | experimental |
 | `POST /v1/workspaces/{ws}/test-runs` | new; request and response as in Design | experimental |
-| Request body limit | all `/v1/` routes: 413 `payload_too_large` above 1 MiB, documented in `openapi.yaml` (applies to STABLE paths; see Compatibility) | new behaviour |
+| Request body limit | operation-specific profiles in PR #92; 413 `payload_too_large` above the selected limit; no new default ceiling on revision uploads | new behaviour |
 | Permissions | new resources `connection` (`read`, `write`, `delete`), `secret` (`write`, `delete`), `test_run` (`execute`) in `auth/permissions.ts`; role seed migration `0104_auth_seed_connection_permissions.sql` | experimental |
 | Environment | `NURTUO_FLOW_RUN_BIN`, `NURTUO_TEST_RUN_ALLOW_PRIVATE` (control plane) | experimental (by exception to STABLE env vars) |
 | `nurtuo flow run --json` | additive `steps` in the envelope and the JSON error (D16) | experimental (as PR #51) |
@@ -445,17 +445,22 @@ of this spec is that request.
 
 ## Compatibility
 
-- REST: only new paths and new permissions; existing clients are unaffected (the
-  [backward-compatibility contract](2026-11-22-backward-compatibility-contract.md) treats `/v1/` paths
-  as STABLE and response fields as ADDITIVE-ONLY; nothing existing changes). The 1 MiB body limit
-  is the one behaviour change: a client posting a larger revision today would get 413 (none known;
-  see Gaps #9).
+- REST: the [backward-compatibility contract](2026-11-22-backward-compatibility-contract.md)
+  treats `/v1/` paths as STABLE and response fields as ADDITIVE-ONLY. Revision uploads and full
+  readback retain their existing default behavior under the operation-specific profiles in PR #92.
 - Roles: built-in roles gain permissions per D6 (`runtime` gains none). Editors lack `member:manage`,
   so `canGrant` is unchanged in practice (it matters only for owner and admin). The `0104` seed keeps
   `permissions.ts` and SQL in sync (drift test, with its permission regex widened for `test_run`).
 - `nurtuo flow run --json`: additive keys; consumers must ignore unknown fields.
 - Canvas: offline behaviour unchanged; "Save flow" output unchanged.
 - Downgrade: the `connections` table and permissions remain; an older control plane ignores them.
+
+- **D9 status code change (404 instead of 405).** Before this change the legacy `route()` answered
+  405 `method_not_allowed` for any `/v1/workspaces/<id>/...` path when the auth module did not serve
+  it, which is the case under `NURTUO_INSECURE_NO_AUTH=1`. Those paths now answer 404 `not_found`
+  (the bare `/v1/workspaces` and every other resource keep their previous answers). A client that
+  relied on 405 for these dev-only paths sees 404; with auth enabled nothing changes. Covered by
+  `api.test.ts` "HTTP without auth returns 404 for workspace ID paths".
 
 ## Security
 
@@ -507,8 +512,8 @@ prerequisite. PR #50 (the `nurtuo flow run` spec) is already on `main`.
    `pg-auth.test.ts` migration list, `rbac.test.ts` role × route matrix extended with an assertion that
    `runtime` has no `connection:*`, `secret:*` or `test_run:*` permission.
 5. Request body limit and `signal` plumbing (`ApiRequest`, `EndpointCtx`) in `createHttpServer`;
-   explicit 404 for `/v1/workspaces/...` in `route()`. Verify: `api.test.ts` "body over 1 MiB is 413
-   before parsing", "no-auth mode answers 404 for workspace routes", "request close aborts the signal".
+   explicit 404 for `/v1/workspaces/...` in `route()`. Verify: `api.test.ts` checks each operation’s request limit
+   before parsing, no-auth workspace 404s and signal cancellation on disconnect.
 6. `ConnectionRepository` (memory + Pg) with migration `0300_workspace_connections.sql`. Verify:
    `connections/repository.test.ts` (memory), `connections/pg-repository.test.ts` (`DATABASE_URL`-gated).
 7. `MemorySecretStore` and the `extraEndpoints` seam in `createAuthHook`. Workspace delete purges
@@ -635,7 +640,7 @@ All handler tests drive `createHandler` in-process with `MemoryRepository`, `Mem
 | isolation | `src/connections/isolation.test.ts`, `src/testrun/isolation.test.ts` | A cannot list/get/put/delete B's connections or secrets (404), cannot run with B's connection id (404), test-run with A's connection never reveals B's secrets (fake binary records env) |
 | permissions | `src/auth/rbac.test.ts` (extended matrix) | viewer/deployer/runtime denied; tokens denied on `userOnly` routes; `runtime` lacks every `connection:*`, `secret:*` and `test_run:*` permission; `connection:read` held by owner, admin, editor, viewer, deployer; drift test (regex widened) sees the `0104` rows |
 | policy/openapi | `src/auth/policy.test.ts` (existing) | every new operation has a policy and documents 401/403 |
-| no-auth mode, limits, abort | `src/api.test.ts` | new routes 404 (not 405) with `auth: "disabled"`; body > 1 MiB is 413; request `close` aborts `ApiRequest.signal` |
+| no-auth mode, limits, abort | `src/api.test.ts` | new routes 404 (not 405) with `auth: "disabled"`; operation-specific body limits return 413 and revision routes retain existing behavior; disconnect before the response completes aborts `ApiRequest.signal` |
 | workspace delete | `src/connections/workspace-delete.test.ts` | deleting a workspace purges its connections and secrets (memory) |
 | envVar port | `src/connections/env-var.test.ts` | TS `envVar` equals the Go fixture, prefix present exactly once; `secret_name_collision` |
 | schema copy | `src/connections/schema.test.ts` | the `dist` copy of `connection.json` equals `connectors/sftp/schemas/connection.json` |
@@ -717,7 +722,7 @@ egress, secrets in the control plane), `docs/getting-started.md` (Run in the can
 | 6 | Secrets are in the child's environment; another process of the same OS user can read `/proc/<pid>/environ` during the run | low | security | same user as the control plane, which holds the values anyway; runs are short; D12 alternative documented |
 | 7 | A hostile or buggy flow produces 4 GiB of output; Node buffers it | medium | reliability | stdout cap 1.5 MiB then kill. `TMPDIR=<tmp>` only moves the child's `docs.Spool` files and does not bound them, so the runner polls the size of `<tmp>` and kills the child above 64 MiB; the child's `writeOutput` loads each returned payload into memory (`p.Bytes()`) before the stdout cap applies, a residual memory risk until a later additive CLI limit (`--max-output-bytes`, not part of D16) exists; temp dir removed after |
 | 8 | The child hangs on a stalled SFTP server (SFTP gap 1: `timeoutMs` covers only connect) | medium | reliability | `--timeout` in the child plus SIGTERM/SIGKILL from the control plane; PR #51 made transfers cancellable |
-| 9 | The new 1 MiB body limit rejects an existing client that posts a large revision (a bundle as `content`) | medium | compatibility | check bundle sizes in `nurtuoctl push` before Phase 2; make the limit per route if needed (D2) |
+| 9 | A bounded operation profile is incorrectly applied to a revision upload | medium | compatibility | retain the revision profile without a default byte ceiling and test uploads above 1 MiB (PR #92) |
 | 10 | The `Secure` session cookie is not stored when the canvas is served over plain `http://` on a non-localhost address (for example a LAN IP in `make dev`) | medium | UX | document `127.0.0.1`/`localhost` or TLS; Chromium treats loopback as secure (non-blocking: confirm in Phase 4) |
 | 11 | A user trusts a TOFU fingerprint without comparing it, on a network with a MITM; credentials are then sent to the attacker | medium | security | explicit wording, show the fingerprint prominently, never auto-trust; paste path for out-of-band fingerprints |
 | 12 | The server rotates its host key; every run fails and users ask for an "ignore" switch | low | UX | message explains rotation; replacing the key is the same TOFU/paste flow with the old one shown; no insecure switch |
@@ -748,6 +753,17 @@ egress, secrets in the control plane), `docs/getting-started.md` (Run in the can
 - Specs: [canvas-editor](implemented/2026-11-21-canvas-editor.md), [connections-and-secrets](implemented/2026-11-21-connections-and-secrets.md), [connector-sftp](implemented/2026-11-21-connector-sftp.md), [control-plane-api-and-data](implemented/2026-11-21-control-plane-api-and-data.md), [engine-interpreter](implemented/2026-11-21-engine-interpreter.md), [flow-format-v1-and-validator](implemented/2026-11-21-flow-format-v1-and-validator.md), [auth-rbac-audit](implemented/2026-11-21-auth-rbac-audit.md), [workspace-isolation](2026-11-22-workspace-isolation.md), [backward-compatibility-contract](2026-11-22-backward-compatibility-contract.md); [nurtuo flow run](2026-11-23-nurtuoctl-run.md) (PR #50)
 - PRs: https://github.com/nurtuo/nurtuo/pull/49 (AGENTS.md), https://github.com/nurtuo/nurtuo/pull/50, https://github.com/nurtuo/nurtuo/pull/51, https://github.com/nurtuo/nurtuo/pull/53
 - Open Mercato: `integration-secret-credential-editing` (write-only credential fields), `tenant-ownership-and-module-acl-authorization`.
+
+## Implementation Status
+
+[#99](https://github.com/nurtuo/nurtuo/pull/99) adds canvas sign-in, session restoration, workspace
+selection and logout. It also adds the permission matrix and migration `0104`, the no-auth 404
+behavior and the HTTP disconnect signal.
+
+The remaining work from [#90](https://github.com/nurtuo/nurtuo/pull/90) is tracked in
+[#100](https://github.com/nurtuo/nurtuo/pull/100) (connections and secrets),
+[#101](https://github.com/nurtuo/nurtuo/pull/101) (runtime support) and
+[#102](https://github.com/nurtuo/nurtuo/pull/102) (test-run API, canvas and end-to-end tests).
 
 ## Changelog
 

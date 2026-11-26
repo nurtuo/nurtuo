@@ -19,6 +19,7 @@ type DataDirs struct {
 	PGRun    string // postgres runtime/extracted binaries
 	PGCache  string // downloaded binary cache
 	Logs     string
+	Runtime  string // runtime state_dir: queue data and applied revision (private)
 	Secrets  string // CA, certs, tokens (0700 / private DACL on Windows)
 }
 
@@ -60,6 +61,7 @@ func NewDataDirs(root string) DataDirs {
 		PGRun:    filepath.Join(root, "postgres", "runtime"),
 		PGCache:  filepath.Join(root, "postgres", "cache"),
 		Logs:     filepath.Join(root, "logs"),
+		Runtime:  filepath.Join(root, "runtime"),
 		Secrets:  filepath.Join(root, "secrets"),
 	}
 }

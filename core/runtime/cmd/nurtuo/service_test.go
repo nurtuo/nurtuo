@@ -6,9 +6,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nurtuo/nurtuo/core/runtime/internal/runtime"
 )
 
 func TestDefaultConfigPath(t *testing.T) {
@@ -150,5 +154,92 @@ func TestProgramNoExitOnCleanStopOrStopError(t *testing.T) {
 	case c := <-exited:
 		t.Fatalf("unexpected exit(%d) during graceful stop", c)
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestDefaultServiceStateDir(t *testing.T) {
+	env := func(k string) string {
+		if k == "ProgramData" {
+			return `D:\PD`
+		}
+		return ""
+	}
+	for goos, want := range map[string]string{
+		"windows": `D:\PD\Nurtuo`,
+		"darwin":  "/Library/Application Support/Nurtuo",
+		"linux":   "/var/lib/nurtuo",
+	} {
+		if got := defaultServiceStateDir(goos, env); got != want {
+			t.Errorf("%s: %q, want %q", goos, got, want)
+		}
+	}
+}
+
+func TestEnsureStateDirConfigured(t *testing.T) {
+	dir := t.TempDir()
+	want := filepath.Join(dir, "state")
+	y := filepath.Join(dir, "runtime.yaml")
+	base := "runtime_id: r\ncontrol_plane_url: cp:1\ncert_file: /c\nkey_file: /k\nca_file: /ca"
+	if err := os.WriteFile(y, []byte(base), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if added, err := ensureStateDirConfigured(y, want, false); err != nil || !added {
+		t.Fatalf("yaml: added=%v err=%v", added, err)
+	}
+	if c, err := runtime.LoadConfig(y); err != nil || c.StateDir != want {
+		t.Fatalf("yaml reload: %+v %v", c, err)
+	}
+	if added, err := ensureStateDirConfigured(y, "/other", true); err != nil || added {
+		t.Fatalf("already set: added=%v err=%v", added, err)
+	}
+
+	j := filepath.Join(dir, "runtime.json")
+	js := `{"runtime_id":"r","control_plane_url":"cp:1","cert_file":"/c","key_file":"/k","ca_file":"/ca"}`
+	if err := os.WriteFile(j, []byte(js), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if added, err := ensureStateDirConfigured(j, want, false); err != nil || !added {
+		t.Fatalf("json: added=%v err=%v", added, err)
+	}
+	if c, err := runtime.LoadConfig(j); err != nil || c.StateDir != want {
+		t.Fatalf("json reload: %+v %v", c, err)
+	}
+}
+
+func TestEnsureStateDirConfiguredYAMLDocuments(t *testing.T) {
+	for name, body := range map[string]string{
+		"flow mapping":    `{runtime_id: r, control_plane_url: "cp:1", cert_file: c, key_file: k, ca_file: ca}`,
+		"empty state dir": `{runtime_id: r, control_plane_url: "cp:1", cert_file: c, key_file: k, ca_file: ca, state_dir: ""}`,
+		"document end":    "---\nruntime_id: r\ncontrol_plane_url: cp:1\ncert_file: c\nkey_file: k\nca_file: ca\n...\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "runtime.yaml")
+			want := filepath.Join(dir, "state #1")
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if added, err := ensureStateDirConfigured(path, want, false); err != nil || !added {
+				t.Fatalf("added=%v err=%v", added, err)
+			}
+			if c, err := runtime.LoadConfig(path); err != nil || c.StateDir != want || c.CertFile != filepath.Join(dir, "c") {
+				t.Fatalf("reload: %+v %v", c, err)
+			}
+		})
+	}
+}
+
+func TestEnsureStateDirConfiguredPreservesInvalidOriginal(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "runtime.yaml")
+	original := "runtime_id: r\n"
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if added, err := ensureStateDirConfigured(path, filepath.Join(dir, "state"), false); err == nil || added {
+		t.Fatalf("added=%v err=%v, want validation failure", added, err)
+	}
+	if content, err := os.ReadFile(path); err != nil || string(content) != original {
+		t.Fatalf("original config changed: %q, %v", content, err)
 	}
 }

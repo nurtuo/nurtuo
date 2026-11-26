@@ -216,6 +216,9 @@ func runStandalone(args []string) int {
 // <data-dir>/secrets/admin-token).
 func controlPlaneEnv(dsn string, c *Credentials, port int, gatewayAddr string) []string {
 	env := []string{"DATABASE_URL=" + dsn, "PORT=" + strconv.Itoa(port)}
+	if exe, err := os.Executable(); err == nil {
+		env = append(env, "NURTUO_FLOW_RUN_BIN="+exe)
+	}
 	if c == nil {
 		return env
 	}

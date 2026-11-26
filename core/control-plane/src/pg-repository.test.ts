@@ -2,15 +2,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { PgRepository, migrate, type Db } from "./pg-repository.js";
+import { PgRepository, migrate } from "./pg-repository.js";
+import { openTestSchema } from "./pg-test-schema.js";
 
 const url = process.env.DATABASE_URL;
 
 test("postgres repository: migrate, revisions, deploy+outbox", { skip: !url && "DATABASE_URL not set" }, async () => {
-  const { default: pg } = await import("pg");
-  const pool = new pg.Pool({ connectionString: url! }) as unknown as Db & { end(): Promise<void> };
+  const { pool, close } = await openTestSchema(url!);
   try {
-    await pool.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public");
     const applied = await migrate(pool, fileURLToPath(new URL("../migrations", import.meta.url)));
     assert.ok(applied.length >= 3); // other feature branches add migrations; auth ones are covered in auth/pg-auth.test.ts
     const repo = new PgRepository(pool);
@@ -33,5 +32,5 @@ test("postgres repository: migrate, revisions, deploy+outbox", { skip: !url && "
     assert.equal(await repo.touchRuntime("missing"), undefined);
     const upd = await repo.updateDeploymentStatus(out.deployment.id, "running", "m");
     assert.equal(upd!.status, "running");
-  } finally { await pool.end(); }
+  } finally { await close(); }
 });

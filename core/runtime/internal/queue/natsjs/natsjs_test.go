@@ -103,3 +103,62 @@ func TestMaxDeliveriesAdvisoryDeadLetters(t *testing.T) {
 		t.Fatalf("stats = %+v", st)
 	}
 }
+
+func TestQueueAndDeadLetterNamesAreDisjoint(t *testing.T) {
+	for _, pair := range [][2]string{{"orders.eu", "orders_eu"}, {"orders", "orders_DLQ"}} {
+		t.Run(pair[0], func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			b, err := natsjs.New(natsjs.Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = b.Close() }()
+			for _, name := range pair {
+				if err := b.Ensure(ctx, queue.QueueDef{Name: name}); err != nil {
+					t.Fatalf("ensure %q: %v", name, err)
+				}
+				if err := b.Publish(ctx, name, queue.Message{ID: name}); err != nil {
+					t.Fatalf("publish to %q: %v", name, err)
+				}
+			}
+
+			first, second := pair[0], pair[1]
+			got := make(chan string, 2)
+			settled := make(chan error, 2)
+			if _, err := b.Subscribe(ctx, first, queue.SubOpts{}, func(ctx context.Context, d queue.Delivery) {
+				got <- d.Message().ID
+				settled <- d.Term(ctx)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case id := <-got:
+				if id != first {
+					t.Fatalf("delivery = %q, want %q", id, first)
+				}
+			case <-ctx.Done():
+				t.Fatal("first queue did not deliver")
+			}
+			select {
+			case err := <-settled:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-ctx.Done():
+				t.Fatal("first queue did not dead-letter")
+			}
+			letters, err := b.ListDeadLetters(ctx, first, 0)
+			if err != nil || len(letters) != 1 || letters[0].Message.ID != first {
+				t.Fatalf("dead letters for %q = %v, error = %v", first, letters, err)
+			}
+			if err := b.Remove(ctx, first); err != nil {
+				t.Fatal(err)
+			}
+			stats, err := b.Stats(ctx, second)
+			if err != nil || stats.Depth != 1 || stats.DeadLetterDepth != 0 {
+				t.Fatalf("stats after removal for %q = %+v, error = %v", second, stats, err)
+			}
+		})
+	}
+}

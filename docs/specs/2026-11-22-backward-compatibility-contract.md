@@ -82,6 +82,7 @@ shortened to "documented in the same release"; FROZEN and ADDITIVE-ONLY rules ap
 | Bridge handshake line and version `1`, `NURTUO_BRIDGE_*` variables, `x-nurtuo-bridge-token`, exit codes | FROZEN | a change is handshake version 2, negotiated |
 | Control plane REST API under `/v1/` (`openapi.yaml`) | STABLE for paths, methods, required request fields, response field meaning; ADDITIVE-ONLY for optional request fields and response fields | clients must ignore unknown response fields |
 | `nurtuo` subcommands, flags, exit codes (0, 1, 2), default config paths, service name `nurtuo` | STABLE | `role` and `standalone --dev` are EXPERIMENTAL |
+| `nurtuo flow` subcommands and flags | EXPERIMENTAL | includes the Run output flags |
 | `nurtuoctl` commands, flags, exit codes, config file location, `--json` output fields | STABLE (commands, flags, exit codes); ADDITIVE-ONLY (`--json` output) | human-readable output is not a contract |
 | MCP tool names and input schemas | STABLE; output fields ADDITIVE-ONLY | agents are prompted with tool names |
 | `runtime.yaml` keys and value sets, `NURTUO_SECRET_<NAME>`, `NURTUO_DATA_DIR`, control plane env (`DATABASE_URL`, `PORT`, `GATEWAY_*`, `NURTUO_AUTH_SECRET`, `NURTUO_BOOTSTRAP_*`) | STABLE | unknown keys: warn, do not fail (today `yaml.Unmarshal` ignores them silently) |

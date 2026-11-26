@@ -9,7 +9,7 @@ import type { OidcProvider } from "./oidc.js";
 import { ALL_PERMISSIONS, ROLES, ROLE_DESCRIPTIONS, ROLE_PERMISSIONS, canGrant, isRole, type Role } from "./permissions.js";
 import { permissionsIn } from "./authz.js";
 import { RateLimited, parseCookies, type AuthService } from "./service.js";
-import { publicToken, publicUser, type Principal, type Workspace } from "./types.js";
+import { publicToken, publicUser, type AuditEntry, type NewAuditEntry, type Principal, type Workspace } from "./types.js";
 
 export interface OidcSetup {
   provider: OidcProvider; issuer: string;
@@ -20,11 +20,15 @@ export interface OidcSetup {
 }
 
 export interface AuditDetail { resourceId?: string | null; before?: unknown; after?: unknown; metadata?: Record<string, unknown>; actor?: { type: "user" | "token" | "anonymous"; id: string | null }; workspaceId?: string | null }
+export type AppendAudit = (entry: NewAuditEntry) => Promise<AuditEntry>;
 export type EndpointResult = ApiResponse & { audit?: AuditDetail };
 
 export interface EndpointCtx {
   req: ApiRequest; principal: Principal | null; params: Record<string, string>; query: Record<string, string>;
   workspace?: Workspace; ip: string | null; requestId: string; service: AuthService; oidc?: OidcSetup;
+  /** Aborted when the HTTP client disconnects before the response is sent. */
+  signal?: AbortSignal;
+  auditMutation(status: number, detail: AuditDetail, append?: AppendAudit): Promise<void>;
 }
 export type Endpoint = (c: EndpointCtx) => Promise<EndpointResult>;
 
@@ -168,6 +172,10 @@ export const endpoints: Record<string, Endpoint> = {
     const email = c.service.validateEmail(b.email);
     let user = await c.service.repo.getUserByEmail(email);
     if (!user) {
+      // An instance-admin email confers instance permissions, so only an instance admin may create that account (D9).
+      if (c.service.isInstanceAdminEmail(email) && !(await c.service.instancePermissions(p)).has("instance:workspace_create")) {
+        throw forbidden("role_escalation", "only an instance admin can create an account for an instance-admin email");
+      }
       // New local account; the password is set by the admin and never changed for an existing account here.
       user = await c.service.createPasswordUser(email, b.password as string, typeof b.displayName === "string" ? b.displayName.slice(0, 100) : "");
     }

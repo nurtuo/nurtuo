@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Spec: Gate `POST /v1/workspaces` behind `instance:workspace_create`
 
-Status: approved (2026-11-24, Łukasz). Date: 2026-11-24.
+Status: in progress (approved 2026-11-24, Łukasz; implementation on branch `feat/workspace-create-gate`). Date: 2026-11-24.
 
 Issue: https://github.com/nurtuo/nurtuo/issues/54 (phase 1 of epic https://github.com/nurtuo/nurtuo/issues/66).
 
@@ -22,7 +22,7 @@ target model is instance roles stored in the database, tracked in
 
 | | |
 |---|---|
-| Pull requests | https://github.com/nurtuo/nurtuo/pull/72 (this spec, docs only); implementation will use `Closes #54` on a later `feat/` PR after approval |
+| Pull requests | https://github.com/nurtuo/nurtuo/pull/72 (this spec, docs only, merged); implementation: `feat/workspace-create-gate` PR (`Closes #54`) |
 | ADRs | none for phase 1 (decision D1: no database table and no ADR in phase 1; the DB-backed instance role model is designed under [#77](https://github.com/nurtuo/nurtuo/issues/77)); the parent's planned ADR "workspace is the tenant boundary" belongs to phase 2 |
 | Issues | https://github.com/nurtuo/nurtuo/issues/54 (this spec), epic https://github.com/nurtuo/nurtuo/issues/66, follow-up https://github.com/nurtuo/nurtuo/issues/55 (phase 2), target instance-role model https://github.com/nurtuo/nurtuo/issues/77 (replaces the temporary phase-1 env list, D1) |
 | Code | `core/control-plane/src/auth/{policy,middleware,endpoints,service,permissions,authz,test-util}.ts`, new `core/control-plane/src/auth/instance.ts`, `core/control-plane/src/main.ts`, `core/control-plane/openapi.yaml` (description only) |
@@ -442,6 +442,25 @@ Manual check (documented in the implementation PR): `NURTUO_AUTH_SECRET=<32+ cha
 log in as `ops@example.test` and create a workspace (201); add `viewer@example.test` to `default` as viewer, log
 in as viewer and create a workspace (403).
 
+## Implementation Status
+
+| Phase | Status | Date | Notes |
+|-------|--------|------|-------|
+| Phase 1: gate workspace creation | In review | 2026-11-24 | Steps 1 to 7 done on `feat/workspace-create-gate`; control-plane build, typecheck and tests passing; `needs-owner-review` (D2) |
+
+Phase 1 steps:
+
+- [x] 1. Characterization test (committed alone, green on unchanged code), then turned into the gate test.
+- [x] 2. `src/auth/instance.ts` with `TODO(#77)` at the env-var admin check; `instance.test.ts`.
+- [x] 3. `AuthService` `instance` option (fail closed), `instancePermissions`, `isInstanceAdminEmail`.
+- [x] 4. Policy `access: "instance"`, `inst()`, `POST /v1/workspaces` row, middleware check; `policy.test.ts`, `rbac.test.ts`.
+- [x] 5. `member.add` guard (D9).
+- [x] 6. `main.ts` parsing, exit 1, log lines; `src/main-config.test.ts`.
+- [x] 7. `openapi.yaml` description, `auth.md`, `security.md`, `operations.md`; release note with D12 audit queries in the PR body.
+
+The email syntax check is shared as `isEmailSyntax` in `src/auth/types.ts` (used by `AuthService.validateEmail`
+and `parseInstanceConfig`), so the regex is not duplicated. Status `implemented` and the move to `implemented/` follow once the implementation PR is merged.
+
 ## Decisions
 
 Approved by Łukasz on 2026-11-24 (Europe/Warsaw): all recommendations taken, aligned with Boomi. Owner
@@ -492,3 +511,4 @@ and need no re-approval.
 
 - 2026-11-24: created as draft.
 - 2026-11-24: approved; decisions D1, D2, D3, D9, D12 recorded (Łukasz, all recommendations, aligned with Boomi); D1 env-var admin list is temporary for phase 1, target instance-role model tracked in #77; implementation must carry `TODO(#77)` at the env-var admin check.
+- 2026-11-24: status in progress; phase 1 implemented on `feat/workspace-create-gate` (instance.ts, policy `access: "instance"`, middleware check, `member.add` guard, `main.ts` startup validation, tests, docs).

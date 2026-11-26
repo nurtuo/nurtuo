@@ -304,3 +304,25 @@ func TestOpenConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestEnvVarFixture(t *testing.T) {
+	data, err := os.ReadFile("testdata/envvar.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture []struct {
+		Name string `json:"name"`
+		Env  string `json:"env"`
+	}
+	if err := json.Unmarshal(data, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	if len(fixture) < 4 {
+		t.Fatalf("expected at least four fixture entries, got %d", len(fixture))
+	}
+	for _, entry := range fixture {
+		if got := EnvVar(entry.Name); got != entry.Env {
+			t.Errorf("EnvVar(%q) = %q, want %q", entry.Name, got, entry.Env)
+		}
+	}
+}

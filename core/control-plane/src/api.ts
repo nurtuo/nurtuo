@@ -4,8 +4,9 @@ import { createServer, type Server } from "node:http";
 import { ApiError, type ComponentKind, type DeploymentStatus } from "./domain.js";
 import type { Repository } from "./repository.js";
 import type { AuthHook } from "./auth/middleware.js";
+import { matchPolicy } from "./auth/policy.js";
 
-export interface ApiRequest { method: string; path: string; query?: Record<string, string>; body?: unknown; /** lower-cased header names */ headers?: Record<string, string | undefined>; /** peer address */ ip?: string }
+export interface ApiRequest { method: string; path: string; query?: Record<string, string>; body?: unknown; /** lower-cased header names */ headers?: Record<string, string | undefined>; /** peer address */ ip?: string; /** aborted when the client disconnects before the response is sent */ signal?: AbortSignal }
 export interface ApiResponse { status: number; body?: unknown; headers?: Record<string, string | string[]> }
 
 /**
@@ -64,6 +65,10 @@ async function route(repo: Repository, req: ApiRequest): Promise<ApiResponse> {
   const m = req.method.toUpperCase();
   if (seg[0] !== "v1") throw notFound("route");
   const [, res, id, sub, subId] = seg;
+
+  // Path-scoped workspace routes are served only by the auth module. Without it (NURTUO_INSECURE_NO_AUTH=1)
+  // they do not exist: 404, not the 405 the generic fallthrough below would give (canvas-run spec D9).
+  if (res === "workspaces" && id) throw notFound("route");
 
   if (res === "components") {
     if (!id) {
@@ -166,20 +171,42 @@ async function route(repo: Repository, req: ApiRequest): Promise<ApiResponse> {
   throw new ApiError(res ? 405 : 404, res ? "method_not_allowed" : "not_found", "no such route");
 }
 
+
 /** Thin node:http adapter. */
 export function createHttpServer(repo: Repository, opts: HandlerOptions): Server {
   const handle = createHandler(repo, opts);
   return createServer(async (rq, rs) => {
     const url = new URL(rq.url ?? "/", "http://x");
+    // Aborted when the client goes away before the response is complete (kills a running test-run child).
+    const ac = new AbortController();
+    rs.on("close", () => { if (!rs.writableFinished) ac.abort(); });
+    const action = matchPolicy(rq.method ?? "GET", url.pathname)?.policy.action;
+    const jsonEnvelope = 512;
+    const connectionSettings = 6 * (253 + 255 + 4096) + jsonEnvelope;
+    const maxBytes = action === "connection.put" ? 6 * 4 * 64 * 1024 + connectionSettings
+      : Infinity;
+    const tooLarge = () => { rs.writeHead(413, { "content-type": "application/json", connection: "close" }).end(JSON.stringify({ error: { code: "payload_too_large", message: `request body larger than ${maxBytes} bytes` } })); };
+    if (Number(rq.headers["content-length"] ?? 0) > maxBytes) { tooLarge(); return; }
     const chunks: Buffer[] = [];
-    for await (const c of rq) chunks.push(c as Buffer);
+    let size = 0;
+    try {
+      for await (const c of rq.iterator({ destroyOnReturn: false })) {
+        size += (c as Buffer).length;
+        if (size > maxBytes) { tooLarge(); return; } // before JSON parsing
+        chunks.push(c as Buffer);
+      }
+    } catch {
+      if (!rs.destroyed) rs.destroy();
+      return;
+    }
     let body: unknown;
     let out: ApiResponse;
     try { if (chunks.length) body = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
     catch { rs.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "bad_request", message: "invalid JSON" } })); return; }
     const headers: Record<string, string> = {};
     for (const [k, v] of Object.entries(rq.headers)) if (v !== undefined) headers[k] = Array.isArray(v) ? v.join(", ") : v;
-    out = await handle({ method: rq.method ?? "GET", path: url.pathname, query: Object.fromEntries(url.searchParams), body, headers, ip: rq.socket.remoteAddress });
+    out = await handle({ method: rq.method ?? "GET", path: url.pathname, query: Object.fromEntries(url.searchParams), body, headers, ip: rq.socket.remoteAddress, signal: ac.signal });
+    if (ac.signal.aborted) return;
     rs.writeHead(out.status, { "content-type": "application/json", ...out.headers });
     rs.end(out.body === undefined ? undefined : JSON.stringify(out.body));
   });
