@@ -323,8 +323,8 @@ stated physical bound**, reserved before allocation:
 - **Worker external memory (pre-allocation gate).** Worker `resourceLimits` cap only the V8 heap.
   `ArrayBuffer`s, `Buffer`s and native allocations of the PostgreSQL driver and of `crypto` are
   outside it, so a worker reservation is split into `h` (heap, set as `resourceLimits`), `x`
-  (external) and `o` (fixed overhead), with `h = k × bytes` and `x = k_ext × bytes` plus the
-  transfer window; `k_ext` is a measured code value like `k`. Every external allocation that grows
+  (external) and `o` (fixed overhead), with `h = k × bytes` and `x = k_ext × bytes`. The transfer window is charged to `E_parent`, not
+  to `x` (see below). `k_ext` is a measured code value like `k`. Every external allocation that grows
   with the payload is **checked against `x` before it is made**, and no allocation that is not
   checked may grow with the payload:
   - *Transfer window.* Credit-based: the parent sends the next chunk only after the worker has
@@ -370,8 +370,8 @@ stated physical bound**, reserved before allocation:
     free now (a partial grant) and goes on reading. A body that fits in the free space therefore
     never waits. The upload waits for the rest only when its bytes reach what it holds and more
     bytes remain.
-  - *Exclusive use.* When the target is the whole of `S_spool` and other spools hold part of it,
-    the upload waits for exclusive use. New spool reservations queue behind it, as for memory.
+  - *Exclusive use.* When the upload must wait (its bytes reached what it holds) and its target is
+    the whole of `S_spool` while other spools hold part of it, it waits for exclusive use. New spool reservations queue behind it, as for memory.
   - *Bounded EOF probe.* At every boundary (the in-memory threshold, and `held` before another
     grant) the reader does not ask for more until it knows that more bytes exist. It reads at most
     one more socket chunk into the socket-chunk allowance of `E_parent` that it already holds.
@@ -492,8 +492,8 @@ stated physical bound**, reserved before allocation:
   it starts when `W` is idle, and it runs isolated in one worker whose `h + x + o` is the **whole
   of `W`**, never more. The process bound `M_proc` therefore holds for it too. If the operation
   physically needs more than `W`, its worker reaches its heap limit or the gate refuses an external
-  allocation, and that request alone fails
-  with 500 `resource_exhausted` (request-only failure above capacity); the parent, the gateway and
+  allocation, and that request alone fails with 500 `resource_exhausted` before headers, or with an
+  aborted response under the post-header abort rule (request-only failure above capacity); the parent, the gateway and
   other requests continue. The load-test gate requires `W` to fit the operations at `S_main`.
 - **When 503 is permitted.** Only when a reservation cannot be obtained before the wait deadline
   because **other** reservations hold the budget (transient). Never because of the request's own
