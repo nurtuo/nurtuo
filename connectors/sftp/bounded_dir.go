@@ -269,7 +269,8 @@ func (p *directoryPacket) statusError(kind byte) error {
 	case 3:
 		return os.ErrPermission
 	default:
-		return fmt.Errorf("sftp: directory status %d: %s", code, message)
+		// Typed so isApplicationError classifies code 4 like the library path.
+		return fmt.Errorf("sftp: directory status %d: %s: %w", code, message, &pkgsftp.StatusError{Code: code})
 	}
 }
 

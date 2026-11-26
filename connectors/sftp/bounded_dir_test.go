@@ -43,3 +43,28 @@ func TestMalformedDirectoryPackets(t *testing.T) {
 		})
 	}
 }
+
+func TestDirectoryStatusKeepsApplicationClassification(t *testing.T) {
+	for _, tc := range []struct {
+		code uint32
+		app  bool
+	}{{2, true}, {3, true}, {4, true}, {5, false}, {8, false}} {
+		data := binary.BigEndian.AppendUint32(nil, 1+4+4+4+4)
+		data = append(data, fxpStatus)
+		data = binary.BigEndian.AppendUint32(data, 2)
+		data = binary.BigEndian.AppendUint32(data, tc.code)
+		data = binary.BigEndian.AppendUint32(data, 0) // message
+		data = binary.BigEndian.AppendUint32(data, 0) // language
+		kind, packet, err := readDirectoryPacket(bytes.NewReader(data), 2)
+		if err != nil {
+			t.Fatalf("code %d: %v", tc.code, err)
+		}
+		err = packet.statusError(kind)
+		if err == nil {
+			t.Fatalf("code %d: want error", tc.code)
+		}
+		if got := isApplicationError(err); got != tc.app {
+			t.Fatalf("code %d: isApplicationError=%v want %v (%v)", tc.code, got, tc.app, err)
+		}
+	}
+}
