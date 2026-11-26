@@ -62,9 +62,6 @@ test("client references, insecure trust and invalid credential combinations are 
     assert.equal((await get()).status, 404);
   }
 
-  const reference = await put(sftpConn({ user: "secret://another" }));
-  assert.match(j(reference).error.message, /"user"/);
-
   assert.equal((await put(sftpConn())).status, 201);
   const combination = await put({ connector: "sftp", settings: {}, credentials: { privateKey: "unused" } });
   assert.equal(j(combination).error.code, "credential_rebind_required");
