@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Runtime gateway server (Connect-ES, gRPC protocol over HTTP/2 + mTLS). Runtimes dial out; the
 // control plane never connects to a runtime. Identity comes from the client certificate.
+import { createHash } from "node:crypto";
 import { createSecureServer, type Http2SecureServer } from "node:http2";
 import type { TLSSocket } from "node:tls";
 import { create } from "@bufbuild/protobuf";
 import { Code, ConnectError, createContextKey, createContextValues, type ConnectRouter, type HandlerContext } from "@connectrpc/connect";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
 import { runtimev1 as pb } from "@nurtuo/proto";
-import type { DeploymentStatus } from "./domain.js";
+import { digestOf } from "./api.js";
+import { bundleNamePattern, maxBundleSize, packBundle, type SigningKey } from "./bundle.js";
+import type { DeploymentStatus, Revision } from "./domain.js";
 import type { Repository } from "./repository.js";
 
 /** Runtime id carried in a certificate: URI SAN spiffe://nurtuo/runtime/<id> wins, else the subject CN. */
@@ -44,13 +47,22 @@ class Queue<T> {
   }
 }
 
-interface Session { runtimeId: string; out: Queue<pb.ConnectResponse>; lastSeen: number }
+interface Session {
+  runtimeId: string;
+  out: Queue<pb.ConnectResponse>;
+  lastSeen: number;
+  highestQueuedGeneration?: bigint;
+}
+interface Artifact { data: Buffer; digest: string }
 
 export interface GatewayOptions {
   /** A session with no message for this long is closed (default 0 = disabled). */
   idleTimeoutMs?: number;
   onCommandResult?: (runtimeId: string, r: pb.CommandResult) => void;
   log?: (msg: string) => void;
+  signingKey?: SigningKey;
+  /** Enable archive digests only when the gateway can serve their bytes. */
+  deliverArtifacts?: boolean;
 }
 
 export class Gateway {
@@ -58,10 +70,41 @@ export class Gateway {
   private pendingCommands = new Map<string, (r: pb.CommandResult) => void>();
   private publishing: Promise<number> | undefined;
   private timer: NodeJS.Timeout | undefined;
+  private artifacts = new Map<string, Artifact>();
+  private artifactBytes = 0;
 
   constructor(private repo: Repository, private opts: GatewayOptions = {}) {}
 
   connectedRuntimes(): string[] { return [...this.sessions.keys()]; }
+
+  private async artifactFor(rev: Revision): Promise<Artifact | undefined> {
+    const key = this.opts.signingKey;
+    if (!key) return undefined;
+    const cacheKey = `${rev.id}:${key.keyId}`;
+    const cached = this.artifacts.get(cacheKey);
+    if (cached) return cached;
+    if (rev.digest !== digestOf(rev.content)) return undefined;
+
+    const component = await this.repo.getComponent(rev.componentId);
+    if (!component) throw new Error("bundle: revision component is missing");
+    // A concurrent desired-state computation may have filled the cache during the lookup.
+    const packed = this.artifacts.get(cacheKey);
+    if (packed) return packed;
+    const data = packBundle({
+      name: bundleNamePattern.test(component.name) ? component.name : component.id,
+      createdAt: rev.createdAt,
+      component: { kind: component.kind, id: component.id, revision: rev.number, document: rev.content },
+    }, key);
+    const artifact = { data, digest: `sha256:${createHash("sha256").update(data).digest("hex")}` };
+    while (this.artifactBytes + data.length > maxBundleSize) {
+      const oldest = this.artifacts.entries().next().value!;
+      this.artifacts.delete(oldest[0]);
+      this.artifactBytes -= oldest[1].data.length;
+    }
+    this.artifacts.set(cacheKey, artifact);
+    this.artifactBytes += data.length;
+    return artifact;
+  }
 
   /** Current desired state of a runtime as a wire message; undefined if it never had one. */
   async desiredStateMessage(runtimeId: string): Promise<pb.DesiredState | undefined> {
@@ -72,7 +115,15 @@ export class Gateway {
       const rev = await this.repo.getRevisionById(revisionId);
       if (!rev) continue;
       // deployment_id is the component id: one slot per component per runtime.
-      deployments.push(create(pb.DeploymentSchema, { deploymentId: componentId, bundleDigest: rev.digest }));
+      let bundleDigest = rev.digest;
+      if (this.opts.deliverArtifacts) {
+        try {
+          bundleDigest = (await this.artifactFor(rev))?.digest ?? bundleDigest;
+        } catch {
+          this.opts.log?.(`cannot pack revision ${rev.id}`);
+        }
+      }
+      deployments.push(create(pb.DeploymentSchema, { deploymentId: componentId, bundleDigest }));
     }
     return create(pb.DesiredStateSchema, { revision: BigInt(ds.generation), deployments });
   }
@@ -83,7 +134,14 @@ export class Gateway {
     if (!s) return false;
     const msg = await this.desiredStateMessage(runtimeId);
     if (!msg) return false;
-    s.out.push(create(pb.ConnectResponseSchema, { msg: { case: "desiredState", value: msg } }));
+    return this.queueDesiredState(s, msg);
+  }
+
+  private queueDesiredState(session: Session, state: pb.DesiredState): boolean {
+    // Hello and outbox reads can finish out of order. Equal generations can carry new digests.
+    if (session.highestQueuedGeneration !== undefined && state.revision < session.highestQueuedGeneration) return false;
+    session.highestQueuedGeneration = state.revision;
+    session.out.push(create(pb.ConnectResponseSchema, { msg: { case: "desiredState", value: state } }));
     return true;
   }
 
@@ -166,8 +224,9 @@ export class Gateway {
           registered = true;
           prev?.out.close(); // newest connection wins
           const ds = await this.desiredStateMessage(certId);
-          if (ds && ds.revision !== m.value.desiredStateRevision) {
-            out.push(create(pb.ConnectResponseSchema, { msg: { case: "desiredState", value: ds } }));
+          // Signing configuration can change the payload at the same stored generation.
+          if (ds) {
+            this.queueDesiredState(session, ds);
           }
           continue;
         }
