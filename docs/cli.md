@@ -103,7 +103,8 @@ nurtuo flow run <flow.json> [--connection <file>]... [--set key=value]... [--sec
 ```
 
 The optional output limits must be positive. `--max-output-bytes` bounds returned decoded payload
-and temporary spill writes. JSON output also accounts for encoding and metadata. `--max-documents`
+and temporary spill writes, also caps cumulative template expansion, and accepts at most 1 GiB
+(1073741824). JSON output also accounts for encoding and metadata. `--max-documents`
 bounds the number of returned documents. An overflow fails with `output_too_large` in JSON mode
 and emits no partial result.
 
