@@ -12,7 +12,7 @@ require (
 	github.com/nurtuo/nurtuo/connectors v0.0.0
 	github.com/nurtuo/nurtuo/core/deploy/bundle v0.0.0
 	github.com/nurtuo/nurtuo/sdk/go v0.0.0
-	github.com/pkg/sftp v1.13.12
+	github.com/pkg/sftp v1.13.13
 	github.com/tetratelabs/wazero v1.12.0
 	go.yaml.in/yaml/v3 v3.0.4
 	golang.org/x/crypto v0.59.0
