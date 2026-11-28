@@ -8,7 +8,7 @@ require (
 	github.com/nats-io/nats.go v1.56.0
 	github.com/nats-io/nkeys v0.4.17
 	github.com/nurtuo/nurtuo/sdk/go v0.0.0
-	github.com/pkg/sftp v1.13.12
+	github.com/pkg/sftp v1.13.13
 	golang.org/x/crypto v0.59.0
 	google.golang.org/grpc v1.85.0
 	google.golang.org/protobuf v1.36.12
