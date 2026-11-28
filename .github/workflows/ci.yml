@@ -195,7 +195,7 @@ jobs:
         run: echo "version=$(pnpm --silent --filter @nurtuo/web exec playwright --version | awk '{print $NF}')" >> "$GITHUB_OUTPUT"
       - name: Cache Playwright browsers
         id: pw-cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ env.ImageOS }}-${{ steps.pw.outputs.version }}
